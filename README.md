@@ -3,9 +3,6 @@
 # **UAV Flight Simulation Prototype**
 
 *A modular testbed for timeline-based UAV mission simulation*  
-[Visit the Estimator](https://github.com/tareqomrani/uav-battery-efficiency-estimator)
-
----
 
 **Built by Tareq Omrani**  
 AI Engineering + UAV Systems | 2025
