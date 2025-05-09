@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 
@@ -10,8 +9,8 @@ STATIC_MAX_LIFT_G = {
     "DJI Phantom": 500,
     "RQ-11 Raven": 300,
     "RQ-20 Puma": 2500,
-    "MQ-1 Predator": 600,
-    "MQ-9 Reaper": 1700,
+    "MQ-1 Predator": 600000,
+    "MQ-9 Reaper": 1700000,
     "Skydio 2+": 600,
     "Freefly Alta 8": 9000,
     "Teal Golden Eagle": 3500,
@@ -59,7 +58,6 @@ with st.form("uav_form"):
         st.warning("Custom build: verify thrust and power support for high-altitude climbs.")
 
     flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
-
     submitted = st.form_submit_button("Estimate")
 
 if submitted:
@@ -67,7 +65,6 @@ if submitted:
         st.error("Payload exceeds lift capacity. The drone cannot take off with this configuration.")
         st.stop()
 
-    # Apply temperature effect
     temp_penalty = 1.0
     if temperature_c < 15:
         temp_penalty = 0.9
@@ -168,7 +165,7 @@ Recovered from descending {abs(elevation_gain_m)} meters.""")
         gauge_text = "[" + "|" * bars + " " * (10 - bars) + f"] {battery_pct:.0f}%"
         gauge.markdown(f"**Battery Gauge:** `{gauge_text}`")
 
-        timer.markdown(f"**Elapsed:** {time_elapsed} sec &nbsp;&nbsp;&nbsp; **Remaining:** {int(time_remaining)} sec")
+        timer.markdown(f"**Elapsed:** {time_elapsed} sec     **Remaining:** {int(time_remaining)} sec")
 
         status.markdown(
             "**Battery Remaining:** {:.2f} Wh  \n**Power Draw:** {:.0f} W".format(
@@ -182,3 +179,4 @@ Recovered from descending {abs(elevation_gain_m)} meters.""")
     st.success("Simulation complete.")
 
 st.caption("Demo project by Tareq Omrani | AI Engineering + UAV | 2025")
+    
