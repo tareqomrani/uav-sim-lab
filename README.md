@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="banner.png" alt="UAV Sim Lab Banner" width="100%">
+</p>
+
 <div align="center">
 
 # **UAV Flight Simulation Prototype**
