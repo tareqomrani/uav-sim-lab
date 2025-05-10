@@ -41,7 +41,7 @@ else:
 
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
-    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, value=float(default_battery))
+    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, max_value=1850.0, value=float(default_battery))
     default_payload = int(max_lift * 0.5)
     payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, value=default_payload)
     flight_speed_kmh = st.number_input("Flight Speed (km/h)", min_value=0.0, value=30.0)
@@ -75,6 +75,7 @@ if submitted:
 
         air_density_factor = max(0.6, 1.0 - 0.01 * (altitude_m / 100))
         hover_power = 170 * (total_weight_kg ** 1.5) / air_density_factor
+        st.caption(f"Air density factor at {altitude_m} m: {air_density_factor:.2f}")
 
         if flight_mode == 'Hover':
             total_power_draw = hover_power
@@ -126,6 +127,9 @@ Recovered from descending {abs(elevation_gain_m)} meters.""")
 
         st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
 
+        if flight_mode != "Hover":
+            st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
+
         st.subheader("AI Suggestions (Simulated GPT)")
         if payload_weight_g == max_lift:
             st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
@@ -143,9 +147,6 @@ Recovered from descending {abs(elevation_gain_m)} meters.""")
             if battery_capacity_wh < required_energy_wh * 1.1:
                 suggested_wh = required_energy_wh * 1.2
                 st.write(f"**Tip:** Recommended battery: {suggested_wh:.1f} Wh or higher.")
-
-        if flight_mode != "Hover":
-            st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
         st.subheader("Live Simulation")
         time_step = 10
