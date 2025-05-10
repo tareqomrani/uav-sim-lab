@@ -43,9 +43,7 @@ else:
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
 
-    battery_capacity_wh = st.number_input(
-        "Battery Capacity (Wh)", min_value=1.0, value=float(default_battery)
-    )
+    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, value=float(default_battery))
     default_payload = int(max_lift * 0.5)
     payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, max_value=int(max_lift), value=default_payload)
 
@@ -82,8 +80,19 @@ if submitted:
             total_power_draw = hover_power * 1.25 + 0.022 * (flight_speed_kmh ** 2) + 0.36 * wind_speed_kmh
 
         load_ratio = payload_weight_g / max_lift
-        efficiency_penalty = 1 if load_ratio < 0.7 else 1.1 if load_ratio < 0.9 else 1.25 if load_ratio <= 1.0 else 1.4
-        total_draw = total_power_draw * efficiency_penalty
+        if load_ratio < 0.7:
+            efficiency_penalty = 1
+        elif load_ratio < 0.9:
+            efficiency_penalty = 1.1
+        elif load_ratio <= 1.0:
+            efficiency_penalty = 1.25
+        else:
+            efficiency_penalty = 1.4
+
+        if drone_model != "Custom Build" and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
+            total_draw = UAV_PROFILES[drone_model]["draw_watt"]
+        else:
+            total_draw = total_power_draw * efficiency_penalty
 
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
@@ -104,6 +113,13 @@ if submitted:
             st.stop()
 
         flight_time_minutes = (battery_capacity_wh / total_draw) * 60
+
+        # Smart battery suggestion for hybrids
+        if drone_model != "Custom Build" and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
+            min_required_wh = total_draw * (10 / 60)  # 10 min minimum
+            if battery_capacity_wh < min_required_wh:
+                st.warning(f"Estimated draw requires at least {min_required_wh:.0f} Wh for safe 10 min operation.")
+
         if flight_time_minutes <= 0 or not flight_time_minutes < float('inf'):
             st.warning("Flight time too short or invalid.")
             st.stop()
@@ -135,10 +151,10 @@ if submitted:
             time.sleep(0.05)
 
         st.success("Simulation complete.")
+
     except Exception as e:
         st.error("Unexpected error during simulation.")
         if debug_mode:
             st.exception(e)
 
 st.caption("Demo project by Tareq Omrani | AI Engineering + UAV | 2025")
-        
