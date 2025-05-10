@@ -106,14 +106,14 @@ if submitted:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
             climb_energy_wh = climb_energy_j / 3600
             battery_capacity_wh -= climb_energy_wh
-            st.markdown(f"**Climb Energy Cost:** `{climb_energy_wh:.2f} Wh`  
-This accounts for lifting a {total_weight_kg:.2f} kg UAV to {elevation_gain_m} meters.")
+            st.markdown(f"""**Climb Energy Cost:** `{climb_energy_wh:.2f} Wh`  
+This accounts for lifting a {total_weight_kg:.2f} kg UAV to {elevation_gain_m} meters.""")
         elif elevation_gain_m < 0:
             descent_energy_j = total_weight_kg * 9.81 * abs(elevation_gain_m)
             recovered_wh = (descent_energy_j / 3600) * 0.2
             battery_capacity_wh += recovered_wh
-            st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`  
-Recovered from descending {abs(elevation_gain_m)} meters.")
+            st.markdown(f"""**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`  
+Recovered from descending {abs(elevation_gain_m)} meters.""")
 
         if battery_capacity_wh <= 0:
             st.info("Simulation stopped: energy usage exceeded battery capacity.")
@@ -176,4 +176,3 @@ Recovered from descending {abs(elevation_gain_m)} meters.")
             st.exception(e)
 
 st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
-    
