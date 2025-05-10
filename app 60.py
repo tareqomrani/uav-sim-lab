@@ -43,7 +43,9 @@ else:
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
 
-    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, value=default_battery)
+    battery_capacity_wh = st.number_input(
+        "Battery Capacity (Wh)", min_value=1.0, value=float(default_battery)
+    )
     default_payload = int(max_lift * 0.5)
     payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, max_value=int(max_lift), value=default_payload)
 
@@ -58,12 +60,9 @@ with st.form("uav_form"):
 
     submitted = st.form_submit_button("Estimate")
 
-### --- Simulation Starts Here ---
-
 if submitted:
     try:
         total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
-
         temp_penalty = 1.0
         if temperature_c < 15:
             temp_penalty = 0.9
@@ -83,80 +82,40 @@ if submitted:
             total_power_draw = hover_power * 1.25 + 0.022 * (flight_speed_kmh ** 2) + 0.36 * wind_speed_kmh
 
         load_ratio = payload_weight_g / max_lift
-        if load_ratio < 0.7:
-            efficiency_penalty = 1
-        elif load_ratio < 0.9:
-            efficiency_penalty = 1.1
-        elif load_ratio <= 1.0:
-            efficiency_penalty = 1.25
-        else:
-            efficiency_penalty = 1.4
-
+        efficiency_penalty = 1 if load_ratio < 0.7 else 1.1 if load_ratio < 0.9 else 1.25 if load_ratio <= 1.0 else 1.4
         total_draw = total_power_draw * efficiency_penalty
 
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
-            climb_energy_wh = climb_energy_j / 3600
-            battery_capacity_wh -= climb_energy_wh
+            battery_capacity_wh -= climb_energy_j / 3600
         elif elevation_gain_m < 0:
             descent_energy_j = total_weight_kg * 9.81 * abs(elevation_gain_m)
-            recovered_wh = (descent_energy_j / 3600) * 0.2
-            battery_capacity_wh += recovered_wh
+            battery_capacity_wh += (descent_energy_j / 3600) * 0.2
 
-        failure_triggered = False
-        failure_reason = ""
         if simulate_failure and drone_model != "Custom Build":
             profile = UAV_PROFILES[drone_model]
             if profile["power_system"] == "Hybrid" and profile["crash_risk"]:
-                if temperature_c > 35:
-                    failure_triggered = True
-                    failure_reason = "Battery overheating on ground (temp > 35°C)"
-                elif elevation_gain_m > 300:
-                    failure_triggered = True
-                    failure_reason = "High altitude climb triggered battery fault (> 300m gain)"
-                elif total_weight_kg > 100 and wind_speed_kmh > 20:
-                    failure_triggered = True
-                    failure_reason = "Heavy UAV + wind load exceeded safe power reserve"
-
-        if failure_triggered:
-            st.error(f"**SIMULATION FAILURE:** {failure_reason}")
-            st.warning("Mission would be aborted due to battery backup failure.")
-            st.stop()
+                if temperature_c > 35 or elevation_gain_m > 300 or (total_weight_kg > 100 and wind_speed_kmh > 20):
+                    st.error("SIMULATION FAILURE: Battery backup failure conditions met.")
+                    st.stop()
 
         if battery_capacity_wh <= 0:
             st.info("Simulation stopped: energy usage exceeded battery capacity.")
             st.stop()
 
         flight_time_minutes = (battery_capacity_wh / total_draw) * 60
-        max_cap_minutes = min(battery_capacity_wh * 1.2, 120)
-        if flight_time_minutes > max_cap_minutes:
-            flight_time_minutes = max_cap_minutes
-
         if flight_time_minutes <= 0 or not flight_time_minutes < float('inf'):
-            st.warning("Flight time is too short or invalid. Please adjust parameters.")
+            st.warning("Flight time too short or invalid.")
             st.stop()
 
         st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
-
         if flight_mode != "Hover":
-            flight_distance_km = (flight_time_minutes / 60) * flight_speed_kmh
-            st.metric("Estimated Max Distance", f"{flight_distance_km:.2f} km")
+            st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
-        if debug_mode:
-            st.subheader("Debug Info")
-            st.write(f"**Total Weight (kg):** {total_weight_kg}")
-            st.write(f"**Air Density Factor:** {air_density_factor}")
-            st.write(f"**Hover Power (W):** {hover_power}")
-            st.write(f"**Efficiency Penalty:** {efficiency_penalty}")
-            st.write(f"**Total Draw (W):** {total_draw}")
-            st.write(f"**Adjusted Battery (Wh):** {battery_capacity_wh:.2f}")
-
-        # Live Simulation
         st.subheader("Live Simulation")
         time_step = 10
         total_steps = max(1, int(flight_time_minutes * 60 / time_step))
         battery_per_step = (total_draw * time_step) / 3600
-
         progress = st.progress(0)
         status = st.empty()
         gauge = st.empty()
@@ -169,18 +128,17 @@ if submitted:
             time_remaining = max(0, (flight_time_minutes * 60) - time_elapsed)
 
             bars = int(battery_pct // 10)
-            gauge_text = "[" + "|" * bars + " " * (10 - bars) + f"] {battery_pct:.0f}%"
-            gauge.markdown(f"**Battery Gauge:** `{gauge_text}`")
+            gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
             timer.markdown(f"**Elapsed:** {time_elapsed} sec **Remaining:** {int(time_remaining)} sec")
-            status.markdown("**Battery Remaining:** {:.2f} Wh  \n**Power Draw:** {:.0f} W".format(battery_remaining, total_draw))
+            status.markdown(f"**Battery Remaining:** {battery_remaining:.2f} Wh  \n**Power Draw:** {total_draw:.0f} W")
             progress.progress(min(step / total_steps, 1.0))
             time.sleep(0.05)
 
         st.success("Simulation complete.")
-
     except Exception as e:
-        st.error("Unexpected error during simulation. Please check inputs.")
+        st.error("Unexpected error during simulation.")
         if debug_mode:
             st.exception(e)
 
 st.caption("Demo project by Tareq Omrani | AI Engineering + UAV | 2025")
+        
