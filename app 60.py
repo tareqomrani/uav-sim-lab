@@ -79,6 +79,10 @@ if submitted:
         elif flight_mode == 'Waypoint Mission':
             total_power_draw = hover_power * 1.25 + 0.022 * (flight_speed_kmh ** 2) + 0.36 * wind_speed_kmh
 
+        if max_lift == 0:
+            st.error("This UAV is not rated for payload carrying. Simulation aborted.")
+            st.stop()
+
         load_ratio = payload_weight_g / max_lift
         if load_ratio < 0.7:
             efficiency_penalty = 1
@@ -114,9 +118,8 @@ if submitted:
 
         flight_time_minutes = (battery_capacity_wh / total_draw) * 60
 
-        # Smart battery suggestion for hybrids
         if drone_model != "Custom Build" and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
-            min_required_wh = total_draw * (10 / 60)  # 10 min minimum
+            min_required_wh = total_draw * (10 / 60)
             if battery_capacity_wh < min_required_wh:
                 st.warning(f"Estimated draw requires at least {min_required_wh:.0f} Wh for safe 10 min operation.")
 
@@ -158,3 +161,7 @@ if submitted:
             st.exception(e)
 
 st.caption("Demo project by Tareq Omrani | AI Engineering + UAV | 2025")
+    
+            
+
+        
