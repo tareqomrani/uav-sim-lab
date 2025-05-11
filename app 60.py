@@ -27,3 +27,4 @@ drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()) + ["Custom B
 # — Flight Parameters & Simulation — simplified here for brevity
 
 st.caption("Air density and AI tips included. Full simulation code should integrate into the form submit block.")
+
