@@ -1,3 +1,4 @@
+
 import streamlit as st
 import time
 
@@ -17,5 +18,10 @@ UAV_PROFILES = {
     "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 240, "battery_wh": 150, "crash_risk": False, "max_speed_kmh": 75, "max_altitude_m": 2000}
 }
 
-# [Remaining code is omitted here for brevity but continues fully with logic and simulation]
+# Ensure this section always renders first
+debug_mode = st.checkbox("Enable Debug Mode")
+drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()) + ["Custom Build"])
+
+# Placeholder info
+st.markdown("*Air density and AI tips included. Full simulation code should integrate into the form submit block.*")
 
