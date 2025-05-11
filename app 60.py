@@ -2,7 +2,7 @@ import streamlit as st
 import time
 import os
 
-st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
+st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")r
 st.title("UAV Battery Efficiency Estimator")
 
 UAV_PROFILES = {
