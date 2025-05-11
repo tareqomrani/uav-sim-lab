@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 
@@ -19,6 +18,3 @@ UAV_PROFILES = {
 }
 
 # Save the Python script
-output_path = Path("/mnt/data/uav_simulator_final_corrected.py")
-output_path.write_text(script_content)
-output_path.name
