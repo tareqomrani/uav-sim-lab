@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+import os
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
 st.title("UAV Battery Efficiency Estimator")
@@ -18,7 +19,26 @@ UAV_PROFILES = {
 }
 
 debug_mode = st.checkbox("Enable Debug Mode")
+
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()) + ["Custom Build"])
+
+image_file_map = {
+    "Generic Quad": "generic_quad.png",
+    "DJI Phantom": "dji_phantom.png",
+    "RQ-11 Raven": "rq11_raven.png",
+    "RQ-20 Puma": "rq20_puma.png",
+    "Skydio 2+": "skydio2plus.png",
+    "MQ-1 Predator": "mq1_predator.png",
+    "MQ-9 Reaper": "mq9_reaper.png",
+    "Teal Golden Eagle": "teal_golden_eagle.png",
+    "Freefly Alta 8": "freefly_alta8_black.png",
+    "Quantum Systems Vector": "quantum_vector.png"
+}
+
+if drone_model in image_file_map:
+    image_path = os.path.join("images", image_file_map[drone_model])
+    if os.path.exists(image_path):
+        st.image(image_path, caption=f"{drone_model} (Cartoon View)", use_column_width=True)
 
 if drone_model == "Custom Build":
     st.markdown("**Custom Lift Calculation:**")
@@ -41,41 +61,36 @@ else:
 
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
-    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, max_value=1850.0, value=float(default_battery))
+
+    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, value=float(default_battery))
     default_payload = int(max_lift * 0.5)
-    payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, value=default_payload)
+    payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, max_value=int(max_lift), value=default_payload)
+
     flight_speed_kmh = st.number_input("Flight Speed (km/h)", min_value=0.0, value=30.0)
     wind_speed_kmh = st.number_input("Wind Speed (km/h)", min_value=0.0, value=10.0)
     temperature_c = st.number_input("Temperature (°C)", value=25.0)
     altitude_m = st.number_input("Flight Altitude (m)", min_value=0, max_value=5000, value=0)
     elevation_gain_m = st.number_input("Elevation Gain (m)", min_value=-1000, max_value=1000, value=0)
+
     flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
     simulate_failure = st.checkbox("Enable Failure Simulation (experimental)")
+
     submitted = st.form_submit_button("Estimate")
 
 if submitted:
     try:
-        if payload_weight_g > max_lift:
-            st.error("Payload exceeds lift capacity. The drone cannot take off with this configuration.")
-            st.stop()
         total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
 
-        if drone_model != "Custom Build":
-            if elevation_gain_m > 150 and drone_model in ["DJI Phantom", "RQ-20 Puma", "Generic Quad"]:
-                st.warning(f"Warning: {drone_model} may not be rated for climbs over {elevation_gain_m} meters.")
-            if elevation_gain_m > 300 and UAV_PROFILES[drone_model]["power_system"] == "Battery":
-                st.warning("Battery-only drones may lose efficiency at high altitudes.")
-            if elevation_gain_m > 500 and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
-                st.warning("Extreme climbs above 500m may exceed hybrid UAV battery backup limits.")
-
+        temp_penalty = 1.0
         if temperature_c < 15:
-            battery_capacity_wh *= 0.9
+            temp_penalty = 0.9
         elif temperature_c > 35:
-            battery_capacity_wh *= 0.95
+            temp_penalty = 0.95
+        battery_capacity_wh *= temp_penalty
 
+        base_hover_efficiency = 170
         air_density_factor = max(0.6, 1.0 - 0.01 * (altitude_m / 100))
-        hover_power = 170 * (total_weight_kg ** 1.5) / air_density_factor
-        st.caption(f"Air density factor at {altitude_m} m: {air_density_factor:.2f}")
+        hover_power = base_hover_efficiency * (total_weight_kg ** 1.5) / air_density_factor
 
         if flight_mode == 'Hover':
             total_power_draw = hover_power
@@ -84,69 +99,67 @@ if submitted:
         elif flight_mode == 'Waypoint Mission':
             total_power_draw = hover_power * 1.25 + 0.022 * (flight_speed_kmh ** 2) + 0.36 * wind_speed_kmh
 
-        if max_lift == 0 and payload_weight_g > 0:
-            st.error("This UAV cannot carry payload. Please reduce payload to 0g.")
-            st.stop()
-
         load_ratio = payload_weight_g / max_lift if max_lift > 0 else 0
-        if load_ratio < 0.7:
-            efficiency_penalty = 1
-        elif load_ratio < 0.9:
+        efficiency_penalty = 1.0
+        if 0.7 <= load_ratio < 0.9:
             efficiency_penalty = 1.1
-        elif load_ratio <= 1.0:
+        elif 0.9 <= load_ratio <= 1.0:
             efficiency_penalty = 1.25
-        else:
+        elif load_ratio > 1.0:
             efficiency_penalty = 1.4
 
         if drone_model != "Custom Build" and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
-            total_draw = UAV_PROFILES[drone_model]["draw_watt"]
+            base_draw = UAV_PROFILES[drone_model]["draw_watt"]
+            drag_factor = 1.0
+
+            if flight_mode == 'Forward Flight':
+                drag_factor += 0.01 * flight_speed_kmh + 0.001 * (altitude_m / 100)
+                st.info(f"Hybrid UAV: draw increased due to speed ({flight_speed_kmh} km/h) and altitude ({altitude_m} m).")
+            elif flight_mode == 'Waypoint Mission':
+                drag_factor += 0.012 * flight_speed_kmh + 0.0012 * (altitude_m / 100)
+                st.info(f"Hybrid UAV: increased draw from speed and route complexity at {flight_speed_kmh} km/h and {altitude_m} m.")
+
+            # FIXED: Add payload weight to drag mass penalty
+            mass_penalty = 1.0 + 0.003 * (base_weight_kg + (payload_weight_g / 1000))
+            drag_factor *= mass_penalty
+            drag_factor = min(drag_factor, 2.2)
+            total_draw = base_draw * drag_factor
         else:
             total_draw = total_power_draw * efficiency_penalty
 
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
-            climb_energy_wh = climb_energy_j / 3600
-            battery_capacity_wh -= climb_energy_wh
-            st.markdown(f"""**Climb Energy Cost:** `{climb_energy_wh:.2f} Wh`  
-This accounts for lifting a {total_weight_kg:.2f} kg UAV to {elevation_gain_m} meters.""")
+            battery_capacity_wh -= climb_energy_j / 3600
         elif elevation_gain_m < 0:
             descent_energy_j = total_weight_kg * 9.81 * abs(elevation_gain_m)
-            recovered_wh = (descent_energy_j / 3600) * 0.2
-            battery_capacity_wh += recovered_wh
-            st.markdown(f"""**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`  
-Recovered from descending {abs(elevation_gain_m)} meters.""")
+            battery_capacity_wh += (descent_energy_j / 3600) * 0.2
+
+        if simulate_failure and drone_model != "Custom Build":
+            profile = UAV_PROFILES[drone_model]
+            if profile["power_system"] == "Hybrid" and profile["crash_risk"]:
+                if temperature_c > 35 or elevation_gain_m > 300 or (total_weight_kg > 100 and wind_speed_kmh > 20):
+                    st.error("SIMULATION FAILURE: Battery backup failure conditions met.")
+                    st.stop()
 
         if battery_capacity_wh <= 0:
             st.info("Simulation stopped: energy usage exceeded battery capacity.")
             st.stop()
 
         flight_time_minutes = (battery_capacity_wh / total_draw) * 60
-        max_cap_minutes = min(battery_capacity_wh * 1.2, 120)
-        if flight_time_minutes > max_cap_minutes:
-            flight_time_minutes = max_cap_minutes
+        flight_time_minutes = min(flight_time_minutes, 1850)
+
+        if drone_model != "Custom Build" and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
+            min_required_wh = total_draw * (10 / 60)
+            if battery_capacity_wh < min_required_wh:
+                st.warning(f"Estimated draw requires at least {min_required_wh:.0f} Wh for safe 10 min operation.")
+
+        if flight_time_minutes <= 0 or not flight_time_minutes < float('inf'):
+            st.warning("Flight time too short or invalid.")
+            st.stop()
 
         st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
-
         if flight_mode != "Hover":
             st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
-
-        st.subheader("AI Suggestions (Simulated GPT)")
-        if payload_weight_g == max_lift:
-            st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
-        if payload_weight_g > max_lift * 0.7:
-            st.write(f"**Tip:** Reduce payload to under {int(max_lift * 0.7)}g to increase endurance.")
-        if wind_speed_kmh > 15:
-            st.write("**Tip:** High wind may significantly reduce flight time — consider postponing.")
-        if battery_capacity_wh < 30:
-            st.write("**Tip:** Battery is under 30 Wh. Consider using a larger battery.")
-        if flight_speed_kmh > 40:
-            st.write("**Tip:** High flight speed may increase aerodynamic drag.")
-        if efficiency_penalty > 1.1:
-            st.write("**Tip:** Operating near max payload reduces efficiency.")
-            required_energy_wh = total_draw * (flight_time_minutes / 60)
-            if battery_capacity_wh < required_energy_wh * 1.1:
-                suggested_wh = required_energy_wh * 1.2
-                st.write(f"**Tip:** Recommended battery: {suggested_wh:.1f} Wh or higher.")
 
         st.subheader("Live Simulation")
         time_step = 10
@@ -162,6 +175,7 @@ Recovered from descending {abs(elevation_gain_m)} meters.""")
             battery_remaining = battery_capacity_wh - (step * battery_per_step)
             battery_pct = max(0, (battery_remaining / battery_capacity_wh) * 100)
             time_remaining = max(0, (flight_time_minutes * 60) - time_elapsed)
+
             bars = int(battery_pct // 10)
             gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
             timer.markdown(f"**Elapsed:** {time_elapsed} sec **Remaining:** {int(time_remaining)} sec")
