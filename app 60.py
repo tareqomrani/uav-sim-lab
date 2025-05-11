@@ -4,11 +4,7 @@ import time
 import os
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
-st.markdown("""
-    <h1 style='text-align: center; color: #33cccc; font-size: 2.5em;'>
-        UAV Battery Efficiency Estimator
-    </h1>
-""", unsafe_allow_html=True)
+st.markdown('<h1 style="text-align: center; color: #33cccc; font-size: 2.5em;">UAV Battery Efficiency Estimator</h1>', unsafe_allow_html=True)
 
 UAV_PROFILES = {
     "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "power_system": "Battery", "draw_watt": 170, "battery_wh": 60, "crash_risk": False, "max_speed_kmh": 80, "max_altitude_m": 500},
@@ -43,10 +39,9 @@ image_file_map = {
 if drone_model in image_file_map:
     image_path = os.path.join("images", image_file_map[drone_model])
     if os.path.exists(image_path):
-        st.markdown("<hr>", unsafe_allow_html=True)
-st.image(image_path, caption=f"{drone_model} (Cartoon View)", use_container_width=True)
-st.markdown("<hr>", unsafe_allow_html=True)
+        st.image(image_path, caption=f"{drone_model} (Cartoon View)", use_container_width=True)
 
 # — Flight Parameters & Simulation — simplified here for brevity
 
 st.caption("Air density and AI tips included. Full simulation code should integrate into the form submit block.")
+
