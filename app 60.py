@@ -76,20 +76,24 @@ with st.form("uav_form"):
     simulate_failure = st.checkbox("Enable Failure Simulation (experimental)")
 
     submitted = st.form_submit_button("Estimate")
-
-if submitted:
+    if submitted:
     try:
         total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
 
         temp_penalty = 1.0
         if temperature_c < 15:
             temp_penalty = 0.9
+            st.caption("Cold weather penalty applied: reduced battery capacity (-10%)")
         elif temperature_c > 35:
             temp_penalty = 0.95
+            st.caption("Heat penalty applied: reduced battery capacity (-5%)")
         battery_capacity_wh *= temp_penalty
 
         base_hover_efficiency = 170
         air_density_factor = max(0.6, 1.0 - 0.01 * (altitude_m / 100))
+        air_density_pct = air_density_factor * 100
+        st.caption(f"Air density at altitude: {air_density_pct:.1f}% of sea-level density")
+
         hover_power = base_hover_efficiency * (total_weight_kg ** 1.5) / air_density_factor
 
         if flight_mode == 'Hover':
@@ -111,28 +115,29 @@ if submitted:
         if drone_model != "Custom Build" and UAV_PROFILES[drone_model]["power_system"] == "Hybrid":
             base_draw = UAV_PROFILES[drone_model]["draw_watt"]
             drag_factor = 1.0
-
             if flight_mode == 'Forward Flight':
                 drag_factor += 0.01 * flight_speed_kmh + 0.001 * (altitude_m / 100)
                 st.info(f"Hybrid UAV: draw increased due to speed ({flight_speed_kmh} km/h) and altitude ({altitude_m} m).")
             elif flight_mode == 'Waypoint Mission':
                 drag_factor += 0.012 * flight_speed_kmh + 0.0012 * (altitude_m / 100)
                 st.info(f"Hybrid UAV: increased draw from speed and route complexity at {flight_speed_kmh} km/h and {altitude_m} m.")
-
-            # FIXED: Payload weight included
             mass_penalty = 1.0 + 0.003 * (base_weight_kg + (payload_weight_g / 1000))
             drag_factor *= mass_penalty
             drag_factor = min(drag_factor, 2.2)
             total_draw = base_draw * drag_factor
         else:
-            total_draw = total_power_draw * efficiency_penalty
+            mass_penalty = 1.0 + 0.003 * total_weight_kg
+            drag_factor = 1.0 + 0.001 * (altitude_m / 100)
+            total_draw = total_power_draw * efficiency_penalty * mass_penalty * drag_factor
 
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
             battery_capacity_wh -= climb_energy_j / 3600
+            st.caption(f"Climb energy used: {climb_energy_j / 3600:.2f} Wh")
         elif elevation_gain_m < 0:
             descent_energy_j = total_weight_kg * 9.81 * abs(elevation_gain_m)
             battery_capacity_wh += (descent_energy_j / 3600) * 0.2
+            st.caption(f"Descent energy recovered: {(descent_energy_j / 3600) * 0.2:.2f} Wh")
 
         if simulate_failure and drone_model != "Custom Build":
             profile = UAV_PROFILES[drone_model]
@@ -160,6 +165,18 @@ if submitted:
         st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
         if flight_mode != "Hover":
             st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
+
+        st.subheader("AI Suggestions (Simulated GPT)")
+        if flight_speed_kmh > 40:
+            st.markdown("**Tip:** High flight speed may increase aerodynamic drag and reduce flight time.")
+        if payload_weight_g > max_lift * 0.9:
+            st.markdown("**Tip:** Operating near max payload can reduce efficiency and increase risk.")
+        if wind_speed_kmh > 20:
+            st.markdown("**Tip:** Strong wind may increase power draw and reduce effective range.")
+        if temperature_c < 0 or temperature_c > 40:
+            st.markdown("**Tip:** Extreme temperatures may degrade battery performance.")
+        if elevation_gain_m > 300:
+            st.markdown("**Tip:** High climb effort requires significant energy — consider reducing gain.")
 
         st.subheader("Live Simulation")
         time_step = 10
