@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 import os
@@ -44,3 +43,4 @@ if drone_model in image_file_map:
 # — Flight Parameters & Simulation — simplified here for brevity
 
 st.caption("Air density and AI tips included. Full simulation code should integrate into the form submit block.")
+
