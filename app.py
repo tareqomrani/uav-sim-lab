@@ -1,5 +1,4 @@
- 
-import streamlit as st
+ import streamlit as st
 import time
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
@@ -60,3 +59,4 @@ with st.form("uav_form"):
     submitted = st.form_submit_button("Estimate")
 
 # This version ends before simulation block to verify UI loads correctly
+
