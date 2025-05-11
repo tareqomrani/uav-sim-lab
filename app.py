@@ -25,6 +25,7 @@ profile = UAV_PROFILES[drone_model]
 max_lift = profile["max_payload_g"]
 base_weight_kg = profile["base_weight_kg"]
 default_battery = profile["battery_wh"]
+st.caption(f"Power System: `{profile['power_system']}`")
 max_speed = profile["max_speed"]
 max_altitude = profile["max_altitude"]
 power_system = profile["power_system"]
