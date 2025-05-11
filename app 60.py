@@ -38,7 +38,7 @@ image_file_map = {
 if drone_model in image_file_map:
     image_path = os.path.join("images", image_file_map[drone_model])
     if os.path.exists(image_path):
-        st.image(image_path, caption=f"{drone_model} (Cartoon View)", use_column_width=True)
+        st.image(image_path, caption=f"{drone_model} (Cartoon View)", use_container_width=True)
 
 if drone_model == "Custom Build":
     st.markdown("**Custom Lift Calculation:**")
@@ -119,7 +119,7 @@ if submitted:
                 drag_factor += 0.012 * flight_speed_kmh + 0.0012 * (altitude_m / 100)
                 st.info(f"Hybrid UAV: increased draw from speed and route complexity at {flight_speed_kmh} km/h and {altitude_m} m.")
 
-            # FIXED: Add payload weight to drag mass penalty
+            # FIXED: Payload weight included
             mass_penalty = 1.0 + 0.003 * (base_weight_kg + (payload_weight_g / 1000))
             drag_factor *= mass_penalty
             drag_factor = min(drag_factor, 2.2)
