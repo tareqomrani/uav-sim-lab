@@ -4,7 +4,7 @@ import time
 import os
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
-st.markdown('<h1 style="text-align: center; color: #33cccc; font-size: 2.5em;">UAV Battery Efficiency Estimator</h1>', unsafe_allow_html=True)
+st.markdown("<h1 style=\"text-align: center; color: #33cccc; font-size: 2.5em;\">UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 
 UAV_PROFILES = {
     "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "power_system": "Battery", "draw_watt": 170, "battery_wh": 60, "crash_risk": False},
@@ -44,3 +44,4 @@ if drone_model in image_file_map:
 # — Flight Parameters & Simulation — simplified here for brevity
 
 st.caption("Air density and AI tips included. Full simulation code should integrate into the form submit block.")
+
