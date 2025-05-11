@@ -1,3 +1,4 @@
+
 import streamlit as st
 import time
 import os
@@ -22,25 +23,7 @@ debug_mode = st.checkbox("Enable Debug Mode")
 
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()) + ["Custom Build"])
 
-image_file_map = {
-    "Generic Quad": "generic_quad.png",
-    "DJI Phantom": "dji_phantom.png",
-    "RQ-11 Raven": "rq11_raven.png",
-    "RQ-20 Puma": "rq20_puma.png",
-    "Skydio 2+": "skydio2plus.png",
-    "MQ-1 Predator": "mq1_predator.png",
-    "MQ-9 Reaper": "mq9_reaper.png",
-    "Teal Golden Eagle": "teal_golden_eagle.png",
-    "Freefly Alta 8": "freefly_alta8_black.png",
-    "Quantum Systems Vector": "quantum_vector.png"
-}
-
-if drone_model in image_file_map:
-    image_path = os.path.join("images", image_file_map[drone_model])
-    if os.path.exists(image_path):
-        st.image(image_path, caption=f"{drone_model} (Cartoon View)", use_container_width=True)
 
 # — Flight Parameters & Simulation — simplified here for brevity
 
 st.caption("Air density and AI tips included. Full simulation code should integrate into the form submit block.")
-
