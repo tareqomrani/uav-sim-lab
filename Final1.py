@@ -146,7 +146,6 @@ if submitted:
     elif phase == "Descent":
         phase_modifier = 0.85
 draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * phase_modifier * wind_factor * efficiency_factor * speed_factor / air_density
-    draw_scaled = min(max(draw_scaled, 10), 5000)
 
     # Phase modifiers
     def compute_phase_energy(modifier, time_min):
