@@ -39,16 +39,24 @@ st.markdown("<span style='color:#4169E1;'>Base weight: {} kg</span>".format(base
 st.markdown("<span style='color:#4169E1;'>Power System: {}</span>".format(power_system), unsafe_allow_html=True)
 st.markdown("<span style='color:#4169E1;'>Base draw: {} W</span>".format(draw_watt_base), unsafe_allow_html=True)
 
-payload = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5)) if profile["max_payload_g"] > 0 else 0
-speed = st.slider("Flight Speed (km/h)", 10, 150, 40)
-altitude = st.slider("Target Altitude (m)", 0, 3000, 200)
-temperature = st.slider("Temperature (°C)", -10, 45, 25)
-wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
+payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider)
+speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40)
+speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider)
+altitude_slider = st.slider("Target Altitude (m)", 0, 3000, 200)
+altitude = st.number_input("Target Altitude (m)", min_value=0, max_value=3000, value=altitude_slider)
+temperature_slider = st.slider("Temperature (°C)", -10, 45, 25)
+temperature = st.number_input("Temperature (°C)", min_value=-10, max_value=45, value=temperature_slider)
+speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40)
+speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider)
 
 st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
-climb_time = st.slider("Climb Time (min)", 0, 30, 2)
-cruise_time = st.slider("Cruise Time (min)", 0, 60, 8)
-descent_time = st.slider("Descent Time (min)", 0, 30, 2)
+climb_slider = st.slider("Climb Time (min)", 0, 30, 2)
+climb_time = st.number_input("Climb Time (min)", min_value=0, max_value=30, value=climb_slider)
+cruise_slider = st.slider("Cruise Time (min)", 0, 60, 8)
+cruise_time = st.number_input("Cruise Time (min)", min_value=0, max_value=60, value=cruise_slider)
+descent_slider = st.slider("Descent Time (min)", 0, 30, 2)
+descent_time = st.number_input("Descent Time (min)", min_value=0, max_value=30, value=descent_slider)
 total_mission_time = climb_time + cruise_time + descent_time
 
 submitted = st.button("✈️ Estimate")
@@ -74,8 +82,6 @@ if submitted:
 
     # Temperature correction
     adjusted_battery_wh = battery_wh
-    if flight_time_min < 5:
-        st.error("Estimated flight time is very low. Consider adjusting payload or profile.")
     if temperature < 15:
         adjusted_battery_wh *= 0.9
     elif temperature > 35:
@@ -96,6 +102,8 @@ if submitted:
     total_energy_wh = climb_energy + cruise_energy + descent_energy
     net_energy_available = adjusted_battery_wh
     flight_time_min = total_mission_time
+    if flight_time_min < 5:
+        st.error("Estimated flight time is very low. Consider adjusting payload or profile.")
     distance_km = (speed * total_mission_time) / 60
 
     # Return-to-home reserve
@@ -147,4 +155,3 @@ if submitted:
     st.pyplot(fig2)
 
 st.markdown("<span style='color:#4169E1;'>GPT-UAV Planner | Final Stable Version</span>", unsafe_allow_html=True)
-
