@@ -1,91 +1,222 @@
 
 import streamlit as st
-import math
+import time
+import pandas as pd
+import matplotlib.pyplot as plt
 
-# Model database
-models = {
-    "RQ-11 Raven": {
-        "ai": "None",
-        "base_weight_kg": 1.9,
-        "power_system": "Battery",
-        "base_draw_w": 100,
-        "max_payload_g": 0,
-        "battery_wh": 200
+st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
+
+# UI Title (with wind and color updates)
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+st.markdown("<span style='color:#00FF00;'>Includes climb/descent logic, air density adjustments, and onboard AI capabilities.</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+
+UAV_PROFILES = {
+    "Generic Quad": {
+        "max_payload_g": 800, "base_weight_kg": 1.2, "draw_watt_base": 170, "battery_wh": 60,
+        "power_system": "Battery", "ai_features": ["Obstacle Avoidance"]
     },
-    "Hybrid X": {
-        "ai": "Obstacle Avoidance, Autonomous Navigation",
-        "base_weight_kg": 3.0,
-        "power_system": "Hybrid",
-        "base_draw_w": 150,
-        "max_payload_g": 1500,
-        "battery_wh": 500
+    "DJI Phantom": {
+        "max_payload_g": 500, "base_weight_kg": 1.4, "draw_watt_base": 180, "battery_wh": 68,
+        "power_system": "Battery", "ai_features": ["Obstacle Avoidance", "Auto-Landing"]
+    },
+    "RQ-11 Raven": {
+        "max_payload_g": 0, "base_weight_kg": 1.9, "draw_watt_base": 100, "battery_wh": 50,
+        "power_system": "Battery", "ai_features": []
+    },
+    "RQ-20 Puma": {
+        "max_payload_g": 600, "base_weight_kg": 6.3, "draw_watt_base": 250, "battery_wh": 275,
+        "power_system": "Battery", "ai_features": ["Auto Navigation"]
+    },
+    "MQ-1 Predator": {
+        "max_payload_g": 204000, "base_weight_kg": 512, "draw_watt_base": 900, "battery_wh": 150,
+        "power_system": "Hybrid", "ai_features": ["Auto Targeting", "Route Optimization"]
+    },
+    "MQ-9 Reaper": {
+        "max_payload_g": 1700000, "base_weight_kg": 2223, "draw_watt_base": 1100, "battery_wh": 200,
+        "power_system": "Hybrid", "ai_features": ["Auto Targeting", "Route Optimization", "Obstacle Avoidance"]
+    },
+    "Skydio 2+": {
+        "max_payload_g": 150, "base_weight_kg": 0.8, "draw_watt_base": 130, "battery_wh": 45,
+        "power_system": "Battery", "ai_features": ["360 Vision", "Autonomous Flight"]
+    },
+    "Freefly Alta 8": {
+        "max_payload_g": 9000, "base_weight_kg": 6.2, "draw_watt_base": 450, "battery_wh": 710,
+        "power_system": "Battery", "ai_features": ["Redundant AI", "Auto-Landing"]
+    },
+    "Teal Golden Eagle": {
+        "max_payload_g": 2000, "base_weight_kg": 2.2, "draw_watt_base": 300, "battery_wh": 100,
+        "power_system": "Hybrid", "ai_features": ["Obstacle Avoidance", "Route Optimization"]
+    },
+    "Quantum Systems Vector": {
+        "max_payload_g": 1500, "base_weight_kg": 2.3, "draw_watt_base": 240, "battery_wh": 150,
+        "power_system": "Battery", "ai_features": ["Autonomous Pathing"]
     }
 }
 
-st.set_page_config(layout="centered", page_title="UAV Battery Estimator", page_icon="✈️")
+model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
+profile = UAV_PROFILES[model]
+base_weight_kg = profile["base_weight_kg"]
+draw_watt_base = profile["draw_watt_base"]
+battery_wh_input = float(profile["battery_wh"])
+battery_wh = st.number_input("Battery Capacity (Wh)", min_value=10.0, max_value=1850.0, value=battery_wh_input)
+power_system = profile["power_system"]
+ai_capabilities = profile["ai_features"]
 
-st.title("UAV Battery Efficiency Estimator")
-
-model = st.selectbox("Select UAV Model", list(models.keys()))
-profile = models[model]
-
-st.markdown(f"**AI Capabilities:** `{profile['ai']}`")
-st.markdown(f"<span style='color:#4169E1;'>Power System: {profile['power_system']}</span>", unsafe_allow_html=True)
-st.markdown(f"<span style='color:#4169E1;'>Base draw: {profile['base_draw_w']} W</span>", unsafe_allow_html=True)
-
-# Payload section
-if profile["max_payload_g"] > 0:
-    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key=f"payload_slider_{model}")
-    payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider, key=f"payload_input_{model}")
+# AI Feature Display
+if ai_capabilities:
+    st.markdown("**AI Capabilities:** " + ", ".join([f"`{cap}`" for cap in ai_capabilities]))
 else:
-    st.markdown("<span style='color:#FFA500;'>Note: This model does not support payloads.</span>", unsafe_allow_html=True)
+    st.markdown("**AI Capabilities:** `None`")
+
+st.markdown(f"<span style='color:#00FF00;'>Base weight: {base_weight_kg} kg</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+st.markdown(f"<span style='color:#00FF00;'>Power System: {power_system}</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+st.markdown(f"<span style='color:#00FF00;'>Base draw: {draw_watt_base} W</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+
+# UI Sliders
+st.markdown("<h5 style='color:#00FF00;'>Flight Parameters</h5>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+if profile["max_payload_g"] > 0:
+    payload = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
+else:
     payload = 0
+    st.warning("Note: This drone has no payload capacity.")
 
-# Input section
-temperature = st.number_input("Temperature (°C)", -10, 45, 25, key=f"temp_input_{model}")
-speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key=f"speed_slider_{model}")
-speed = st.number_input("Flight Speed (km/h)", 10, 150, speed_slider, key=f"speed_input_{model}")
-wind_slider = st.slider("Wind Speed (km/h)", 0, 100, 10, key=f"wind_slider_{model}")
-wind_speed = st.number_input("Wind Speed (km/h)", 0, 100, wind_slider, key=f"wind_input_{model}")
+speed = st.slider("Flight Speed (km/h)", 10, 150, 40)
+altitude = st.slider("Target Altitude (m)", 0, 3000, 200)
+temperature = st.slider("Temperature (Â°C)", -10, 45, 25)
 
-# Mission Profile
+# Multi-phase flight profile
 st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
-climb_time = st.slider("Climb Time (min)", 0, 30, 3, key=f"climb_slider_{model}")
-cruise_time = st.slider("Cruise Time (min)", 0, 60, 10, key=f"cruise_slider_{model}")
-descent_time = st.slider("Descent Time (min)", 0, 30, 2, key=f"descend_slider_{model}")
+climb_time = st.slider("Climb Time (min)", 0, 30, 2)
+cruise_time = st.slider("Cruise Time (min)", 0, 60, 8)
+descent_time = st.slider("Descent Time (min)", 0, 30, 2)
+total_mission_time = climb_time + cruise_time + descent_time
 
-# Estimate Button
-if st.button("🔋 Estimate", key=f"estimate_button_{model}"):
-    total_time_min = climb_time + cruise_time + descent_time
-    wind_factor = 1 + (wind_speed / 100) * 0.1
-    air_density_factor = 1 - ((temperature - 15) * 0.01)
 
-    if profile["power_system"] == "Hybrid":
-        hybrid_modifier = 1.2 if speed > 60 else 1.0
+# Estimate button
+submitted = st.button("âï¸ Estimate")
+if submitted:
+    total_weight_kg = base_weight_kg + payload / 1000
+
+    # Refined air density based on simplified ISA model
+    air_density = max(0.5, 1.225 * (1 - 0.0000225577 * altitude) ** 5.25588)
+
+    efficiency_factor = 1 + (payload / max(1, profile["max_payload_g"])) * 0.3
+    speed_factor = 1 + 0.01 * (speed - 30) if speed > 30 else 1
+
+    # Temperature adjustment
+    adjusted_battery_wh = battery_wh
+    if temperature < 15:
+        adjusted_battery_wh *= 0.9
+        st.warning("Cold temperatures reduce battery efficiency.")
+    elif temperature > 35:
+        adjusted_battery_wh *= 0.95
+        st.warning("High temperatures degrade battery performance.")
+
+    # Climb energy cost (mgh in joules -> wh)
+    g = 9.81
+    climb_energy_j = total_weight_kg * g * altitude
+    climb_energy_wh = climb_energy_j / 3600
+
+    # Descent recovery (10% of climb energy if descending)
+    descent_recovery = 0
+    if altitude > 100:
+        descent_recovery = climb_energy_wh * 0.1
+
+    net_energy_available = adjusted_battery_wh - climb_energy_wh + descent_recovery
+
+    
+    # Wind impact: assume linear +/-10% effect
+    if wind_speed >= 0:
+        wind_factor = 1 + (wind_speed / 100) * 0.1  # headwind increases draw
     else:
-        hybrid_modifier = 1.0
+        wind_factor = 1 - (abs(wind_speed) / 100) * 0.1  # tailwind reduces draw
 
-    base_draw = profile["base_draw_w"] * hybrid_modifier * air_density_factor * wind_factor
-    climb_draw = base_draw * 1.5
-    cruise_draw = base_draw * 1.0
-    descent_draw = base_draw * 0.6
+# Phase-based power modifier
+    phase_modifier = 1.0
+    if phase == "Climb":
+        phase_modifier = 1.15
+    elif phase == "Cruise":
+        phase_modifier = 1.0
+    elif phase == "Descent":
+        phase_modifier = 0.85
+draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * phase_modifier * wind_factor * efficiency_factor * speed_factor / air_density
+    draw_scaled = min(max(draw_scaled, 10), 5000)
 
-    climb_energy = climb_draw * climb_time
-    cruise_energy = cruise_draw * cruise_time
-    descent_energy = descent_draw * descent_time
+    # Phase modifiers
+    def compute_phase_energy(modifier, time_min):
+        return (draw_watt_base * (total_weight_kg / base_weight_kg) * modifier * wind_factor * hybrid_modifier) * (time_min / 60)
 
-    payload_penalty = 1 + (payload / 1000) * 0.1
-    total_energy = (climb_energy + cruise_energy + descent_energy) * payload_penalty
+    climb_modifier = 1.15
+    cruise_modifier = 1.0
+    descent_modifier = 0.85
 
-    battery_wh = profile["battery_wh"]
-    estimated_time = (battery_wh * 60) / total_energy if total_energy else 0
+    climb_energy = compute_phase_energy(climb_modifier, climb_time)
+    cruise_energy = compute_phase_energy(cruise_modifier, cruise_time)
+    descent_energy = compute_phase_energy(descent_modifier, descent_time)
 
-    st.success(f"Estimated flight time: {estimated_time:.1f} minutes")
+    total_energy_wh = climb_energy + cruise_energy + descent_energy
+    flight_time_min = total_mission_time
+    distance_km = (speed * total_mission_time) / 60
+    net_energy_available = adjusted_battery_wh
+    if total_energy_wh > net_energy_available:
+        st.error('Insufficient battery for this mission profile!')
+    distance_km = (flight_time_min / 60) * speed
 
-    if estimated_time < 5:
-        st.warning("Warning: Very short estimated time. Consider reducing payload or increasing battery capacity.")
+    st.markdown("<h4 style='color:#4169E1;'>Estimated Results</h4>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+    st.metric("Flight Time", f"{flight_time_min:.1f} min")
+    st.metric("Max Distance", f"{distance_km:.2f} km")
+    st.metric("Power Draw", f"{draw_scaled:.0f} W")
 
-# Footer
-st.markdown("<br><hr>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center;color:#4169E1;'>Built by Tareq Omrani © UAV Battery Efficiency Estimator 2025</div>", unsafe_allow_html=True)
-o
+    # AI Warnings
+    if payload > profile["max_payload_g"] * 0.85:
+        st.warning("Payload exceeds 85% of max capacity â flight efficiency drops sharply.")
+    if flight_time_min < 5:
+        st.error("Critical: Estimated flight time is very low. Consider reducing payload or altitude.")
+
+    # Battery Simulator
+    st.markdown("<h4 style='color:#4169E1;'>Battery Simulator</h4>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+    time_step = 10
+    total_steps = max(1, int(flight_time_min * 60 / time_step))
+    battery_per_step = (draw_scaled * time_step) / 3600
+    progress = st.progress(0)
+    gauge = st.empty()
+    timer = st.empty()
+
+    battery_data = []
+
+    for step in range(total_steps + 1):
+        time_elapsed = step * time_step
+        battery_remaining = net_energy_available - (step * battery_per_step)
+        battery_pct = max(0, (battery_remaining / battery_wh) * 100)
+        time_remaining = max(0, (flight_time_min * 60) - time_elapsed)
+        bars = int(battery_pct // 10)
+
+        gauge.markdown(f"<span style='color:#00FF00;'>Battery Gauge: [{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+        timer.markdown(f"<span style='color:#00FF00;'>Elapsed: {time_elapsed} secâRemaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+        progress.progress(min(step / total_steps, 1.0))
+        battery_data.append((time_elapsed, battery_pct))
+        time.sleep(0.05)
+
+    df_battery = pd.DataFrame(battery_data, columns=["Time (s)", "Battery %"])
+    st.markdown("<h4 style='color:#4169E1;'>Battery Usage Over Time</h4>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+    fig, ax = plt.subplots()
+    ax.plot(df_battery["Time (s)"], df_battery["Battery %"])
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Battery %")
+    ax.set_title("Battery Drain Simulation")
+    st.pyplot(fig)
+
+st.markdown("<span style='color:#4169E1;'>GPT-UAV Planner | 2025 â Enhanced AI-Aware Simulation Mode<br><br>Built by Tareq Omrani</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
+
