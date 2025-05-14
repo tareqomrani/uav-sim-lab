@@ -53,35 +53,39 @@ draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * efficiency_f
 # Display Results
 st.markdown("<h4 style='color:#00FF00;'>Estimated Results</h4>", unsafe_allow_html=True)
 st.markdown("<span style='color:#4169E1;'>Flight Time</span>", unsafe_allow_html=True)
+
+submitted = st.button('✈️ Estimate')
+if submitted:
 flight_time_min = (battery_wh / draw_scaled) * 60
-st.metric("Flight Time", f"{flight_time_min:.1f} min")
-
-st.markdown("<span style='color:#4169E1;'>Max Distance</span>", unsafe_allow_html=True)
-distance_km = (flight_time_min / 60) * speed
-st.metric("Max Distance", f"{distance_km:.2f} km")
-
-st.markdown("<span style='color:#4169E1;'>Power Draw</span>", unsafe_allow_html=True)
-st.metric("Power Draw", f"{draw_scaled:.0f} W")
-
-# Battery gauge
-st.markdown("<h4 style='color:#00FF00;'>Battery Simulator</h4>", unsafe_allow_html=True)
-time_step = 10
-total_steps = max(1, int(flight_time_min * 60 / time_step))
-battery_per_step = (draw_scaled * time_step) / 3600
-progress = st.progress(0)
-gauge = st.empty()
-timer = st.empty()
-
-for step in range(total_steps + 1):
-    time_elapsed = step * time_step
-    battery_remaining = battery_wh - (step * battery_per_step)
-    battery_pct = max(0, (battery_remaining / battery_wh) * 100)
-    time_remaining = max(0, (flight_time_min * 60) - time_elapsed)
-    bars = int(battery_pct // 10)
-
-    gauge.markdown(f"<span style='color:#00FF00;'>Battery Gauge: [{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%</span>", unsafe_allow_html=True)
-    timer.markdown(f"<span style='color:#00FF00;'>Elapsed: {time_elapsed} sec Remaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
-    progress.progress(min(step / total_steps, 1.0))
-    time.sleep(0.01)
-
-st.markdown("<span style='color:#00FF00;'>GPT-UAV Planner | 2025 — Full digital green UI mode<br><br>Built by Tareq Omrani</span>", unsafe_allow_html=True)
+    st.metric("Flight Time", f"{flight_time_min:.1f} min")
+    
+    st.markdown("<span style='color:#4169E1;'>Max Distance</span>", unsafe_allow_html=True)
+    distance_km = (flight_time_min / 60) * speed
+    st.metric("Max Distance", f"{distance_km:.2f} km")
+    
+    st.markdown("<span style='color:#4169E1;'>Power Draw</span>", unsafe_allow_html=True)
+    st.metric("Power Draw", f"{draw_scaled:.0f} W")
+    
+    # Battery gauge
+    st.markdown("<h4 style='color:#00FF00;'>Battery Simulator</h4>", unsafe_allow_html=True)
+    time_step = 10
+    total_steps = max(1, int(flight_time_min * 60 / time_step))
+    battery_per_step = (draw_scaled * time_step) / 3600
+    progress = st.progress(0)
+    gauge = st.empty()
+    timer = st.empty()
+    
+    for step in range(total_steps + 1):
+        time_elapsed = step * time_step
+        battery_remaining = battery_wh - (step * battery_per_step)
+        battery_pct = max(0, (battery_remaining / battery_wh) * 100)
+        time_remaining = max(0, (flight_time_min * 60) - time_elapsed)
+        bars = int(battery_pct // 10)
+    
+        gauge.markdown(f"<span style='color:#00FF00;'>Battery Gauge: [{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%</span>", unsafe_allow_html=True)
+        timer.markdown(f"<span style='color:#00FF00;'>Elapsed: {time_elapsed} sec Remaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
+        progress.progress(min(step / total_steps, 1.0))
+        time.sleep(0.01)
+    
+    st.markdown("<span style='color:#00FF00;'>GPT-UAV Planner | 2025 — Full digital green UI mode<br><br>Built by Tareq Omrani</span>", unsafe_allow_html=True)
+    
