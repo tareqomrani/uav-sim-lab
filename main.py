@@ -163,10 +163,15 @@ if run:
         status = st.empty()
         prog = st.progress(0)
 
+        gauge = st.empty()
+        timer = st.empty()
         for step in range(steps + 1):
             elapsed = step * step_sec
             batt_left = adjusted_batt - step * draw_per_step
             pct = max(0, (batt_left / adjusted_batt) * 100)
+            bars = int(pct // 10)
+            gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {pct:.0f}%`")
+            timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int((flight_min * 60) - elapsed)} sec")
             timepoints.append(elapsed)
             battpoints.append(max(batt_left, 0))
             status.markdown(f"**Battery Remaining:** {batt_left:.2f} Wh | **Draw:** {draw:.0f} W")
@@ -184,3 +189,4 @@ if run:
         st.error("Simulation error.")
         if debug_mode:
             st.exception(e)
+
