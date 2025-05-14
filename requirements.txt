@@ -1,1 +1,0 @@
-streamlit>=1.25.0\nmatplotlib>=3.7.0
