@@ -34,7 +34,7 @@ st.markdown("""
 
 st.markdown("""
 <div style='text-align:center; padding:10px;'>
-<img src='https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/MQ-9_Reaper_UAV_2.jpg/640px-MQ-9_Reaper_UAV_2.jpg' alt='Drone Banner' width='90%' style='border-radius:10px;'>
+    <img src="https://cdn.pixabay.com/photo/2017/05/28/23/03/drone-2358757_1280.jpg" alt="Drone Banner" style="width:80%; border-radius:10px;">
 </div>
 """, unsafe_allow_html=True)
 
@@ -66,7 +66,7 @@ st.markdown("**AI Capabilities:** " + (", ".join([f"`{cap}`" for cap in ai_capab
 
 st.markdown("<span style='color:#4169E1;'>Base weight: {} kg</span>".format(base_weight_kg), unsafe_allow_html=True)
 if profile["max_payload_g"] > 0:
-    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
+    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key="payload_slider")
     payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider)
 else:
     st.markdown("<span style='color:#FFA500;'>Note: This model does not support payloads.</span>", unsafe_allow_html=True)
@@ -75,7 +75,7 @@ st.markdown("<span style='color:#4169E1;'>Power System: {}</span>".format(power_
 st.markdown("<span style='color:#4169E1;'>Base draw: {} W</span>".format(draw_watt_base), unsafe_allow_html=True)
 
 if profile["max_payload_g"] > 0:
-    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
+    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key="payload_slider")
     payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider)
 else:
     st.markdown("<span style='color:#FFA500;'>Note: This model does not support payloads.</span>", unsafe_allow_html=True)
@@ -84,18 +84,18 @@ speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key='flight_speed_k
 speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_5')
 altitude_slider = st.slider("Target Altitude (m)", 0, 3000, 200, key='target_altitude_m_2')
 altitude = st.number_input("Target Altitude (m)", min_value=0, max_value=3000, value=altitude_slider, key='target_altitude_m_3')
-temperature_slider = st.slider("Temperature (°C)", -10, 45, 25, key='temperature_°c_2')
-temperature = st.number_input("Temperature (°C)", min_value=-10, max_value=45, value=temperature_slider, key='temperature_°c_3')
+temperature_slider = st.slider("Temperature (Â°C)", -10, 45, 25, key='temperature_Â°c_2')
+temperature = st.number_input("Temperature (Â°C)", min_value=-10, max_value=45, value=temperature_slider, key='temperature_Â°c_3')
 speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key='flight_speed_km/h_6')
 speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_7')
 
 st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
 
-submitted = st.button("✈️ Estimate")
+submitted = st.button("âï¸ Estimate")
 
 if submitted:
     if profile["max_payload_g"] > 0 and payload > profile["max_payload_g"] * 0.85:
-        st.warning("Payload exceeds 85% of max capacity — flight efficiency drops sharply.")
+        st.warning("Payload exceeds 85% of max capacity â flight efficiency drops sharply.")
     total_weight_kg = base_weight_kg + payload / 1000
 
     # Wind logic
@@ -105,4 +105,4 @@ if submitted:
 if speed > 50 and speed <= 100:
     st.write("Cruise speed active.")
 
-st.markdown("<div style='text-align:center; padding-top:20px; color:#4169E1;'>Built by Tareq Omrani — UAV Battery Efficiency Estimator 2025</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center; padding-top:20px; color:#4169E1;'>Built by Tareq Omrani â UAV Battery Efficiency Estimator 2025</div>", unsafe_allow_html=True)
