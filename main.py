@@ -1,9 +1,18 @@
 
 import streamlit as st
-import matplotlib.pyplot as plt
 import time
+import matplotlib.pyplot as plt
 
-# UAV Profiles
+
+<style>
+.green { color: #00FF00; font-weight: bold; }
+.red { color: #FF3333; font-weight: bold; }
+.blue { color: #4169E1; font-weight: bold; }
+</style>
+
+st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
+st.title('UAV Battery Efficiency Estimator')
+
 UAV_PROFILES = {
     "Generic Quad": {
         "max_payload_g": 800,
@@ -11,14 +20,6 @@ UAV_PROFILES = {
         "power_system": "Battery",
         "draw_watt": 150,
         "battery_wh": 60,
-        "crash_risk": False
-    },
-    "DJI Phantom": {
-        "max_payload_g": 500,
-        "base_weight_kg": 1.4,
-        "power_system": "Battery",
-        "draw_watt": 120,
-        "battery_wh": 68,
         "crash_risk": False
     },
     "RQ-11 Raven": {
@@ -29,22 +30,6 @@ UAV_PROFILES = {
         "battery_wh": 50,
         "crash_risk": False
     },
-    "RQ-20 Puma": {
-        "max_payload_g": 600,
-        "base_weight_kg": 6.3,
-        "power_system": "Battery",
-        "draw_watt": 180,
-        "battery_wh": 275,
-        "crash_risk": False
-    },
-    "MQ-1 Predator": {
-        "max_payload_g": 204000,
-        "base_weight_kg": 512,
-        "power_system": "Hybrid",
-        "draw_watt": 650,
-        "battery_wh": 150,
-        "crash_risk": True
-    },
     "MQ-9 Reaper": {
         "max_payload_g": 1700000,
         "base_weight_kg": 2223,
@@ -52,141 +37,131 @@ UAV_PROFILES = {
         "draw_watt": 800,
         "battery_wh": 200,
         "crash_risk": True
-    },
-    "Skydio 2+": {
-        "max_payload_g": 150,
-        "base_weight_kg": 0.8,
-        "power_system": "Battery",
-        "draw_watt": 90,
-        "battery_wh": 45,
-        "crash_risk": False
-    },
-    "Freefly Alta 8": {
-        "max_payload_g": 9000,
-        "base_weight_kg": 6.2,
-        "power_system": "Battery",
-        "draw_watt": 400,
-        "battery_wh": 710,
-        "crash_risk": False
-    },
-    "Teal Golden Eagle": {
-        "max_payload_g": 2000,
-        "base_weight_kg": 2.2,
-        "power_system": "Hybrid",
-        "draw_watt": 220,
-        "battery_wh": 100,
-        "crash_risk": True
-    },
-    "Quantum Systems Vector": {
-        "max_payload_g": 1500,
-        "base_weight_kg": 2.3,
-        "power_system": "Battery",
-        "draw_watt": 160,
-        "battery_wh": 150,
-        "crash_risk": False
     }
 }
 
-# UI Setup
-st.set_page_config(page_title="UAV Estimator", layout="centered")
-st.markdown("<h1 style='color:#39FF14;'>UAV Battery & Hybrid Simulation</h1>", unsafe_allow_html=True)
-
-debug_mode = st.checkbox("Enable Debug Mode")
-drone_model = st.selectbox("Choose UAV", list(UAV_PROFILES.keys()))
-profile = UAV_PROFILES[drone_model]
+debug = st.checkbox("Enable Debug Mode")
+model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
+profile = UAV_PROFILES[model]
 
 max_payload = profile["max_payload_g"]
-default_payload = max_payload // 2 if max_payload > 0 else 0
-payload = st.slider("Payload (g)", 0, max_payload if max_payload > 0 else 1, default_payload)
+base_weight = profile["base_weight_kg"]
+power_system = profile["power_system"]
+st.caption(f"Base weight: {base_weight:.2f} kg — Max payload: {max_payload} g")
+st.markdown(f"<span class='blue'>Power system: {power_system}</span>", unsafe_allow_html=True)
 
-base_weight_kg = profile["base_weight_kg"]
-st.caption(f"Base weight: {base_weight_kg:.2f} kg — Max payload: {max_payload} g")
+default_batt = profile["battery_wh"]
 
-# Add full parameter inputs
-with st.form("mission_form"):
-    battery_wh = st.number_input("Battery Capacity (Wh)", 1.0, 2000.0, float(profile["battery_wh"]))
-    speed = st.number_input("Flight Speed (km/h)", 0.0, 200.0, 30.0)
-    wind = st.number_input("Wind Speed (km/h)", 0.0, 100.0, 10.0)
-    temp = st.number_input("Temperature (°C)", -20.0, 60.0, 25.0)
-    alt = st.number_input("Altitude (m)", 0, 5000, 0)
-    gain = st.number_input("Elevation Gain (m)", -1000, 1000, 0)
-    mode = st.selectbox("Flight Mode", ["Hover", "Forward", "Waypoint"])
-    sim_fail = st.checkbox("Enable Failure Sim")
-    run = st.form_submit_button("Estimate")
+with st.form("flight_form"):
+    st.subheader("Flight Parameters")
+    batt = st.number_input("Battery Capacity (Wh)", 1.0, 2000.0, value=float(default_batt))
+    payload = st.number_input("Payload (g)", 0, value=int(max_payload * 0.5))
+    speed = st.number_input("Speed (km/h)", 0.0, value=30.0)
+    wind = st.number_input("Wind Speed (km/h)", 0.0, value=10.0)
+    temp = st.number_input("Temperature (°C)", value=25.0)
+    alt = st.number_input("Flight Altitude (m)", 0, 5000, value=0)
+    gain = st.number_input("Elevation Gain (m)", -1000, 1000, value=0)
+    flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
+    submit = st.form_submit_button("Estimate")
 
-if run:
+if submit:
     try:
         if payload > max_payload:
-            st.error("Payload exceeds max lift.")
+            st.error("Payload exceeds lift capacity.")
             st.stop()
 
-        weight = base_weight_kg + (payload / 1000)
-        adjusted_batt = battery_wh * (0.9 if temp < 15 else 0.95 if temp > 35 else 1.0)
-        air_density = max(0.6, 1.0 - 0.01 * (alt / 100))
+        weight = base_weight + (payload / 1000)
 
-        base_draw = profile["draw_watt"]
-        if profile["power_system"] == "Hybrid":
-            draw = base_draw + 0.04 * (speed ** 2) + 30
-        else:
-            if mode == "Hover":
-                draw = base_draw * 1.1
-            elif mode == "Waypoint":
-                draw = base_draw * 1.15 + 0.02 * (speed ** 2)
+        # Battery temp effect
+        if temp < 15:
+            batt *= 0.9
+        elif temp > 35:
+            batt *= 0.95
+
+        air_density = max(0.6, 1.0 - 0.01 * (alt / 100))
+        st.markdown(f"<span class='green'>Air density factor at {alt} m: {air_density:.2f}</span>", unsafe_allow_html=True)
+
+        hover_power = 170 * (weight ** 1.5) / air_density
+
+        draw = profile["draw_watt"]
+        if power_system == "Battery":
+            if flight_mode == "Hover":
+                draw = draw * 1.1
+            elif flight_mode == "Waypoint Mission":
+                draw = draw * 1.15 + 0.02 * (speed ** 2)
             else:
-                draw = base_draw + 0.02 * (speed ** 2)
+                draw = draw + 0.02 * (speed ** 2)
 
         if gain > 0:
             climb_j = weight * 9.81 * gain
             climb_wh = climb_j / 3600
-            adjusted_batt -= climb_wh
-            st.markdown(f"**Climb Cost:** `{climb_wh:.2f} Wh`")
+            batt -= climb_wh
+            st.markdown(f"<span class='red'>Climb Cost: {climb_wh:.2f} Wh</span>", unsafe_allow_html=True)
+            if batt <= 0:
+                st.error("Climb energy exceeds battery capacity.")
+                st.stop()
         elif gain < 0:
             descent_j = weight * 9.81 * abs(gain)
             recovered = (descent_j / 3600) * 0.2
-            adjusted_batt += recovered
-            st.markdown(f"**Descent Recovery:** `+{recovered:.2f} Wh`")
+            batt += recovered
+            st.markdown(f"<span class='green'>Descent Recovery: +{recovered:.2f} Wh</span>", unsafe_allow_html=True)
 
         wind_drag = 1 + (wind / 100)
         draw *= wind_drag
-        flight_min = (adjusted_batt / draw) * 60
-        st.metric("Flight Time", f"{flight_min:.1f} min")
 
-        if mode != "Hover":
-            st.metric("Est. Distance", f"{(flight_min / 60) * speed:.2f} km")
+        flight_min = (batt / draw) * 60
+        st.metric("Estimated Flight Time", f"{flight_min:.1f} minutes")
+        if flight_mode != "Hover":
+            st.metric("Estimated Max Distance", f"{(flight_min / 60) * speed:.2f} km")
 
-        st.subheader("Simulation")
+        st.subheader("AI Suggestions (Simulated GPT)")
+        if payload == max_payload:
+            st.write("**Tip:** Payload is at max capacity. Expect strain.")
+        if wind > 15:
+            st.write("**Tip:** High wind may reduce flight time.")
+        if batt < 30:
+            st.write("**Tip:** Consider a higher capacity battery.")
+        if flight_mode in ["Hover", "Waypoint Mission"]:
+            st.write("**Tip:** This mode increases power consumption.")
+
+        st.subheader("Live Simulation")
         step_sec = 10
         steps = max(1, int(flight_min * 60 / step_sec))
         draw_per_step = (draw * step_sec) / 3600
-        timepoints = []
-        battpoints = []
-        status = st.empty()
         prog = st.progress(0)
-
+        status = st.empty()
         gauge = st.empty()
         timer = st.empty()
+        timepoints, battpoints = [], []
+
         for step in range(steps + 1):
             elapsed = step * step_sec
-            batt_left = adjusted_batt - step * draw_per_step
-            pct = max(0, (batt_left / adjusted_batt) * 100)
+            batt_left = batt - (step * draw_per_step)
+            pct = max(0, (batt_left / batt) * 100)
             bars = int(pct // 10)
             gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {pct:.0f}%`")
             timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int((flight_min * 60) - elapsed)} sec")
+            status.markdown(f"**Battery Remaining:** {batt_left:.2f} Wh  
+**Power Draw:** {draw:.0f} W")
+            prog.progress(min(step / steps, 1.0))
             timepoints.append(elapsed)
             battpoints.append(max(batt_left, 0))
-            status.markdown(f"**Battery Remaining:** {batt_left:.2f} Wh | **Draw:** {draw:.0f} W")
-            prog.progress(min(step / steps, 1.0))
             time.sleep(0.02)
 
+        st.success("Simulation complete.")
+
+        st.subheader("Battery Usage Graph")
         fig, ax = plt.subplots()
         ax.plot(timepoints, battpoints)
-        ax.set_title("Battery Use Over Time")
-        ax.set_xlabel("Time (s)")
+        ax.set_xlabel("Time (sec)")
         ax.set_ylabel("Battery (Wh)")
+        ax.set_title("Battery Discharge Over Time")
         st.pyplot(fig)
 
     except Exception as e:
-        st.error("Simulation error.")
-        if debug_mode:
+        st.error("Unexpected error during simulation.")
+        if debug:
             st.exception(e)
+
+st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
