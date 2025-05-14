@@ -3,7 +3,7 @@ import streamlit as st
 import time
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
-st.markdown("<h1 style='color:#4169E1;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 st.markdown("<span style='color:#00FF00;'>Fully updated with industry-based draw logic, digital green UI, and live simulation.</span>", unsafe_allow_html=True)
 
 UAV_PROFILES = {
@@ -38,6 +38,7 @@ speed = st.slider("Flight Speed (km/h)", 10, 150, 40)
 wind = st.slider("Wind Speed (km/h)", 0, 50, 10)
 altitude = st.slider("Flight Altitude (m)", 0, 3000, 200)
 temperature_c = st.slider("Temperature (°C)", -20, 60, 25)
+
 flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward", "Cruise"])
 
 if temperature_c < 15:
@@ -67,7 +68,6 @@ st.metric("Flight Time", f"{flight_time_min:.1f} min")
 st.metric("Max Distance", f"{distance_km:.2f} km")
 st.metric("Power Draw", f"{draw_scaled:.0f} W")
 
-# Battery simulation with gauge
 st.markdown("<h4 style='color:#00FF00;'>Battery Simulator</h4>", unsafe_allow_html=True)
 time_step = 10
 total_steps = max(1, int(flight_time_min * 60 / time_step))
