@@ -4,7 +4,7 @@ import time
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
 st.title("UAV Battery Efficiency Estimator")
-st.caption("Industry-based draw, temperature effects, adjustable battery, and crash risk for hybrids.")
+st.caption("Realistic scaling, wind drag, crash logic, and digital UI enhancements.")
 
 UAV_PROFILES = {
     "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "draw_watt_base": 170, "battery_wh": 60, "power_system": "Battery"},
@@ -27,15 +27,19 @@ default_battery_wh = profile["battery_wh"]
 power_system = profile["power_system"]
 
 st.caption(f"Base weight: {base_weight_kg} kg")
-st.caption(f"Power system: **{power_system}**")
+st.markdown(f"<span style='color:#00FF00;font-weight:bold;'>Power System: {power_system}</span>", unsafe_allow_html=True)
 st.caption(f"Base draw: {draw_watt_base} W")
 
 battery_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, max_value=2000.0, value=float(default_battery_wh), step=1.0)
 
-payload = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
-speed = st.slider("Flight Speed (km/h)", 10, 150, 40)
-altitude = st.slider("Flight Altitude (m)", 0, 3000, 200)
-temperature_c = st.slider("Temperature (°C)", -20, 60, 25)
+with st.container():
+    st.markdown("<h5 style='color:#3399FF;'>Payload, Speed & Altitude</h5>", unsafe_allow_html=True)
+    payload = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
+    speed = st.slider("Flight Speed (km/h)", 10, 150, 40)
+    wind = st.slider("Wind Speed (km/h)", 0, 50, 10)
+    altitude = st.slider("Flight Altitude (m)", 0, 3000, 200)
+    temperature_c = st.slider("Temperature (°C)", -20, 60, 25)
+
 flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward", "Cruise"])
 
 # Apply temperature effect
@@ -56,7 +60,9 @@ if power_system == "Hybrid":
 air_density = max(0.6, 1.0 - 0.01 * (altitude / 100))
 efficiency_factor = 1 + (payload / (profile["max_payload_g"] + 1e-6)) * 0.3
 speed_factor = 1 + 0.01 * (speed - 30) if speed > 30 else 1
-draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * efficiency_factor * speed_factor / air_density
+wind_penalty = 1 + 0.004 * wind
+
+draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * efficiency_factor * speed_factor * wind_penalty / air_density
 
 st.subheader("Estimated Results")
 flight_time_min = (battery_wh / draw_scaled) * 60
@@ -66,4 +72,26 @@ st.metric("Flight Time", f"{flight_time_min:.1f} min")
 st.metric("Max Distance", f"{distance_km:.2f} km")
 st.metric("Power Draw", f"{draw_scaled:.0f} W")
 
-st.caption("GPT-UAV Planner | 2025 — Includes draw scaling, crash risk, and temperature simulation.")
+# Battery simulator
+st.subheader("Battery Simulator")
+time_step = 10
+total_steps = max(1, int(flight_time_min * 60 / time_step))
+battery_per_step = (draw_scaled * time_step) / 3600
+progress = st.progress(0)
+gauge = st.empty()
+timer = st.empty()
+
+for step in range(total_steps + 1):
+    time_elapsed = step * time_step
+    battery_remaining = battery_wh - (step * battery_per_step)
+    battery_pct = max(0, (battery_remaining / battery_wh) * 100)
+    time_remaining = max(0, (flight_time_min * 60) - time_elapsed)
+    bars = int(battery_pct // 10)
+    gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
+    timer.markdown(f"**Elapsed:** {time_elapsed} sec **Remaining:** {int(time_remaining)} sec")
+    progress.progress(min(step / total_steps, 1.0))
+    time.sleep(0.05)
+
+st.success("Simulation complete.")
+st.caption("GPT-UAV Planner | 2025 — Enhanced UI with blue sliders and live gauge.")
+
