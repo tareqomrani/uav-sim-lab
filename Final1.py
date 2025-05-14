@@ -6,9 +6,11 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
 
-# UI Title
-st.markdown("<h1 style='color:#4169E1;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+# UI Title (with wind and color updates)
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 st.markdown("<span style='color:#00FF00;'>Includes climb/descent logic, air density adjustments, and onboard AI capabilities.</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 
 UAV_PROFILES = {
     "Generic Quad": {
@@ -69,11 +71,15 @@ else:
     st.markdown("**AI Capabilities:** `None`")
 
 st.markdown(f"<span style='color:#00FF00;'>Base weight: {base_weight_kg} kg</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 st.markdown(f"<span style='color:#00FF00;'>Power System: {power_system}</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 st.markdown(f"<span style='color:#00FF00;'>Base draw: {draw_watt_base} W</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 
 # UI Sliders
-st.markdown("<h5 style='color:#4169E1;'>Flight Parameters</h5>", unsafe_allow_html=True)
+st.markdown("<h5 style='color:#00FF00;'>Flight Parameters</h5>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 if profile["max_payload_g"] > 0:
     payload = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
 else:
@@ -83,6 +89,14 @@ else:
 speed = st.slider("Flight Speed (km/h)", 10, 150, 40)
 altitude = st.slider("Target Altitude (m)", 0, 3000, 200)
 temperature = st.slider("Temperature (°C)", -10, 45, 25)
+
+# Multi-phase flight profile
+st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
+climb_time = st.slider("Climb Time (min)", 0, 30, 2)
+cruise_time = st.slider("Cruise Time (min)", 0, 60, 8)
+descent_time = st.slider("Descent Time (min)", 0, 30, 2)
+total_mission_time = climb_time + cruise_time + descent_time
+
 
 # Estimate button
 submitted = st.button("✈️ Estimate")
@@ -116,13 +130,46 @@ if submitted:
 
     net_energy_available = adjusted_battery_wh - climb_energy_wh + descent_recovery
 
-    draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * efficiency_factor * speed_factor / air_density
+    
+    # Wind impact: assume linear +/-10% effect
+    if wind_speed >= 0:
+        wind_factor = 1 + (wind_speed / 100) * 0.1  # headwind increases draw
+    else:
+        wind_factor = 1 - (abs(wind_speed) / 100) * 0.1  # tailwind reduces draw
+
+# Phase-based power modifier
+    phase_modifier = 1.0
+    if phase == "Climb":
+        phase_modifier = 1.15
+    elif phase == "Cruise":
+        phase_modifier = 1.0
+    elif phase == "Descent":
+        phase_modifier = 0.85
+draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * phase_modifier * wind_factor * efficiency_factor * speed_factor / air_density
     draw_scaled = min(max(draw_scaled, 10), 5000)
 
-    flight_time_min = (net_energy_available / draw_scaled) * 60
+    # Phase modifiers
+    def compute_phase_energy(modifier, time_min):
+        return (draw_watt_base * (total_weight_kg / base_weight_kg) * modifier * wind_factor * hybrid_modifier) * (time_min / 60)
+
+    climb_modifier = 1.15
+    cruise_modifier = 1.0
+    descent_modifier = 0.85
+
+    climb_energy = compute_phase_energy(climb_modifier, climb_time)
+    cruise_energy = compute_phase_energy(cruise_modifier, cruise_time)
+    descent_energy = compute_phase_energy(descent_modifier, descent_time)
+
+    total_energy_wh = climb_energy + cruise_energy + descent_energy
+    flight_time_min = total_mission_time
+    distance_km = (speed * total_mission_time) / 60
+    net_energy_available = adjusted_battery_wh
+    if total_energy_wh > net_energy_available:
+        st.error('Insufficient battery for this mission profile!')
     distance_km = (flight_time_min / 60) * speed
 
-    st.markdown("<h4 style='color:#00FF00;'>Estimated Results</h4>", unsafe_allow_html=True)
+    st.markdown("<h4 style='color:#4169E1;'>Estimated Results</h4>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
     st.metric("Flight Time", f"{flight_time_min:.1f} min")
     st.metric("Max Distance", f"{distance_km:.2f} km")
     st.metric("Power Draw", f"{draw_scaled:.0f} W")
@@ -134,7 +181,8 @@ if submitted:
         st.error("Critical: Estimated flight time is very low. Consider reducing payload or altitude.")
 
     # Battery Simulator
-    st.markdown("<h4 style='color:#00FF00;'>Battery Simulator</h4>", unsafe_allow_html=True)
+    st.markdown("<h4 style='color:#4169E1;'>Battery Simulator</h4>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
     time_step = 10
     total_steps = max(1, int(flight_time_min * 60 / time_step))
     battery_per_step = (draw_scaled * time_step) / 3600
@@ -152,13 +200,16 @@ if submitted:
         bars = int(battery_pct // 10)
 
         gauge.markdown(f"<span style='color:#00FF00;'>Battery Gauge: [{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
         timer.markdown(f"<span style='color:#00FF00;'>Elapsed: {time_elapsed} sec Remaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
         progress.progress(min(step / total_steps, 1.0))
         battery_data.append((time_elapsed, battery_pct))
         time.sleep(0.05)
 
     df_battery = pd.DataFrame(battery_data, columns=["Time (s)", "Battery %"])
-    st.markdown("<h4 style='color:#00FF00;'>Battery Usage Over Time</h4>", unsafe_allow_html=True)
+    st.markdown("<h4 style='color:#4169E1;'>Battery Usage Over Time</h4>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
     fig, ax = plt.subplots()
     ax.plot(df_battery["Time (s)"], df_battery["Battery %"])
     ax.set_xlabel("Time (s)")
@@ -166,5 +217,16 @@ if submitted:
     ax.set_title("Battery Drain Simulation")
     st.pyplot(fig)
 
-st.markdown("<span style='color:#00FF00;'>GPT-UAV Planner | 2025 — Enhanced AI-Aware Simulation Mode<br><br>Built by Tareq Omrani</span>", unsafe_allow_html=True)
+st.markdown("<span style='color:#4169E1;'>GPT-UAV Planner | 2025 — Enhanced AI-Aware Simulation Mode<br><br>Built by Tareq Omrani</span>", unsafe_allow_html=True)
+wind_speed = st.slider("Wind Speed (km/h)", 0, 100, 10)
 
+    # Phase Energy Breakdown Chart
+    st.markdown("<h4 style='color:#4169E1;'>Phase Energy Usage</h4>", unsafe_allow_html=True)
+    phase_labels = ['Climb', 'Cruise', 'Descent']
+    energy_values = [climb_energy, cruise_energy, descent_energy]
+
+    fig2, ax2 = plt.subplots()
+    ax2.bar(phase_labels, energy_values)
+    ax2.set_ylabel("Energy (Wh)")
+    ax2.set_title("Energy Used Per Flight Phase")
+    st.pyplot(fig2)
