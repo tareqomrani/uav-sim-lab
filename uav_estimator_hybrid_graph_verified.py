@@ -86,7 +86,10 @@ def simulate_battery_drain(flight_time_min, total_draw, battery_wh, enable_anima
         draw_profile.append(total_draw)
         gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
         timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int(total_secs - elapsed)} sec")
-        status.markdown(f"**Battery Remaining:** {remaining:.2f} Wh  \n**Power Draw:** {total_draw:.0f} W")
+        status.markdown(f"""
+        **Battery Remaining:** {remaining:.2f} Wh  
+        **Power Draw:** {total_draw:.0f} W
+        """)
         progress.progress(min(step / steps, 1.0))
         if enable_animation:
             time.sleep(0.05)
@@ -97,7 +100,10 @@ def simulate_battery_drain(flight_time_min, total_draw, battery_wh, enable_anima
 
         gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
         timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int(total_secs - elapsed)} sec")
-        status.markdown(f"**Battery Remaining:** {remaining:.2f} Wh  \n**Power Draw:** {total_draw:.0f} W")
+        status.markdown(f"""
+        **Battery Remaining:** {remaining:.2f} Wh  
+        **Power Draw:** {total_draw:.0f} W
+        """)
 **Power Draw:** {total_draw:.0f} W")
         progress.progress(min(step / steps, 1.0))
         if enable_animation:
@@ -338,3 +344,4 @@ st.markdown("""
 st.markdown('<p class="digital-green">DIGITAL GREEN STATUS: OK</p>', unsafe_allow_html=True)
 st.markdown('<p class="royal-blue">ROYAL BLUE NOTE: Cruise is optimal.</p>', unsafe_allow_html=True)
 st.markdown('<p class="alert-red">ALERT RED WARNING: Battery below threshold.</p>', unsafe_allow_html=True)
+
