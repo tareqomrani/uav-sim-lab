@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 
@@ -89,3 +88,4 @@ flight_time_min = (battery_wh / draw_scaled) * 60
     
     st.markdown("<span style='color:#00FF00;'>GPT-UAV Planner | 2025 — Full digital green UI mode<br><br>Built by Tareq Omrani</span>", unsafe_allow_html=True)
     
+
