@@ -88,7 +88,7 @@ def simulate_battery_drain(flight_time_min, total_draw, battery_wh, enable_anima
 
         gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
         timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int(total_secs - elapsed)} sec")
-        status.markdown(f"**Battery Remaining:** {remaining:.2f} Wh  
+            status.markdown(f"**Battery Remaining:** {remaining:.2f} Wh  \n**Power Draw:** {total_draw:.0f} W")
 **Power Draw:** {total_draw:.0f} W")
         progress.progress(min(step / steps, 1.0))
         if enable_animation:
