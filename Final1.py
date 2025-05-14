@@ -328,5 +328,4 @@ st.markdown("""
 # === Example Use ===
 st.markdown('<p class="digital-green">DIGITAL GREEN STATUS: OK</p>', unsafe_allow_html=True)
 st.markdown('<p class="royal-blue">ROYAL BLUE NOTE: Cruise is optimal.</p>', unsafe_allow_html=True)
-st.markdown('<p class="alert-red">ALERT RED WARNING: Battery below threshold.</p>', unsafe_allow_html=True)
-
+st.markdown('<p class="alert-red">
