@@ -28,7 +28,8 @@ model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[model]
 base_weight_kg = profile["base_weight_kg"]
 draw_watt_base = profile["draw_watt_base"]
-battery_wh = float(profile["battery_wh"])
+default_battery_wh = float(profile["battery_wh"])
+battery_wh = st.number_input("Battery Capacity (Wh)", min_value=10.0, max_value=2000.0, value=default_battery_wh)
 power_system = profile["power_system"]
 ai_capabilities = profile["ai_features"]
 
@@ -53,6 +54,8 @@ total_mission_time = climb_time + cruise_time + descent_time
 submitted = st.button("✈️ Estimate")
 
 if submitted:
+    if profile["max_payload_g"] > 0 and payload > profile["max_payload_g"] * 0.85:
+        st.warning("Payload exceeds 85% of max capacity — flight efficiency drops sharply.")
     total_weight_kg = base_weight_kg + payload / 1000
 
     # Wind logic
@@ -71,6 +74,8 @@ if submitted:
 
     # Temperature correction
     adjusted_battery_wh = battery_wh
+    if flight_time_min < 5:
+        st.error("Estimated flight time is very low. Consider adjusting payload or profile.")
     if temperature < 15:
         adjusted_battery_wh *= 0.9
     elif temperature > 35:
@@ -104,6 +109,32 @@ if submitted:
     st.metric("Flight Time", f"{flight_time_min:.1f} min")
     st.metric("Max Distance", f"{distance_km:.2f} km")
     st.metric("Total Energy Used", f"{total_energy_wh:.1f} Wh")
+
+    
+    # Battery Simulator
+    st.markdown("<h4 style='color:#4169E1;'>Battery Simulator</h4>", unsafe_allow_html=True)
+    time_step = 10
+    total_steps = max(1, int(flight_time_min * 60 / time_step))
+    battery_per_step = (total_energy_wh / flight_time_min) * (time_step / 60)
+    progress = st.progress(0)
+    gauge = st.empty()
+    timer = st.empty()
+
+    battery_data = []
+
+    for step in range(total_steps + 1):
+        time_elapsed = step * time_step
+        battery_used = step * battery_per_step
+        battery_remaining = max(0, battery_wh - battery_used)
+        battery_pct = max(0, (battery_remaining / battery_wh) * 100)
+        time_remaining = max(0, (flight_time_min * 60) - time_elapsed)
+        bars = int(battery_pct // 10)
+
+        gauge.markdown(f"<span style='color:#4169E1;'>Battery Gauge: [{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%</span>", unsafe_allow_html=True)
+        timer.markdown(f"<span style='color:#4169E1;'>Elapsed: {time_elapsed} sec Remaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
+        progress.progress(min(step / total_steps, 1.0))
+        battery_data.append((time_elapsed, battery_pct))
+        time.sleep(0.05)
 
     # Chart
     st.markdown("<h4 style='color:#4169E1;'>Phase Energy Usage</h4>", unsafe_allow_html=True)
