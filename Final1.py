@@ -1,9 +1,13 @@
 import streamlit as st
 
-# Define required time-phase constants BEFORE any usage
+# Mission phase durations (minutes)
 climb_time = 5
 cruise_time = 20
 descent_time = 5
+
+
+
+# Define required time-phase constants BEFORE any usage
 
 # Default time phase settings (minutes)
 
@@ -27,14 +31,11 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
 st.markdown("""
 <div style="text-align: center; padding: 10px;">
-    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/MQ-9_Reaper_UAV_2.jpg/640px-MQ-9_Reaper_UAV_2.jpg"
-         alt="Drone Banner" style="width:80%; border-radius:10px;">
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div style='text-align:center; padding:10px;'>
-    <img src="https://cdn.pixabay.com/photo/2017/05/28/23/03/drone-2358757_1280.jpg" alt="Drone Banner" style="width:80%; border-radius:10px;">
 </div>
 """, unsafe_allow_html=True)
 
@@ -66,7 +67,7 @@ st.markdown("**AI Capabilities:** " + (", ".join([f"`{cap}`" for cap in ai_capab
 
 st.markdown("<span style='color:#4169E1;'>Base weight: {} kg</span>".format(base_weight_kg), unsafe_allow_html=True)
 if profile["max_payload_g"] > 0:
-    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key="payload_slider")
+    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key="payload_slider_0")
     payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider)
 else:
     st.markdown("<span style='color:#FFA500;'>Note: This model does not support payloads.</span>", unsafe_allow_html=True)
@@ -75,18 +76,18 @@ st.markdown("<span style='color:#4169E1;'>Power System: {}</span>".format(power_
 st.markdown("<span style='color:#4169E1;'>Base draw: {} W</span>".format(draw_watt_base), unsafe_allow_html=True)
 
 if profile["max_payload_g"] > 0:
-    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key="payload_slider")
+    payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key="payload_slider_1")
     payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider)
 else:
     st.markdown("<span style='color:#FFA500;'>Note: This model does not support payloads.</span>", unsafe_allow_html=True)
     payload = 0
-speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key='flight_speed_km/h_4')
+speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key="speed_slider_0")
 speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_5')
 altitude_slider = st.slider("Target Altitude (m)", 0, 3000, 200, key='target_altitude_m_2')
 altitude = st.number_input("Target Altitude (m)", min_value=0, max_value=3000, value=altitude_slider, key='target_altitude_m_3')
-temperature_slider = st.slider("Temperature (Â°C)", -10, 45, 25, key='temperature_Â°c_2')
+temperature_slider = st.slider("Temperature (Â°C)", -10, 45, 25, key="temperature_slider_0")
 temperature = st.number_input("Temperature (Â°C)", min_value=-10, max_value=45, value=temperature_slider, key='temperature_Â°c_3')
-speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key='flight_speed_km/h_6')
+speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key="speed_slider_1")
 speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_7')
 
 st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
@@ -99,7 +100,7 @@ if submitted:
     total_weight_kg = base_weight_kg + payload / 1000
 
     # Wind logic
-    wind_slider = st.slider("Wind Speed (km/h)", 0, 100, 10, key="wind_slider")
+    wind_slider = st.slider("Wind Speed (km/h)", 0, 100, 10, key="wind_slider_0")
     wind_speed = st.number_input("Wind Speed (km/h)", min_value=0, max_value=100, value=wind_slider, key="wind_input")
     wind_factor = 1 + (wind_speed / 100) * 0.1
 if speed > 50 and speed <= 100:
