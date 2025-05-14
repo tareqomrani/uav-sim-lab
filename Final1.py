@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 import pandas as pd
@@ -29,7 +28,7 @@ profile = UAV_PROFILES[model]
 base_weight_kg = profile["base_weight_kg"]
 draw_watt_base = profile["draw_watt_base"]
 default_battery_wh = float(profile["battery_wh"])
-battery_wh = st.number_input("Battery Capacity (Wh)", min_value=10.0, max_value=2000.0, value=default_battery_wh)
+battery_wh = st.number_input("Battery Capacity (Wh)", min_value=10.0, max_value=2000.0, value=default_battery_wh, key='battery_capacity_wh_1')
 power_system = profile["power_system"]
 ai_capabilities = profile["ai_features"]
 
@@ -39,31 +38,31 @@ st.markdown("<span style='color:#4169E1;'>Base weight: {} kg</span>".format(base
 st.markdown("<span style='color:#4169E1;'>Power System: {}</span>".format(power_system), unsafe_allow_html=True)
 st.markdown("<span style='color:#4169E1;'>Base draw: {} W</span>".format(draw_watt_base), unsafe_allow_html=True)
 
-payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
-payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider)
-speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40)
-speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider)
-altitude_slider = st.slider("Target Altitude (m)", 0, 3000, 200)
-altitude = st.number_input("Target Altitude (m)", min_value=0, max_value=3000, value=altitude_slider)
-temperature_slider = st.slider("Temperature (°C)", -10, 45, 25)
-temperature = st.number_input("Temperature (°C)", min_value=-10, max_value=45, value=temperature_slider)
-speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40)
-speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider)
+payload_slider = st.slider("Payload Weight (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5), key='payload_weight_g_1')
+payload = st.number_input("Payload (g)", min_value=0, max_value=profile["max_payload_g"], value=payload_slider, key='payload_g_1')
+speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key='flight_speed_km/h_4')
+speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_5')
+altitude_slider = st.slider("Target Altitude (m)", 0, 3000, 200, key='target_altitude_m_2')
+altitude = st.number_input("Target Altitude (m)", min_value=0, max_value=3000, value=altitude_slider, key='target_altitude_m_3')
+temperature_slider = st.slider("Temperature (Â°C)", -10, 45, 25, key='temperature_Â°c_2')
+temperature = st.number_input("Temperature (Â°C)", min_value=-10, max_value=45, value=temperature_slider, key='temperature_Â°c_3')
+speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key='flight_speed_km/h_6')
+speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_7')
 
 st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
-climb_slider = st.slider("Climb Time (min)", 0, 30, 2)
-climb_time = st.number_input("Climb Time (min)", min_value=0, max_value=30, value=climb_slider)
-cruise_slider = st.slider("Cruise Time (min)", 0, 60, 8)
-cruise_time = st.number_input("Cruise Time (min)", min_value=0, max_value=60, value=cruise_slider)
-descent_slider = st.slider("Descent Time (min)", 0, 30, 2)
-descent_time = st.number_input("Descent Time (min)", min_value=0, max_value=30, value=descent_slider)
+climb_slider = st.slider("Climb Time (min)", 0, 30, 2, key='climb_time_min_2')
+climb_time = st.number_input("Climb Time (min)", min_value=0, max_value=30, value=climb_slider, key='climb_time_min_3')
+cruise_slider = st.slider("Cruise Time (min)", 0, 60, 8, key='cruise_time_min_2')
+cruise_time = st.number_input("Cruise Time (min)", min_value=0, max_value=60, value=cruise_slider, key='cruise_time_min_3')
+descent_slider = st.slider("Descent Time (min)", 0, 30, 2, key='descent_time_min_2')
+descent_time = st.number_input("Descent Time (min)", min_value=0, max_value=30, value=descent_slider, key='descent_time_min_3')
 total_mission_time = climb_time + cruise_time + descent_time
 
-submitted = st.button("✈️ Estimate")
+submitted = st.button("âï¸ Estimate")
 
 if submitted:
     if profile["max_payload_g"] > 0 and payload > profile["max_payload_g"] * 0.85:
-        st.warning("Payload exceeds 85% of max capacity — flight efficiency drops sharply.")
+        st.warning("Payload exceeds 85% of max capacity â flight efficiency drops sharply.")
     total_weight_kg = base_weight_kg + payload / 1000
 
     # Wind logic
@@ -139,7 +138,7 @@ if submitted:
         bars = int(battery_pct // 10)
 
         gauge.markdown(f"<span style='color:#4169E1;'>Battery Gauge: [{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%</span>", unsafe_allow_html=True)
-        timer.markdown(f"<span style='color:#4169E1;'>Elapsed: {time_elapsed} sec Remaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
+        timer.markdown(f"<span style='color:#4169E1;'>Elapsed: {time_elapsed} secâRemaining: {int(time_remaining)} sec</span>", unsafe_allow_html=True)
         progress.progress(min(step / total_steps, 1.0))
         battery_data.append((time_elapsed, battery_pct))
         time.sleep(0.05)
