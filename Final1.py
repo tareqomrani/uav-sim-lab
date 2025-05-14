@@ -1,10 +1,17 @@
+def compute_phase_energy(modifier, time_min, draw_watt_base, total_weight_kg, base_weight_kg, wind_factor, hybrid_modifier):
+    return (draw_watt_base * (total_weight_kg / base_weight_kg) * modifier * wind_factor * hybrid_modifier) * (time_min / 60)
+
+
+
+
+
+
+
 import streamlit as st
 import time
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def compute_phase_energy(modifier, time_min, draw_watt_base, total_weight_kg, base_weight_kg, wind_factor, hybrid_modifier):
-    return (draw_watt_base * (total_weight_kg / base_weight_kg) * modifier * wind_factor * hybrid_modifier) * (time_min / 60)
 
 st.set_page_config(page_title="UAV Battery Efficiency Estimator", layout="centered")
 
@@ -66,6 +73,8 @@ if submitted:
     total_weight_kg = base_weight_kg + payload / 1000
 
     # Wind logic
+    wind_slider = st.slider("Wind Speed (km/h)", 0, 100, 10, key="wind_slider")
+    wind_speed = st.number_input("Wind Speed (km/h)", min_value=0, max_value=100, value=wind_slider, key="wind_input")
     wind_factor = 1 + (wind_speed / 100) * 0.1
 
     # Hybrid logic
