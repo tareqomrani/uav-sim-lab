@@ -155,7 +155,10 @@ draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * phase_modifi
     cruise_modifier = 1.0
     descent_modifier = 0.85
 
-    climb_energy = compute_phase_energy(climb_modifier, climb_time)
+    # Altitude-based climb energy (overrides climb_energy)
+    g = 9.81
+    climb_energy_j = total_weight_kg * g * altitude  # mgh
+    climb_energy = climb_energy_j / 3600  # in Wh
     cruise_energy = compute_phase_energy(cruise_modifier, cruise_time)
     descent_energy = compute_phase_energy(descent_modifier, descent_time)
 
@@ -163,6 +166,13 @@ draw_scaled = draw_watt_base * (total_weight_kg / base_weight_kg) * phase_modifi
     flight_time_min = total_mission_time
     distance_km = (speed * total_mission_time) / 60
     net_energy_available = adjusted_battery_wh
+    # Return-to-home (RTH) logic: reserve 10% of total battery
+    battery_reserve_wh = battery_wh * 0.10
+    if total_energy_wh + battery_reserve_wh > net_energy_available:
+        st.error("Insufficient battery for mission including 10% return-to-home reserve!")
+    else:
+        st.info(f"10% battery reserved for return-to-home: {battery_reserve_wh:.1f} Wh")
+
     if total_energy_wh > net_energy_available:
         st.error('Insufficient battery for this mission profile!')
     distance_km = (flight_time_min / 60) * speed
