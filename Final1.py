@@ -85,18 +85,18 @@ speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key="speed_slider_0
 speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_5')
 altitude_slider = st.slider("Target Altitude (m)", 0, 3000, 200, key='target_altitude_m_2')
 altitude = st.number_input("Target Altitude (m)", min_value=0, max_value=3000, value=altitude_slider, key='target_altitude_m_3')
-temperature_slider = st.slider("Temperature (Â°C)", -10, 45, 25, key="temperature_slider_0")
-temperature = st.number_input("Temperature (Â°C)", min_value=-10, max_value=45, value=temperature_slider, key='temperature_Â°c_3')
+temperature_slider = st.slider("Temperature (°C)", -10, 45, 25, key="temperature_slider_0")
+temperature = st.number_input("Temperature (°C)", min_value=-10, max_value=45, value=temperature_slider, key='temperature_°c_3')
 speed_slider = st.slider("Flight Speed (km/h)", 10, 150, 40, key="speed_slider_1")
 speed = st.number_input("Flight Speed (km/h)", min_value=10, max_value=150, value=speed_slider, key='flight_speed_km/h_7')
 
 st.markdown("<h5 style='color:#4169E1;'>Mission Profile (Time-Based)</h5>", unsafe_allow_html=True)
 
-submitted = st.button("âï¸ Estimate")
+submitted = st.button("✈️ Estimate")
 
 if submitted:
     if profile["max_payload_g"] > 0 and payload > profile["max_payload_g"] * 0.85:
-        st.warning("Payload exceeds 85% of max capacity â flight efficiency drops sharply.")
+        st.warning("Payload exceeds 85% of max capacity — flight efficiency drops sharply.")
     total_weight_kg = base_weight_kg + payload / 1000
 
     # Wind logic
@@ -106,4 +106,4 @@ if submitted:
 if speed > 50 and speed <= 100:
     st.write("Cruise speed active.")
 
-st.markdown("<div style='text-align:center; padding-top:20px; color:#4169E1;'>Built by Tareq Omrani â UAV Battery Efficiency Estimator 2025</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center; padding-top:20px; color:#4169E1;'>Built by Tareq Omrani — UAV Battery Efficiency Estimator 2025</div>", unsafe_allow_html=True)
