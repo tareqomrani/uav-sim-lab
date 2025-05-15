@@ -50,3 +50,6 @@ with st.form("uav_form"):
     simulate_failure = st.checkbox("Enable Failure Simulation (experimental)")
     submitted = st.form_submit_button("Estimate")
 
+if submitted:
+    st.success("Estimate button is working. Simulation logic goes here.")
+
