@@ -119,10 +119,10 @@ with st.form("uav_form"):
 
 if submitted:
     try:
-    if payload_weight_g > max_lift:
-    st.error("Payload exceeds lift capacity. The drone cannot take off with this configuration.")
-    st.stop()
-    total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
+        if payload_weight_g > max_lift:
+        st.error("Payload exceeds lift capacity. The drone cannot take off with this configuration.")
+        st.stop()
+        total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
 
     if temperature_c < 15:
     battery_capacity_wh *= 0.9
@@ -160,16 +160,16 @@ if submitted:
 
     battery_draw_only = calculate_hybrid_draw(total_draw, power_system)
     try:
-    if battery_draw_only <= 0:
-    st.error('Simulation failed: Battery draw is zero or undefined.')
-    st.stop()
-    flight_time_minutes = (battery_capacity_wh / battery_draw_only) * 60
-    except Exception as e:
-    st.error(f'Simulation failed: {e}')
-    st.stop()
-    st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
-    if flight_mode != "Hover":
-    st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
+        if battery_draw_only <= 0:
+        st.error('Simulation failed: Battery draw is zero or undefined.')
+        st.stop()
+        flight_time_minutes = (battery_capacity_wh / battery_draw_only) * 60
+        except Exception as e:
+        st.error(f'Simulation failed: {e}')
+        st.stop()
+        st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
+        if flight_mode != "Hover":
+        st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
     st.subheader("AI Suggestions (Simulated GPT)")
     if payload_weight_g == max_lift:
