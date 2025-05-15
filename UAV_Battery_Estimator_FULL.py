@@ -56,6 +56,7 @@ if submitted:
             st.stop()
 
         total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
+weight_factor = total_weight_kg / base_weight_kg
 
         if temperature_c < 15:
             battery_capacity_wh *= 0.9
@@ -73,6 +74,8 @@ if submitted:
                 total_draw = base_draw * 1.15 + 0.02 * (flight_speed_kmh ** 2)
             else:
                 total_draw = base_draw + 0.02 * (flight_speed_kmh ** 2)
+wind_penalty = 1.0 + (wind_speed_kmh / 200)
+        total_draw *= weight_factor * wind_penalty
         else:
             total_draw = base_draw
 
