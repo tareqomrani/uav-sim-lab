@@ -99,7 +99,7 @@ drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
 max_lift = profile["max_payload_g"]
 base_weight_kg = profile["base_weight_kg"]
-st.caption(f"Base weight: {base_weight_kg:.2f} kg â Max payload: {max_lift} g")
+st.caption(f"Base weight: {base_weight_kg:.2f} kg — Max payload: {max_lift} g")
 st.caption(f"Power system: `{profile['power_system']}`")
 default_battery = profile["battery_wh"]
 
@@ -110,7 +110,7 @@ with st.form("uav_form"):
     payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, value=default_payload)
     flight_speed_kmh = st.number_input("Flight Speed (km/h)", min_value=0.0, value=30.0)
     wind_speed_kmh = st.number_input("Wind Speed (km/h)", min_value=0.0, value=10.0)
-    temperature_c = st.number_input("Temperature (Â°C)", value=25.0)
+    temperature_c = st.number_input("Temperature (°C)", value=25.0)
     altitude_m = st.number_input("Flight Altitude (m)", min_value=0, max_value=5000, value=0)
     elevation_gain_m = st.number_input("Elevation Gain (m)", min_value=-1000, max_value=1000, value=0)
     flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
@@ -168,7 +168,7 @@ if submitted:
         if payload_weight_g == max_lift:
             st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
         if wind_speed_kmh > 15:
-            st.write("**Tip:** High wind may significantly reduce flight time â consider postponing.")
+            st.write("**Tip:** High wind may significantly reduce flight time — consider postponing.")
         if battery_capacity_wh < 30:
             st.write("**Tip:** Battery is under 30 Wh. Consider using a larger battery.")
         if flight_mode in ["Hover", "Waypoint Mission"]:
@@ -190,7 +190,7 @@ if submitted:
             time_remaining = max(0, (flight_time_minutes * 60) - time_elapsed)
             bars = int(battery_pct // 10)
             gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
-            timer.markdown(f"**Elapsed:** {time_elapsed} secâ**Remaining:** {int(time_remaining)} sec")
+            timer.markdown(f"**Elapsed:** {time_elapsed} sec **Remaining:** {int(time_remaining)} sec")
             status.markdown(f"**Battery Remaining:** {battery_remaining:.2f} Wh  \n**Power Draw:** {total_draw:.0f} W")
             progress.progress(min(step / total_steps, 1.0))
             time.sleep(0.05)
