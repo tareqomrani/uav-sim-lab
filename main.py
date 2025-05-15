@@ -119,6 +119,7 @@ with st.form("uav_form"):
 
 if submitted:
     try:
+            pass
         if payload_weight_g > max_lift:
             st.error("Payload exceeds lift capacity. The drone cannot take off with this configuration.")
             st.stop()
@@ -160,6 +161,7 @@ if submitted:
 
         battery_draw_only = calculate_hybrid_draw(total_draw, power_system)
         try:
+            pass
         if battery_draw_only <= 0:
             st.error('Simulation failed: Battery draw is zero or undefined.')
             st.stop()
