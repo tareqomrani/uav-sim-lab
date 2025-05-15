@@ -3,7 +3,7 @@ import time
 
 def calculate_hybrid_draw(total_draw_watts, power_system):
     if power_system.lower() == "hybrid":
-        return total_draw_watts * 0.10  # Only 10% of draw from battery
+        return total_draw_watts * 0.10
     return total_draw_watts
 
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
@@ -78,7 +78,9 @@ if submitted:
             battery_capacity_wh -= climb_energy_wh
             st.markdown(f"**Climb Energy Cost:** `{climb_energy_wh:.2f} Wh`")
             if battery_capacity_wh <= 0:
+                min_required_wh = climb_energy_wh + 5
                 st.error("Simulation stopped: climb energy exceeds battery capacity.")
+                st.info(f"Recommended battery capacity: at least **{min_required_wh:.1f} Wh** for this climb.")
                 st.stop()
         elif elevation_gain_m < 0:
             descent_energy_j = total_weight_kg * 9.81 * abs(elevation_gain_m)
