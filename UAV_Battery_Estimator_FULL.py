@@ -56,7 +56,7 @@ def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, te
         st.info("Fuel tracking not applicable for battery-powered UAVs.")
 
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
-st.title('UAV Battery Efficiency Estimator')
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 
 
 UAV_PROFILES = {
@@ -76,6 +76,14 @@ UAV_PROFILES = {
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
+
+if drone_model == "Custom Build":
+    st.subheader("Custom Build Configuration")
+    profile['draw_watt'] = st.number_input("Motor Power Draw (W)", min_value=10, value=180)
+    profile['max_payload_g'] = st.number_input("Max Payload (g)", min_value=100, value=1500)
+    profile['base_weight_kg'] = st.number_input("Base Weight (kg)", min_value=0.1, value=2.0)
+    profile['battery_wh'] = st.number_input("Battery Capacity (Wh)", min_value=10, value=150)
+
 
 if "ai_capabilities" in profile:
     st.info(f"**AI Capabilities:** {profile['ai_capabilities']}")
@@ -210,3 +218,4 @@ if submitted:
             st.exception(e)
 
     st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
+
