@@ -117,3 +117,131 @@ with st.form("uav_form"):
     gustiness = st.slider("Wind Gust Factor (0 = calm, 10 = stormy)", min_value=0, max_value=10, value=3)
 
     submitted = st.form_submit_button("Estimate")
+
+if submitted:
+    try:
+        if payload_weight_g > max_lift:
+            st.error("Payload exceeds lift capacity.")
+            st.stop()
+
+        total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
+
+        if temperature_c < 15:
+            battery_capacity_wh *= 0.9
+        elif temperature_c > 35:
+            battery_capacity_wh *= 0.95
+
+        air_density_factor = max(0.6, 1.0 - 0.01 * (altitude_m / 100))
+        st.caption(f"Air density factor at {altitude_m} m: {air_density_factor:.2f}")
+
+        base_draw = profile["draw_watt"]
+        weight_factor = total_weight_kg / base_weight_kg
+        wind_drag_factor = 1 + (wind_speed_kmh / 100)
+
+        if profile["power_system"] == "Battery":
+            if flight_mode == "Hover":
+                total_draw = base_draw * 1.1 * weight_factor
+            elif flight_mode == "Waypoint Mission":
+                total_draw = (base_draw * 1.15 + 0.02 * (flight_speed_kmh ** 2)) * wind_drag_factor
+            else:
+                total_draw = (base_draw + 0.02 * (flight_speed_kmh ** 2)) * wind_drag_factor
+        else:
+            total_draw = base_draw * weight_factor
+
+        total_draw *= terrain_penalty * stealth_drag_penalty
+
+        if gustiness > 0:
+            gust_penalty = 1 + (gustiness * 0.015)
+            total_draw *= gust_penalty
+            st.markdown(f"**Wind Turbulence Penalty:** `{(gust_penalty - 1)*100:.1f}%` added draw")
+
+        if cloud_cover > 0:
+            ir_shielding = 1 - (cloud_cover / 100) * 0.5
+        else:
+            ir_shielding = 1.0
+
+        if elevation_gain_m > 0:
+            climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
+            climb_energy_wh = climb_energy_j / 3600
+            battery_capacity_wh -= climb_energy_wh
+            st.markdown(f"**Climb Energy Cost:** `{climb_energy_wh:.2f} Wh`")
+            if battery_capacity_wh <= 0:
+                st.error("Simulation stopped: climb energy exceeds battery capacity.")
+                st.stop()
+        elif elevation_gain_m < 0:
+            descent_energy_j = total_weight_kg * 9.81 * abs(elevation_gain_m)
+            recovered_wh = (descent_energy_j / 3600) * 0.2
+            battery_capacity_wh += recovered_wh
+            st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`")
+
+        battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
+        if battery_draw_only <= 0:
+            st.error("Simulation failed: Battery draw is zero or undefined.")
+            st.stop()
+
+        flight_time_minutes = (battery_capacity_wh / battery_draw_only) * 60
+        st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
+        if flight_mode != "Hover":
+            st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
+
+        insert_thermal_and_fuel_outputs(
+            total_draw=total_draw,
+            profile=profile,
+            flight_time_minutes=flight_time_minutes,
+            temperature_c=temperature_c,
+            ir_shielding=ir_shielding
+        )
+
+        st.subheader("AI Suggestions (Simulated GPT)")
+        if payload_weight_g == max_lift:
+            st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
+        if wind_speed_kmh > 15:
+            st.write("**Tip:** High wind may significantly reduce flight time — consider postponing.")
+        if battery_capacity_wh < 30:
+            st.write("**Tip:** Battery is under 30 Wh. Consider using a larger battery.")
+        if flight_mode in ["Hover", "Waypoint Mission"]:
+            st.write("**Tip:** Hover and complex routes draw more power than forward cruise.")
+
+        st.subheader("Live Simulation")
+        time_step = 10
+        total_steps = max(1, int(flight_time_minutes * 60 / time_step))
+        battery_per_step = (total_draw * time_step) / 3600
+        progress = st.progress(0)
+        status = st.empty()
+        gauge = st.empty()
+        timer = st.empty()
+
+        for step in range(total_steps + 1):
+            time_elapsed = step * time_step
+            battery_remaining = battery_capacity_wh - (step * battery_per_step)
+            if battery_remaining <= 0:
+                battery_remaining = 0
+                battery_pct = 0
+                bars = 0
+                gauge.markdown(f"**Battery Gauge:** `[{' ' * 10}] 0%`")
+                timer.markdown(f"**Elapsed:** {time_elapsed} sec **Remaining:** 0 sec")
+                status.markdown(f"**Battery Remaining:** 0.00 Wh  **Power Draw:** {total_draw:.0f} W")
+                progress.progress(1.0)
+                break
+            battery_pct = max(0, (battery_remaining / battery_capacity_wh) * 100)
+            time_remaining = max(0, (flight_time_minutes * 60) - time_elapsed)
+            bars = int(battery_pct // 10)
+            gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {battery_pct:.0f}%`")
+            timer.markdown(f"**Elapsed:** {time_elapsed} sec **Remaining:** {int(time_remaining)} sec")
+            status.markdown(f"**Battery Remaining:** {battery_remaining:.2f} Wh  **Power Draw:** {total_draw:.0f} W")
+            progress.progress(min(step / total_steps, 1.0))
+            time.sleep(0.05)
+
+        st.success("Simulation complete.")
+
+        if simulate_failure or (profile["power_system"].lower() == "hybrid" or delta_T > 15 or altitude_m > 100):
+            st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
+        else:
+            st.success("**Safe:** UAV remains below typical detection thresholds.")
+
+    except Exception as e:
+        st.error("Unexpected error during simulation.")
+        if debug_mode:
+            st.exception(e)
+
+    st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
