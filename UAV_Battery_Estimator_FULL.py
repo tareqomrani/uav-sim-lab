@@ -29,21 +29,13 @@ def thermal_risk_rating(delta_T):
     else:
         return "High"
 
-def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding):
+def insert_thermal_and_fuel_outputs(delta_T=delta_T, total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
     st.subheader("Thermal Signature & Fuel Analysis")
     assumed_efficiency = 0.85
     assumed_surface_area = 0.3
     use_stealth_coating = False  # no need for dynamic checkbox
     emissivity = 0.3 if use_stealth_coating else 0.9
 
-    delta_T = estimate_thermal_signature(
-        draw_watt=total_draw,
-        efficiency=assumed_efficiency,
-        surface_area=assumed_surface_area,
-        emissivity=emissivity,
-        ambient_temp_C=temperature_c
-    )
-    delta_T *= ir_shielding
     risk = thermal_risk_rating(delta_T)
     st.metric(label="Thermal Signature Risk", value=f"{risk} (ΔT = {delta_T:.1f}°C)")
 
@@ -174,6 +166,16 @@ if submitted:
             battery_capacity_wh += recovered_wh
             st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`")
 
+        
+        delta_T = estimate_thermal_signature(
+            draw_watt=total_draw,
+            efficiency=0.85,
+            surface_area=0.3,
+            emissivity=0.3 if use_ir_coating else 0.9,
+            ambient_temp_C=temperature_c
+        )
+        delta_T *= ir_shielding
+
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
         if battery_draw_only <= 0:
             st.error("Simulation failed: Battery draw is zero or undefined.")
@@ -184,7 +186,7 @@ if submitted:
         if flight_mode != "Hover":
             st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
-        insert_thermal_and_fuel_outputs(
+        insert_thermal_and_fuel_outputs(delta_T=delta_T, 
             total_draw=total_draw,
             profile=profile,
             flight_time_minutes=flight_time_minutes,
