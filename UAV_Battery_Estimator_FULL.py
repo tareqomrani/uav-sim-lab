@@ -218,4 +218,3 @@ if submitted:
             st.exception(e)
 
     st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
-
