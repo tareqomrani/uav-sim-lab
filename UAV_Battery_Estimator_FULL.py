@@ -23,11 +23,11 @@ def thermal_risk_rating(delta_T):
     elif delta_T < 20: return "Moderate"
     return "High"
 
-def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
+def insert_thermal_and_fuel_outputs(total_draw, drone_profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
     st.subheader("Thermal Signature & Fuel Analysis")
     risk = thermal_risk_rating(delta_T)
     st.metric(label="Thermal Signature Risk", value=f"{risk} (ΔT = {delta_T:.1f}°C)")
-    if profile["power_system"].lower() == "hybrid":
+    if drone_profile["power_system"].lower() == "hybrid":
         fuel_burned = calculate_fuel_consumption(total_draw, flight_time_minutes / 60)
         st.metric(label="Estimated Fuel Used", value=f"{fuel_burned:.2f} L")
     else:
@@ -49,18 +49,18 @@ UAV_PROFILES = {
 st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
-profile = UAV_PROFILES[drone_model]
-if profile is None:
-    st.error("Error: Selected UAV profile not found.")
+drone_profile = UAV_PROFILES[drone_model]
+if drone_profile is None:
+    st.error("Error: Selected UAV drone_profile not found.")
     st.stop()
-if "ai_capabilities" in profile:
-    st.info(f"**AI Capabilities:** {profile['ai_capabilities']}")
+if "ai_capabilities" in drone_profile:
+    st.info(f"**AI Capabilities:** {drone_profile['ai_capabilities']}")
 
-max_lift = profile["max_payload_g"]
-base_weight_kg = profile["base_weight_kg"]
-default_battery = profile["battery_wh"]
+max_lift = drone_profile["max_payload_g"]
+base_weight_kg = drone_profile["base_weight_kg"]
+default_battery = drone_profile["battery_wh"]
 st.caption(f"Base weight: {base_weight_kg:.2f} kg — Max payload: {max_lift} g")
-st.caption(f"Power system: `{profile['power_system']}`")
+st.caption(f"Power system: `{drone_profile['power_system']}`")
 
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
@@ -98,11 +98,11 @@ if submitted:
         air_density_factor = max(0.6, 1.0 - 0.01 * (altitude_m / 100))
         st.caption(f"Air density factor at {altitude_m} m: {air_density_factor:.2f}")
 
-        base_draw = profile["draw_watt"]
+        base_draw = drone_profile["draw_watt"]
         weight_factor = total_weight_kg / base_weight_kg
         wind_drag_factor = 1 + (wind_speed_kmh / 100)
 
-        if profile["power_system"] == "Battery":
+        if drone_profile["power_system"] == "Battery":
             if flight_mode == "Hover":
                 total_draw = base_draw * 1.1 * weight_factor
             elif flight_mode == "Waypoint Mission":
@@ -135,7 +135,7 @@ if submitted:
             battery_capacity_wh += recovered_wh
             st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`")
 
-        battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
+        battery_draw_only = calculate_hybrid_draw(total_draw, drone_profile["power_system"])
         delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
         delta_T *= ir_shielding
 
@@ -150,7 +150,7 @@ if submitted:
 
         insert_thermal_and_fuel_outputs(
             total_draw=total_draw,
-            profile=profile,
+            drone_profile=drone_profile,
             flight_time_minutes=flight_time_minutes,
             temperature_c=temperature_c,
             ir_shielding=ir_shielding,
@@ -199,7 +199,7 @@ if submitted:
 
         st.success("Simulation complete.")
 
-        if simulate_failure or (profile["power_system"].lower() == "hybrid" or delta_T > 15 or altitude_m > 100):
+        if simulate_failure or (drone_profile["power_system"].lower() == "hybrid" or delta_T > 15 or altitude_m > 100):
             st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
         else:
             st.success("**Safe:** UAV remains below typical detection thresholds.")
