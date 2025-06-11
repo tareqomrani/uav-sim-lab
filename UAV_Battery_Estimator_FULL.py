@@ -50,6 +50,9 @@ st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
+if profile is None:
+    st.error("Error: Selected UAV profile not found.")
+    st.stop()
 if "ai_capabilities" in profile:
     st.info(f"**AI Capabilities:** {profile['ai_capabilities']}")
 
@@ -207,4 +210,3 @@ if submitted:
             st.exception(e)
 
     st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
-
