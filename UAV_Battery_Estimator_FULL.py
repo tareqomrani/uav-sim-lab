@@ -117,4 +117,3 @@ with st.form("uav_form"):
     gustiness = st.slider("Wind Gust Factor (0 = calm, 10 = stormy)", min_value=0, max_value=10, value=3)
 
     submitted = st.form_submit_button("Estimate")
-
