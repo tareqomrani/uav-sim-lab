@@ -29,24 +29,10 @@ def thermal_risk_rating(delta_T):
     else:
         return "High"
 
-def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding):
+def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
     st.subheader("Thermal Signature & Fuel Analysis")
-    assumed_efficiency = 0.85
-    assumed_surface_area = 0.3
-    use_stealth_coating = False  # no need for dynamic checkbox
-    emissivity = 0.3 if use_stealth_coating else 0.9
-
-    delta_T = estimate_thermal_signature(
-        draw_watt=total_draw,
-        efficiency=assumed_efficiency,
-        surface_area=assumed_surface_area,
-        emissivity=emissivity,
-        ambient_temp_C=temperature_c
-    )
-    delta_T *= ir_shielding
     risk = thermal_risk_rating(delta_T)
     st.metric(label="Thermal Signature Risk", value=f"{risk} (ΔT = {delta_T:.1f}°C)")
-
     if profile["power_system"].lower() == "hybrid":
         fuel_burned = calculate_fuel_consumption(
             power_draw_watt=total_draw,
@@ -73,6 +59,8 @@ UAV_PROFILES = {
     "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"}
 }
 
+st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
+
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
@@ -80,42 +68,28 @@ profile = UAV_PROFILES[drone_model]
 if "ai_capabilities" in profile:
     st.info(f"**AI Capabilities:** {profile['ai_capabilities']}")
 
-if drone_model == "Custom Build":
-    st.subheader("Custom Build Configuration")
-    profile['draw_watt'] = st.number_input("Motor Power Draw (W)", min_value=10, value=180)
-    profile['max_payload_g'] = st.number_input("Max Payload (g)", min_value=100, value=1500)
-    profile['base_weight_kg'] = st.number_input("Base Weight (kg)", min_value=0.1, value=2.0)
-    profile['battery_wh'] = st.number_input("Battery Capacity (Wh)", min_value=10, value=150)
-
 max_lift = profile["max_payload_g"]
 base_weight_kg = profile["base_weight_kg"]
+st.caption(f"Base weight: {base_weight_kg:.2f} kg — Max payload: {max_lift} g")
+st.caption(f"Power system: `{profile['power_system']}`")
 default_battery = profile["battery_wh"]
 
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
     battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, max_value=1850.0, value=float(default_battery))
-    payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, value=int(max_lift * 0.5))
+    default_payload = int(max_lift * 0.5)
+    payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, value=default_payload)
     flight_speed_kmh = st.number_input("Flight Speed (km/h)", min_value=0.0, value=30.0)
     wind_speed_kmh = st.number_input("Wind Speed (km/h)", min_value=0.0, value=10.0)
     temperature_c = st.number_input("Temperature (°C)", value=25.0)
     altitude_m = st.number_input("Flight Altitude (m)", min_value=0, max_value=5000, value=0)
     elevation_gain_m = st.number_input("Elevation Gain (m)", min_value=-1000, max_value=1000, value=0)
     flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
+    cloud_cover = st.slider("Cloud Cover (%)", 0, 100, 50)
+    gustiness = st.slider("Wind Gust Factor (0 = calm, 10 = extreme)", 0, 10, 2)
+    terrain_penalty = st.slider("Terrain Complexity", 1.0, 1.5, 1.1)
+    stealth_drag_penalty = st.slider("Stealth Loadout Drag Factor", 1.0, 1.5, 1.0)
     simulate_failure = st.checkbox("Enable Failure Simulation (experimental)")
-
-    st.subheader("Terrain Profile")
-    terrain_type = st.selectbox("Terrain Type", ["Flat", "Hilly", "Mountainous"])
-    terrain_penalty = {"Flat": 1.0, "Hilly": 1.05, "Mountainous": 1.15}[terrain_type]
-
-    st.subheader("Stealth Loadout Presets")
-    use_stealth_frame = st.checkbox("Low-RCS Frame Upgrade", value=False)
-    use_ir_coating = st.checkbox("IR-Absorptive Paint", value=False)
-    stealth_drag_penalty = 1.0 + (0.02 if use_stealth_frame else 0) + (0.01 if use_ir_coating else 0)
-
-    st.subheader("Weather Conditions")
-    cloud_cover = st.slider("Cloud Cover (%)", min_value=0, max_value=100, value=20)
-    gustiness = st.slider("Wind Gust Factor (0 = calm, 10 = stormy)", min_value=0, max_value=10, value=3)
-
     submitted = st.form_submit_button("Estimate")
 
 if submitted:
@@ -175,6 +149,9 @@ if submitted:
             st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`")
 
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
+        delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
+        delta_T *= ir_shielding
+
         if battery_draw_only <= 0:
             st.error("Simulation failed: Battery draw is zero or undefined.")
             st.stop()
@@ -189,18 +166,9 @@ if submitted:
             profile=profile,
             flight_time_minutes=flight_time_minutes,
             temperature_c=temperature_c,
-            ir_shielding=ir_shielding
+            ir_shielding=ir_shielding,
+            delta_T=delta_T
         )
-
-        st.subheader("AI Suggestions (Simulated GPT)")
-        if payload_weight_g == max_lift:
-            st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
-        if wind_speed_kmh > 15:
-            st.write("**Tip:** High wind may significantly reduce flight time — consider postponing.")
-        if battery_capacity_wh < 30:
-            st.write("**Tip:** Battery is under 30 Wh. Consider using a larger battery.")
-        if flight_mode in ["Hover", "Waypoint Mission"]:
-            st.write("**Tip:** Hover and complex routes draw more power than forward cruise.")
 
         st.subheader("Live Simulation")
         time_step = 10
@@ -245,4 +213,3 @@ if submitted:
             st.exception(e)
 
     st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
-
