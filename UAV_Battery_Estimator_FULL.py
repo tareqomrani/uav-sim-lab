@@ -1,7 +1,9 @@
+
 import streamlit as st
 import time
 import math
 
+# Core computation functions
 def calculate_hybrid_draw(total_draw_watts, power_system):
     if power_system.lower() == "hybrid":
         return total_draw_watts * 0.10
@@ -18,8 +20,7 @@ def estimate_thermal_signature(draw_watt, efficiency, surface_area, emissivity, 
     temp_K = (waste_heat / (emissivity * sigma * surface_area)) ** 0.25
     temp_C = temp_K - 273.15
     delta_T = temp_C - ambient_temp_C
-    delta_T = max(delta_T, -10)
-    return round(delta_T, 1)
+    return max(round(delta_T, 1), 0)
 
 def thermal_risk_rating(delta_T):
     if delta_T < 10:
@@ -34,34 +35,26 @@ def get_delta_color(delta_T):
         return "green"
     elif delta_T < 20:
         return "orange"
-    return "red"
+    else:
+        return "red"
 
-def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
+def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T, gustiness, terrain_penalty):
     st.subheader("Thermal Signature & Fuel Analysis")
     risk = thermal_risk_rating(delta_T)
     color = get_delta_color(delta_T)
-    st.markdown(f"<span style='color:{color};font-size:20px;'>Thermal Signature Risk: <b>{risk} (ΔT = {delta_T:.1f}°C)</b></span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='color:{color}; font-weight:bold;'>Thermal Signature Risk: {risk} (ΔT = {delta_T:.1f}°C)</span>", unsafe_allow_html=True)
     if profile["power_system"].lower() == "hybrid":
-        fuel_burned = calculate_fuel_consumption(power_draw_watt=total_draw, duration_hr=flight_time_minutes / 60)
+        burn_rate = 1.5 + (0.1 * gustiness) + ((terrain_penalty - 1) * 3)
+        fuel_burned = calculate_fuel_consumption(
+            power_draw_watt=total_draw,
+            duration_hr=flight_time_minutes / 60,
+            fuel_burn_rate_lph=burn_rate
+        )
         st.metric(label="Estimated Fuel Used", value=f"{fuel_burned:.2f} L")
     else:
         st.info("Fuel tracking not applicable for battery-powered UAVs.")
 
-def set_theme_css(dark_mode):
-    if dark_mode:
-        st.markdown("""<style>
-            body, .stApp { background-color: #111; color: #EEE; }
-            .stButton>button { background-color: #333; color: #EEE; }
-        </style>""", unsafe_allow_html=True)
-    else:
-        st.markdown("""<style>
-            body, .stApp { background-color: #FFF; color: #000; }
-        </style>""", unsafe_allow_html=True)
-
-st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
-st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
-dark_mode = st.toggle("🌗 Enable Dark Mode")
-set_theme_css(dark_mode)
+# UAV Profiles
 
 UAV_PROFILES = {
     "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "power_system": "Battery", "draw_watt": 150, "battery_wh": 60, "crash_risk": False, "ai_capabilities": "Basic flight stabilization, waypoint navigation"},
@@ -77,10 +70,23 @@ UAV_PROFILES = {
     "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"}
 }
 
+    "MQ-9 Reaper": {"max_payload_g": 1700000, "base_weight_kg": 2223, "power_system": "Hybrid", "draw_watt": 800, "battery_wh": 200, "crash_risk": True, "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking"},
+    "Teal Golden Eagle": {"max_payload_g": 2000, "base_weight_kg": 2.2, "power_system": "Battery", "draw_watt": 220, "battery_wh": 100, "crash_risk": True, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"},
+    "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 160, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"},
+    "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"}
+}
+
+# App UI
+st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
+
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
+
+st.caption(f"Base weight: {profile['base_weight_kg']:.2f} kg — Max payload: {profile['max_payload_g']} g")
+st.caption(f"Power system: `{profile['power_system']}`")
 
 if "ai_capabilities" in profile:
     st.info(f"**AI Capabilities:** {profile['ai_capabilities']}")
@@ -89,16 +95,17 @@ max_lift = profile["max_payload_g"]
 base_weight_kg = profile["base_weight_kg"]
 default_battery = profile["battery_wh"]
 
+# Form
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
-    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", 1.0, 1850.0, float(default_battery))
+    battery_capacity_wh = st.number_input("Battery Capacity (Wh)", min_value=1.0, max_value=1850.0, value=float(default_battery))
     default_payload = int(max_lift * 0.5)
-    payload_weight_g = st.number_input("Payload Weight (g)", 0, value=default_payload)
-    flight_speed_kmh = st.number_input("Flight Speed (km/h)", 0.0, value=30.0)
-    wind_speed_kmh = st.number_input("Wind Speed (km/h)", 0.0, value=10.0)
+    payload_weight_g = st.number_input("Payload Weight (g)", min_value=0, value=default_payload)
+    flight_speed_kmh = st.number_input("Flight Speed (km/h)", min_value=0.0, value=30.0)
+    wind_speed_kmh = st.number_input("Wind Speed (km/h)", min_value=0.0, value=10.0)
     temperature_c = st.number_input("Temperature (°C)", value=25.0)
-    altitude_m = st.number_input("Flight Altitude (m)", 0, 5000, value=0)
-    elevation_gain_m = st.number_input("Elevation Gain (m)", -1000, 1000, value=0)
+    altitude_m = st.number_input("Flight Altitude (m)", min_value=0, max_value=5000, value=0)
+    elevation_gain_m = st.number_input("Elevation Gain (m)", min_value=-1000, max_value=1000, value=0)
     flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
     cloud_cover = st.slider("Cloud Cover (%)", 0, 100, 50)
     gustiness = st.slider("Wind Gust Factor (0 = calm, 10 = extreme)", 0, 10, 2)
@@ -106,6 +113,11 @@ with st.form("uav_form"):
     stealth_drag_penalty = st.slider("Stealth Loadout Drag Factor", 1.0, 1.5, 1.0)
     simulate_failure = st.checkbox("Enable Failure Simulation (experimental)")
     submitted = st.form_submit_button("Estimate")
+
+# Continue on next cell to complete the build (due to length limits)
+
+
+
 
 if submitted:
     try:
@@ -131,20 +143,26 @@ if submitted:
             if flight_mode == "Hover":
                 total_draw = base_draw * 1.1 * weight_factor
             elif flight_mode == "Waypoint Mission":
-                total_draw = (base_draw * 1.15 + 0.02 * (flight_speed_kmh ** 2)) * wind_drag_factor
+                aero_drag = 0.02 * (flight_speed_kmh ** 2) * air_density_factor
+            total_draw = (base_draw * 1.15 + aero_drag) * wind_drag_factor
             else:
-                total_draw = (base_draw + 0.02 * (flight_speed_kmh ** 2)) * wind_drag_factor
+                aero_drag = 0.02 * (flight_speed_kmh ** 2) * air_density_factor
+            total_draw = (base_draw + aero_drag) * wind_drag_factor
         else:
             total_draw = base_draw * weight_factor
 
-        total_draw *= terrain_penalty * stealth_drag_penalty
+        if stealth_drag_penalty > 1.25:
+            total_draw *= stealth_drag_penalty * 1.1
+        else:
+            total_draw *= stealth_drag_penalty
+        total_draw *= terrain_penalty
 
         if gustiness > 0:
             gust_penalty = 1 + (gustiness * 0.015)
             total_draw *= gust_penalty
             st.markdown(f"**Wind Turbulence Penalty:** `{(gust_penalty - 1)*100:.1f}%` added draw")
 
-        ir_shielding = 1 - (cloud_cover / 100) * 0.5
+        ir_shielding = 1 - (cloud_cover / 100) * 0.5 if cloud_cover > 0 else 1.0
 
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
@@ -163,7 +181,6 @@ if submitted:
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
         delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
         delta_T *= ir_shielding
-        delta_T = round(delta_T, 1)
 
         if battery_draw_only <= 0:
             st.error("Simulation failed: Battery draw is zero or undefined.")
@@ -174,25 +191,31 @@ if submitted:
         if flight_mode != "Hover":
             st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
-        insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T)
+        insert_thermal_and_fuel_outputs(
+            total_draw=total_draw,
+            profile=profile,
+            flight_time_minutes=flight_time_minutes,
+            temperature_c=temperature_c,
+            ir_shielding=ir_shielding,
+            delta_T=delta_T,
+            gustiness=gustiness,
+            terrain_penalty=terrain_penalty
+        )
 
-        # ✅ AI Suggestions
         st.subheader("AI Suggestions (Simulated GPT)")
         if payload_weight_g == max_lift:
             st.write("**Tip:** Payload is at maximum lift capacity.")
         if wind_speed_kmh > 15:
             st.write("**Tip:** High wind may reduce flight time.")
         if battery_capacity_wh < 30:
-            st.write("**Tip:** Battery is under 30 Wh. Consider a larger pack.")
+            st.write("**Tip:** Battery is under 30 Wh.")
         if flight_mode in ["Hover", "Waypoint Mission"]:
             st.write("**Tip:** Hover and waypoint missions draw extra power.")
-        if stealth_drag_penalty > 1.2:
-            st.write("**Tip:** Stealth loadout may reduce endurance.")
-        if delta_T > 15:
+        if delta_T > 30:
             st.write("**Tip:** Thermal load is high. Consider lighter payload or lower altitude.")
-        if altitude_m > 100:
-            st.write("**Tip:** Flying above 100m may increase detection risk.")
-        if gustiness >= 5:
+        if stealth_drag_penalty > 1.25:
+            st.write("**Tip:** Stealth loadout may reduce endurance.")
+        if gustiness > 5:
             st.write("**Tip:** Gust factor above 5 may destabilize small UAVs.")
 
         st.subheader("Live Simulation")
@@ -227,7 +250,7 @@ if submitted:
 
         st.success("Simulation complete.")
 
-        if simulate_failure or (delta_T > 15 and altitude_m > 100):
+        if simulate_failure or (profile["power_system"].lower() == "hybrid" and delta_T > 15 and altitude_m > 100):
             st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
         else:
             st.success("**Safe:** UAV remains below typical detection thresholds.")
