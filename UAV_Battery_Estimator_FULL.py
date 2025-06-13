@@ -1,3 +1,4 @@
+
 import streamlit as st
 import time
 import math
@@ -17,7 +18,7 @@ def estimate_thermal_signature(draw_watt, efficiency, surface_area, emissivity, 
         return 0
     temp_K = (waste_heat / (emissivity * sigma * surface_area)) ** 0.25
     temp_C = temp_K - 273.15
-    delta_T = max(temp_C - ambient_temp_C, -10)
+    delta_T = temp_C - ambient_temp_C
     return round(delta_T, 1)
 
 def thermal_risk_rating(delta_T):
@@ -31,25 +32,15 @@ def thermal_risk_rating(delta_T):
 def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
     st.subheader("Thermal Signature & Fuel Analysis")
     risk = thermal_risk_rating(delta_T)
-    color = "green" if delta_T < 10 else "orange" if delta_T < 20 else "red"
-    st.markdown(f"<span style='color:{color}; font-size:1.2em;'>Thermal Risk: <b>{risk}</b> (ΔT = {delta_T:.1f}°C)</span>", unsafe_allow_html=True)
+    st.metric(label="Thermal Signature Risk", value=f"{risk} (ΔT = {delta_T:.1f}°C)")
     if profile["power_system"].lower() == "hybrid":
-        fuel_burned = calculate_fuel_consumption(total_draw, flight_time_minutes / 60)
+        fuel_burned = calculate_fuel_consumption(
+            power_draw_watt=total_draw,
+            duration_hr=flight_time_minutes / 60
+        )
         st.metric(label="Estimated Fuel Used", value=f"{fuel_burned:.2f} L")
     else:
         st.info("Fuel tracking not applicable for battery-powered UAVs.")
-
-# Light/Dark Mode Toggle
-dark_mode = st.toggle("🌗 Enable Dark Mode")
-if dark_mode:
-    st.markdown("""
-        <style>
-        body, .stApp {
-            background-color: #111111;
-            color: #EEEEEE;
-        }
-        </style>
-    """, unsafe_allow_html=True)
 
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
 st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
@@ -67,6 +58,8 @@ UAV_PROFILES = {
     "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 160, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"},
     "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"}
 }
+
+st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
@@ -177,25 +170,6 @@ if submitted:
             delta_T=delta_T
         )
 
-        # ✅ AI Suggestions
-        st.subheader("AI Suggestions (Simulated GPT)")
-        if payload_weight_g == max_lift:
-            st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
-        if wind_speed_kmh > 15:
-            st.write("**Tip:** High wind may significantly reduce flight time — consider postponing.")
-        if battery_capacity_wh < 30:
-            st.write("**Tip:** Battery is under 30 Wh. Consider using a larger battery.")
-        if flight_mode in ["Hover", "Waypoint Mission"]:
-            st.write("**Tip:** Hover and complex routes draw more power than forward cruise.")
-        if flight_speed_kmh > 50:
-            st.write("**Tip:** High cruise speed significantly increases power draw due to aerodynamic drag.")
-        if stealth_drag_penalty > 1.1:
-            st.write("**Tip:** Stealth loadouts increase aerodynamic drag — reduce if not essential.")
-        if delta_T > 15:
-            st.write("**Tip:** High thermal signature — consider reducing power draw or flying under cloud cover.")
-        if altitude_m > 1000:
-            st.write("**Tip:** High altitude may increase detectability and reduce air density.")
-
         st.subheader("Live Simulation")
         time_step = 10
         total_steps = max(1, int(flight_time_minutes * 60 / time_step))
@@ -226,7 +200,9 @@ if submitted:
             progress.progress(min(step / total_steps, 1.0))
             time.sleep(0.05)
 
-        if simulate_failure or (delta_T > 15 and altitude_m > 100):
+        st.success("Simulation complete.")
+
+        if simulate_failure or (profile["power_system"].lower() == "hybrid" or delta_T > 15 or altitude_m > 100):
             st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
         else:
             st.success("**Safe:** UAV remains below typical detection thresholds.")
@@ -236,4 +212,4 @@ if submitted:
         if debug_mode:
             st.exception(e)
 
-st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
+    st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
