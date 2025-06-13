@@ -42,25 +42,19 @@ def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, te
         st.info("Fuel tracking not applicable for battery-powered UAVs.")
 
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
-
-# Optional dark mode CSS
-st.markdown("""
-    <style>
-        .reportview-container {
-            background-color: #0E1117;
-            color: #FAFAFA;
-        }
-        .sidebar .sidebar-content {
-            background-color: #262730;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
 st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 
 UAV_PROFILES = {
-    "Skydio 2+": {"max_payload_g": 150, "base_weight_kg": 0.8, "power_system": "Battery", "draw_watt": 90, "battery_wh": 45, "crash_risk": False, "ai_capabilities": "Full obstacle avoidance, visual SLAM, autonomous following"},
+    "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "power_system": "Battery", "draw_watt": 150, "battery_wh": 60, "crash_risk": False, "ai_capabilities": "Basic flight stabilization, waypoint navigation"},
+    "DJI Phantom": {"max_payload_g": 500, "base_weight_kg": 1.4, "power_system": "Battery", "draw_watt": 120, "battery_wh": 68, "crash_risk": False, "ai_capabilities": "Visual object tracking, return-to-home, autonomous mapping"},
+    "RQ-11 Raven": {"max_payload_g": 0, "base_weight_kg": 1.9, "power_system": "Battery", "draw_watt": 90, "battery_wh": 50, "crash_risk": False, "ai_capabilities": "Auto-stabilized flight, limited route autonomy"},
+    "RQ-20 Puma": {"max_payload_g": 600, "base_weight_kg": 6.3, "power_system": "Battery", "draw_watt": 180, "battery_wh": 275, "crash_risk": False, "ai_capabilities": "AI-enhanced ISR mission planning, autonomous loitering"},
     "MQ-1 Predator": {"max_payload_g": 204000, "base_weight_kg": 512, "power_system": "Hybrid", "draw_watt": 650, "battery_wh": 150, "crash_risk": True, "ai_capabilities": "Semi-autonomous surveillance, pattern-of-life analysis"},
+    "MQ-9 Reaper": {"max_payload_g": 1700000, "base_weight_kg": 2223, "power_system": "Hybrid", "draw_watt": 800, "battery_wh": 200, "crash_risk": True, "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking"},
+    "Skydio 2+": {"max_payload_g": 150, "base_weight_kg": 0.8, "power_system": "Battery", "draw_watt": 90, "battery_wh": 45, "crash_risk": False, "ai_capabilities": "Full obstacle avoidance, visual SLAM, autonomous following"},
+    "Freefly Alta 8": {"max_payload_g": 9000, "base_weight_kg": 6.2, "power_system": "Battery", "draw_watt": 400, "battery_wh": 710, "crash_risk": False, "ai_capabilities": "Autonomous camera coordination, precision loitering"},
+    "Teal Golden Eagle": {"max_payload_g": 2000, "base_weight_kg": 2.2, "power_system": "Battery", "draw_watt": 220, "battery_wh": 100, "crash_risk": True, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"},
+    "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 160, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"},
     "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"}
 }
 
@@ -134,7 +128,10 @@ if submitted:
             total_draw *= gust_penalty
             st.markdown(f"**Wind Turbulence Penalty:** `{(gust_penalty - 1)*100:.1f}%` added draw")
 
-        ir_shielding = 1 - (cloud_cover / 100) * 0.5 if cloud_cover > 0 else 1.0
+        if cloud_cover > 0:
+            ir_shielding = 1 - (cloud_cover / 100) * 0.5
+        else:
+            ir_shielding = 1.0
 
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
@@ -153,7 +150,6 @@ if submitted:
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
         delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
         delta_T *= ir_shielding
-        delta_T = max(delta_T, -10)
 
         if battery_draw_only <= 0:
             st.error("Simulation failed: Battery draw is zero or undefined.")
@@ -173,21 +169,16 @@ if submitted:
             delta_T=delta_T
         )
 
+        # ✅ AI Suggestions
         st.subheader("AI Suggestions (Simulated GPT)")
         if payload_weight_g == max_lift:
             st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
         if wind_speed_kmh > 15:
             st.write("**Tip:** High wind may significantly reduce flight time — consider postponing.")
-        if stealth_drag_penalty > 1.3:
-            st.write("**Tip:** Stealth loadout significantly increases drag. Consider lighter stealth options.")
-        if gustiness >= 6:
-            st.write("**Tip:** Severe wind gusts expected. Ensure mission-critical UAV stability.")
-        if temperature_c > 50:
-            st.write("**Tip:** Extreme heat may affect battery performance and thermal detectability.")
         if battery_capacity_wh < 30:
-            st.write("**Tip:** Battery is under 30 Wh. Consider using a larger pack for sustained flight.")
-        if flight_speed_kmh > 60:
-            st.write("**Tip:** High-speed flight increases aerodynamic draw. Consider reducing speed for endurance.")
+            st.write("**Tip:** Battery is under 30 Wh. Consider using a larger battery.")
+        if flight_mode in ["Hover", "Waypoint Mission"]:
+            st.write("**Tip:** Hover and complex routes draw more power than forward cruise.")
 
         st.subheader("Live Simulation")
         time_step = 10
@@ -221,7 +212,7 @@ if submitted:
 
         st.success("Simulation complete.")
 
-        if (delta_T > 15 and altitude_m > 100) or profile["power_system"].lower() == "hybrid" or simulate_failure:
+        if simulate_failure or (profile["power_system"].lower() == "hybrid" or delta_T > 15 or altitude_m > 100):
             st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
         else:
             st.success("**Safe:** UAV remains below typical detection thresholds.")
