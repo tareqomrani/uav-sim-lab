@@ -42,8 +42,7 @@ def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, te
     color = get_delta_color(delta_T)
     st.markdown(f"<span style='color:{color};font-size:20px;'>Thermal Signature Risk: <b>{risk} (ΔT = {delta_T:.1f}°C)</b></span>", unsafe_allow_html=True)
     if profile["power_system"].lower() == "hybrid":
-        burn_rate = 1.5 + (0.1 * gustiness) + ((terrain_penalty - 1) * 3)
-        fuel_burned = calculate_fuel_consumption(power_draw_watt=total_draw, duration_hr=flight_time_minutes / 60, fuel_burn_rate_lph=burn_rate)
+        fuel_burned = calculate_fuel_consumption(power_draw_watt=total_draw, duration_hr=flight_time_minutes / 60)
         st.metric(label="Estimated Fuel Used", value=f"{fuel_burned:.2f} L")
     else:
         st.info("Fuel tracking not applicable for battery-powered UAVs.")
@@ -138,11 +137,7 @@ if submitted:
         else:
             total_draw = base_draw * weight_factor
 
-        if stealth_drag_penalty > 1.25:
-        total_draw *= stealth_drag_penalty * 1.1
-    else:
-        total_draw *= stealth_drag_penalty
-    total_draw *= terrain_penalty
+        total_draw *= terrain_penalty * stealth_drag_penalty
 
         if gustiness > 0:
             gust_penalty = 1 + (gustiness * 0.015)
@@ -168,8 +163,6 @@ if submitted:
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
         delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
         delta_T *= ir_shielding
-        if temperature_c < 50:
-            delta_T = max(delta_T, 0)
         delta_T = round(delta_T, 1)
 
         if battery_draw_only <= 0:
