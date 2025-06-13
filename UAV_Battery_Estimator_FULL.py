@@ -139,10 +139,10 @@ if submitted:
             total_draw = base_draw * weight_factor
 
         if stealth_drag_penalty > 1.25:
-        total_draw *= stealth_drag_penalty * 1.1
-    else:
-        total_draw *= stealth_drag_penalty
-    total_draw *= terrain_penalty
+            total_draw *= stealth_drag_penalty * 1.1
+        else:
+            total_draw *= stealth_drag_penalty
+        total_draw *= terrain_penalty
 
         if gustiness > 0:
             gust_penalty = 1 + (gustiness * 0.015)
