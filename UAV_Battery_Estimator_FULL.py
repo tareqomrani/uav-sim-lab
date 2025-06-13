@@ -163,6 +163,7 @@ if submitted:
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
         delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
         delta_T *= ir_shielding
+        delta_T = max(delta_T, 0)
         delta_T = round(delta_T, 1)
 
         if battery_draw_only <= 0:
