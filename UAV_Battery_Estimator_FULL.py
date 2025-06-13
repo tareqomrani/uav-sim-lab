@@ -28,8 +28,21 @@ def thermal_risk_rating(delta_T):
     else:
         return "High"
 
+def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
+    st.subheader("Thermal Signature & Fuel Analysis")
+    risk = thermal_risk_rating(delta_T)
+    st.metric(label="Thermal Signature Risk", value=f"{risk} (ΔT = {delta_T:.1f}°C)")
+    if profile["power_system"].lower() == "hybrid":
+        fuel_burned = calculate_fuel_consumption(
+            power_draw_watt=total_draw,
+            duration_hr=flight_time_minutes / 60
+        )
+        st.metric(label="Estimated Fuel Used", value=f"{fuel_burned:.2f} L")
+    else:
+        st.info("Fuel tracking not applicable for battery-powered UAVs.")
+
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
-st.title('UAV Battery Efficiency Estimator')
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 
 UAV_PROFILES = {
     "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "power_system": "Battery", "draw_watt": 150, "battery_wh": 60, "crash_risk": False, "ai_capabilities": "Basic flight stabilization, waypoint navigation"},
@@ -40,9 +53,12 @@ UAV_PROFILES = {
     "MQ-9 Reaper": {"max_payload_g": 1700000, "base_weight_kg": 2223, "power_system": "Hybrid", "draw_watt": 800, "battery_wh": 200, "crash_risk": True, "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking"},
     "Skydio 2+": {"max_payload_g": 150, "base_weight_kg": 0.8, "power_system": "Battery", "draw_watt": 90, "battery_wh": 45, "crash_risk": False, "ai_capabilities": "Full obstacle avoidance, visual SLAM, autonomous following"},
     "Freefly Alta 8": {"max_payload_g": 9000, "base_weight_kg": 6.2, "power_system": "Battery", "draw_watt": 400, "battery_wh": 710, "crash_risk": False, "ai_capabilities": "Autonomous camera coordination, precision loitering"},
-    "Teal Golden Eagle": {"max_payload_g": 2000, "base_weight_kg": 2.2, "power_system": "Hybrid", "draw_watt": 220, "battery_wh": 100, "crash_risk": True, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"},
-    "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 160, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"}
+    "Teal Golden Eagle": {"max_payload_g": 2000, "base_weight_kg": 2.2, "power_system": "Battery", "draw_watt": 220, "battery_wh": 100, "crash_risk": True, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"},
+    "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 160, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"},
+    "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"}
 }
+
+st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
@@ -67,8 +83,11 @@ with st.form("uav_form"):
     temperature_c = st.number_input("Temperature (°C)", value=25.0)
     altitude_m = st.number_input("Flight Altitude (m)", min_value=0, max_value=5000, value=0)
     elevation_gain_m = st.number_input("Elevation Gain (m)", min_value=-1000, max_value=1000, value=0)
-    cloud_cover = st.slider("Cloud Cover (%)", 0, 100, 50)
     flight_mode = st.selectbox("Flight Mode", ["Hover", "Forward Flight", "Waypoint Mission"])
+    cloud_cover = st.slider("Cloud Cover (%)", 0, 100, 50)
+    gustiness = st.slider("Wind Gust Factor (0 = calm, 10 = extreme)", 0, 10, 2)
+    terrain_penalty = st.slider("Terrain Complexity", 1.0, 1.5, 1.1)
+    stealth_drag_penalty = st.slider("Stealth Loadout Drag Factor", 1.0, 1.5, 1.0)
     simulate_failure = st.checkbox("Enable Failure Simulation (experimental)")
     submitted = st.form_submit_button("Estimate")
 
@@ -79,6 +98,7 @@ if submitted:
             st.stop()
 
         total_weight_kg = base_weight_kg + (payload_weight_g / 1000)
+
         if temperature_c < 15:
             battery_capacity_wh *= 0.9
         elif temperature_c > 35:
@@ -101,6 +121,18 @@ if submitted:
         else:
             total_draw = base_draw * weight_factor
 
+        total_draw *= terrain_penalty * stealth_drag_penalty
+
+        if gustiness > 0:
+            gust_penalty = 1 + (gustiness * 0.015)
+            total_draw *= gust_penalty
+            st.markdown(f"**Wind Turbulence Penalty:** `{(gust_penalty - 1)*100:.1f}%` added draw")
+
+        if cloud_cover > 0:
+            ir_shielding = 1 - (cloud_cover / 100) * 0.5
+        else:
+            ir_shielding = 1.0
+
         if elevation_gain_m > 0:
             climb_energy_j = total_weight_kg * 9.81 * elevation_gain_m
             climb_energy_wh = climb_energy_j / 3600
@@ -116,8 +148,11 @@ if submitted:
             st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`")
 
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
+        delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
+        delta_T *= ir_shielding
+
         if battery_draw_only <= 0:
-            st.error('Simulation failed: Battery draw is zero or undefined.')
+            st.error("Simulation failed: Battery draw is zero or undefined.")
             st.stop()
 
         flight_time_minutes = (battery_capacity_wh / battery_draw_only) * 60
@@ -125,20 +160,16 @@ if submitted:
         if flight_mode != "Hover":
             st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
-        # Live IR signature
-        ir_shielding = 1 - (cloud_cover / 100) * 0.5
-        delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
-        delta_T *= ir_shielding
-        st.subheader("Thermal Signature")
-        st.metric("ΔT (°C)", f"{delta_T:.1f}")
-        st.info(f"Thermal Signature Risk: **{thermal_risk_rating(delta_T)}**")
+        insert_thermal_and_fuel_outputs(
+            total_draw=total_draw,
+            profile=profile,
+            flight_time_minutes=flight_time_minutes,
+            temperature_c=temperature_c,
+            ir_shielding=ir_shielding,
+            delta_T=delta_T
+        )
 
-        # Fuel use
-        if profile["power_system"].lower() == "hybrid":
-            fuel_burned = calculate_fuel_consumption(total_draw, flight_time_minutes / 60)
-            st.metric("Estimated Fuel Used", f"{fuel_burned:.2f} L")
-
-        # AI Tips
+        # ✅ AI Suggestions
         st.subheader("AI Suggestions (Simulated GPT)")
         if payload_weight_g == max_lift:
             st.write("**Tip:** Payload is at maximum lift capacity. The drone may struggle to maintain stable flight.")
@@ -149,7 +180,6 @@ if submitted:
         if flight_mode in ["Hover", "Waypoint Mission"]:
             st.write("**Tip:** Hover and complex routes draw more power than forward cruise.")
 
-        # Live Battery Bar
         st.subheader("Live Simulation")
         time_step = 10
         total_steps = max(1, int(flight_time_minutes * 60 / time_step))
@@ -181,6 +211,11 @@ if submitted:
             time.sleep(0.05)
 
         st.success("Simulation complete.")
+
+        if simulate_failure or (profile["power_system"].lower() == "hybrid" or delta_T > 15 or altitude_m > 100):
+            st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
+        else:
+            st.success("**Safe:** UAV remains below typical detection thresholds.")
 
     except Exception as e:
         st.error("Unexpected error during simulation.")
