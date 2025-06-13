@@ -83,6 +83,9 @@ debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
 
+st.caption(f"Base weight: {profile['base_weight_kg']:.2f} kg — Max payload: {profile['max_payload_g']} g")
+st.caption(f"Power system: `{profile['power_system']}`")
+
 if "ai_capabilities" in profile:
     st.info(f"**AI Capabilities:** {profile['ai_capabilities']}")
 
