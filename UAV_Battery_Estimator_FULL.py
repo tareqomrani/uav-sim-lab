@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 import math
@@ -206,6 +205,25 @@ if submitted:
             st.warning("**Threat Alert:** UAV may be visible to AI-based IR or radar systems.")
         else:
             st.success("**Safe:** UAV remains below typical detection thresholds.")
+
+        # AI Suggestions (Simulated GPT)
+        st.subheader("AI Suggestions (Simulated GPT)")
+        if payload_weight_g == max_lift:
+            st.write("**Tip:** Payload is at maximum lift capacity.")
+        if wind_speed_kmh > 15:
+            st.write("**Tip:** High wind may reduce flight time.")
+        if battery_capacity_wh < 30:
+            st.write("**Tip:** Battery is under 30 Wh. Consider a larger pack.")
+        if flight_mode in ["Hover", "Waypoint Mission"]:
+            st.write("**Tip:** Hover and waypoint missions draw extra power.")
+        if stealth_drag_penalty > 1.2:
+            st.write("**Tip:** Stealth loadout may reduce endurance.")
+        if delta_T > 15:
+            st.write("**Tip:** Thermal load is high. Consider lighter payload or lower altitude.")
+        if altitude_m > 100:
+            st.write("**Tip:** Flying above 100m may increase detection risk.")
+        if gustiness >= 5:
+            st.write("**Tip:** Gust factor above 5 may destabilize small UAVs.")
 
     except Exception as e:
         st.error("Unexpected error during simulation.")
