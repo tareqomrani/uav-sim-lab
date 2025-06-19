@@ -218,27 +218,61 @@ if show_ir_radius and st.session_state.get("route_points"):
     import random
     import requests
 
-    st.subheader("🌍 Terrain & Threat Analysis")
+st.subheader("🌍 Terrain & Threat Analysis")
 
-    # --- Terrain Elevation Simulation (stub) ---
-    simulate_terrain = st.checkbox("Enable Terrain Elevation Penalty (simulated)")
-    elevation_gain_m = 0
-    elevation_loss_m = 0
+# --- Terrain Elevation Simulation (stub) ---
+simulate_terrain = st.checkbox("Enable Terrain Elevation Penalty (simulated)")
+elevation_gain_m = 0
+elevation_loss_m = 0
+
+if simulate_terrain and st.session_state.get("route_points") and len(st.session_state["route_points"]) > 1:
+    elevation_gain_m = random.randint(20, 200)
+    elevation_loss_m = random.randint(10, 150)
+    terrain_penalty_factor = 1.0 + elevation_gain_m * 0.0005
+    st.markdown(f"**Simulated Elevation Gain:** {elevation_gain_m} m")
+    st.markdown(f"**Simulated Elevation Loss:** {elevation_loss_m} m")
+    st.markdown(f"**Energy Draw Penalty Factor:** x{terrain_penalty_factor:.2f}")
+else:
     terrain_penalty_factor = 1.0
 
-    if simulate_terrain and st.session_state.get("route_points") and len(st.session_state["route_points"]) > 1:
-        # Simulate terrain profile (for testing)
-        elevation_gain_m = random.randint(20, 200)
-        elevation_loss_m = random.randint(10, 150)
-        terrain_penalty_factor += elevation_gain_m * 0.0005
-        st.markdown(f"**Simulated Elevation Gain:** {elevation_gain_m} m  
-**Loss:** {elevation_loss_m} m")
-        st.markdown(f"**Energy Draw Penalty Factor:** x{terrain_penalty_factor:.2f}")
-    else:
-        terrain_penalty_factor = 1.0
+# --- Threat Zones ---
+st.subheader("🛑 Threat Zones (Demo)")
+threat_zones = {
+    "IR Net Zone": {"lat": 30.25, "lon": 0.25, "radius_km": 10},
+    "Radar Tower Alpha": {"lat": 30.15, "lon": 0.15, "radius_km": 8}
+}
+enabled_threats = st.multiselect("Enable Threat Zones", list(threat_zones.keys()))
+threat_score = 0
+zone_hits = []
 
-    # --- Threat Zones ---
-    st.subheader("🛑 Threat Zones (Demo)")
+if st.session_state.get("route_points"):
+    for name in enabled_threats:
+        zone = threat_zones[name]
+        threat_loc = (zone["lat"], zone["lon"])
+        for pt in st.session_state["route_points"]:
+            dist = geodesic(threat_loc, pt).km
+            if dist <= zone["radius_km"]:
+                zone_hits.append(name)
+                threat_score += 10
+                break
+
+    if zone_hits:
+        st.warning(f"⚠️ Route intersects: {', '.join(set(zone_hits))}")
+        st.metric("Threat Exposure Score", threat_score)
+    else:
+        st.success("✅ Route avoids all defined threat zones.")
+
+    if show_ir_radius:
+        for name in enabled_threats:
+            zone = threat_zones[name]
+            folium.Circle(
+                location=(zone["lat"], zone["lon"]),
+                radius=zone["radius_km"] * 1000,
+                color="orange",
+                fill=True,
+                fill_opacity=0.2,
+                tooltip=f"{name} ({zone['radius_km']} km)"
+            ).add_to(m)
     threat_zones = {
         "IR Net Zone": {"lat": 30.25, "lon": 0.25, "radius_km": 10},
         "Radar Tower Alpha": {"lat": 30.15, "lon": 0.15, "radius_km": 8}
@@ -277,4 +311,80 @@ if show_ir_radius and st.session_state.get("route_points"):
                     fill_opacity=0.2,
                     tooltip=f"{name} ({zone['radius_km']} km)"
                 ).add_to(m)
+
+
+import pandas as pd
+
+# === Terrain Elevation with Real API ===
+st.subheader("🌐 Real Elevation Data (Optional)")
+use_real_elevation = st.checkbox("Use Real Elevation API (OpenTopoData)")
+
+def get_elevation(lat, lon):
+    url = f"https://api.opentopodata.org/v1/eudem25m?locations={lat},{lon}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        return data["results"][0]["elevation"]
+    except:
+        return None
+
+elevation_gain_m = 0
+if use_real_elevation and st.session_state.get("route_points") and len(st.session_state["route_points"]) > 1:
+    route_points = st.session_state["route_points"]
+    elevations = [get_elevation(lat, lon) for lat, lon in route_points]
+    elevations = [e for e in elevations if e is not None]
+    if len(elevations) == len(route_points):
+        elevation_gain_m = sum(max(e2 - e1, 0) for e1, e2 in zip(elevations, elevations[1:]))
+        elevation_loss_m = sum(max(e1 - e2, 0) for e1, e2 in zip(elevations, elevations[1:]))
+        terrain_penalty_factor = 1.0 + elevation_gain_m * 0.0005
+        st.markdown(f"**Elevation Gain (API):** {elevation_gain_m:.1f} m")
+        st.markdown(f"**Elevation Loss (API):** {elevation_loss_m:.1f} m")
+        st.markdown(f"**Adjusted Terrain Penalty Factor:** x{terrain_penalty_factor:.2f}")
+    else:
+        st.warning("Some elevation data could not be retrieved. Falling back to default.")
+        terrain_penalty_factor = 1.0
+# === Upload Threat Zones ===
+st.subheader("📂 User-Defined Threat Zones")
+upload_threats = st.checkbox("Upload Custom Threat Zones (.csv)")
+
+custom_threats = []
+if upload_threats:
+    uploaded_file = st.file_uploader("Upload Threat Zones CSV", type=["csv"])
+    if uploaded_file:
+        df_zones = pd.read_csv(uploaded_file)
+        for _, row in df_zones.iterrows():
+            folium.Circle(
+                location=(row["lat"], row["lon"]),
+                radius=row["radius_km"] * 1000,
+                color="red" if row["type"] == "ir" else "blue",
+                tooltip=f"{row['name']} ({row['type']})"
+            ).add_to(m)
+            custom_threats.append({
+                "name": row["name"],
+                "lat": row["lat"],
+                "lon": row["lon"],
+                "radius_km": row["radius_km"],
+                "type": row["type"]
+            })
+
+# === AI Recommendations ===
+st.subheader("🧠 AI Mission Recommendations")
+show_ai_tips = st.checkbox("Enable Flight Recommendations")
+
+if show_ai_tips:
+    st.markdown("### ✈️ Flight Optimization Suggestions")
+    if payload_weight_g == profile["max_payload_g"]:
+        st.write("• Payload is at maximum capacity.")
+    if temperature_c > 35 or temperature_c < 5:
+        st.write("• Extreme temps may degrade battery performance.")
+    if fuel_L and fuel_L > 200:
+        st.write("• Fuel usage is high — optimize hybrid usage or flight time.")
+    if delta_T > 20:
+        st.write("• High thermal signature. Consider lower altitude or stealth tuning.")
+    if total_km > 20 and profile["power_system"] == "Battery":
+        st.write("• Route may exceed battery UAV's endurance.")
+    if elevation_gain_m > 150:
+        st.write("• High elevation gain — consider flatter route to conserve energy.")
+    if threat_score > 20:
+        st.write("• Route crosses multiple threat zones — consider re-routing.")
 
