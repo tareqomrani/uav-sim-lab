@@ -22,6 +22,16 @@ UAV_PROFILES = {
     "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components", "default_payload_g": 750, "default_speed_kmh": 40, "default_altitude_m": 100, "default_wind_kmh": 10, "default_temp_c": 25, "default_surface_area_m2": 1.0}
 }
 
+
+def estimate_thermal_signature(draw_watt, efficiency, surface_area, emissivity, ambient_temp_C):
+    sigma = 5.670374419e-8  # Stefan–Boltzmann constant
+    waste_heat = draw_watt * (1 - efficiency)
+    if waste_heat <= 0 or surface_area <= 0 or emissivity <= 0:
+        return 0
+    temp_K = (waste_heat / (emissivity * sigma * surface_area)) ** 0.25
+    temp_C = temp_K - 273.15
+    return round(temp_C - ambient_temp_C, 1)
+
 def cap_flight_time_range(model_name, time_min, distance_km):
     caps = {
         "Generic Quad": (30, 6), "DJI Phantom": (45, 10), "RQ-11 Raven": (90, 15),
@@ -202,3 +212,69 @@ if show_ir_radius and st.session_state.get("route_points"):
         tooltip=f"IR Detection Radius: {radius_km:.2f} km"
     ).add_to(m)
     st_folium(m, height=400, key="map_with_ir_radius")
+
+
+
+    import random
+    import requests
+
+    st.subheader("🌍 Terrain & Threat Analysis")
+
+    # --- Terrain Elevation Simulation (stub) ---
+    simulate_terrain = st.checkbox("Enable Terrain Elevation Penalty (simulated)")
+    elevation_gain_m = 0
+    elevation_loss_m = 0
+    terrain_penalty_factor = 1.0
+
+    if simulate_terrain and st.session_state.get("route_points") and len(st.session_state["route_points"]) > 1:
+        # Simulate terrain profile (for testing)
+        elevation_gain_m = random.randint(20, 200)
+        elevation_loss_m = random.randint(10, 150)
+        terrain_penalty_factor += elevation_gain_m * 0.0005
+        st.markdown(f"**Simulated Elevation Gain:** {elevation_gain_m} m  
+**Loss:** {elevation_loss_m} m")
+        st.markdown(f"**Energy Draw Penalty Factor:** x{terrain_penalty_factor:.2f}")
+    else:
+        terrain_penalty_factor = 1.0
+
+    # --- Threat Zones ---
+    st.subheader("🛑 Threat Zones (Demo)")
+    threat_zones = {
+        "IR Net Zone": {"lat": 30.25, "lon": 0.25, "radius_km": 10},
+        "Radar Tower Alpha": {"lat": 30.15, "lon": 0.15, "radius_km": 8}
+    }
+    enabled_threats = st.multiselect("Enable Threat Zones", list(threat_zones.keys()))
+
+    threat_score = 0
+    zone_hits = []
+
+    if st.session_state.get("route_points"):
+        for name in enabled_threats:
+            zone = threat_zones[name]
+            threat_loc = (zone["lat"], zone["lon"])
+            for pt in st.session_state["route_points"]:
+                dist = geodesic(threat_loc, pt).km
+                if dist <= zone["radius_km"]:
+                    zone_hits.append(name)
+                    threat_score += 10
+                    break
+
+        if zone_hits:
+            st.warning(f"⚠️ Route intersects: {', '.join(set(zone_hits))}")
+            st.metric("Threat Exposure Score", threat_score)
+        else:
+            st.success("✅ Route avoids all defined threat zones.")
+
+        # Add circles to map if IR visualization was toggled earlier
+        if show_ir_radius:
+            for name in enabled_threats:
+                zone = threat_zones[name]
+                folium.Circle(
+                    location=(zone["lat"], zone["lon"]),
+                    radius=zone["radius_km"] * 1000,
+                    color="orange",
+                    fill=True,
+                    fill_opacity=0.2,
+                    tooltip=f"{name} ({zone['radius_km']} km)"
+                ).add_to(m)
+
