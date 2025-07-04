@@ -1,3 +1,11 @@
+from datetime import datetime
+import pytz
+
+# Timestamp for display and logging
+eastern = pytz.timezone("US/Eastern")
+now = datetime.now(eastern)
+timestamp = now.strftime("v%Y%m%d_%H%M%S")
+
 # UAV Battery Efficiency Estimator — Enhanced Version
 # Built by Tareq Omrani | Timestamp: v20250704_185946
 
