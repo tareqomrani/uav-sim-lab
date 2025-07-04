@@ -176,6 +176,36 @@ if submitted:
             st.markdown(f"**Descent Recovery Bonus:** `+{recovered_wh:.2f} Wh`")
 
         battery_draw_only = calculate_hybrid_draw(total_draw, profile["power_system"])
+# === Apply Mission Legs to Energy Estimation ===
+        if mission_legs > 0 and mission_distances and mission_altitudes:
+            leg_energy_wh_total = 0
+            total_km = 0
+            current_alt = altitude_m  # starting altitude
+            for i in range(mission_legs):
+                dist_km = mission_distances[i]
+                target_alt = mission_altitudes[i]
+                delta_alt = target_alt - current_alt
+                time_hr = dist_km / max(flight_speed_kmh, 1e-5)
+                leg_draw = total_draw
+                # Add climb or descent cost
+                if delta_alt > 0:
+                    climb_j = total_weight_kg * 9.81 * delta_alt
+                    climb_wh = climb_j / 3600
+                    leg_energy_wh_total += climb_wh
+                elif delta_alt < 0:
+                    descent_j = total_weight_kg * 9.81 * abs(delta_alt)
+                    recovered_wh = (descent_j / 3600) * 0.2
+                    leg_energy_wh_total -= recovered_wh  # energy saved
+                # Add cruising power usage
+                cruise_energy_wh = leg_draw * time_hr
+                leg_energy_wh_total += cruise_energy_wh
+                total_km += dist_km
+                current_alt = target_alt
+            battery_capacity_wh -= leg_energy_wh_total
+            st.markdown(f"**Mission Plan Energy Cost:** `{leg_energy_wh_total:.2f} Wh` over {total_km:.1f} km")
+            if battery_capacity_wh <= 0:
+                st.error("Mission plan exceeds battery capacity.")
+                st.stop()
         delta_T = estimate_thermal_signature(draw_watt=total_draw, efficiency=0.85, surface_area=0.3, emissivity=0.9, ambient_temp_C=temperature_c)
         delta_T *= ir_shielding
 
@@ -264,7 +294,33 @@ import json
 import matplotlib.pyplot as plt
 
 # === Mission Planning ===
+# === Mission Planning ===
+# === Mission Planning ===
 with st.expander("📍 Mission Planning (Experimental)"):
+    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1)
+    mission_distances = []
+    mission_altitudes = []
+    for i in range(mission_legs):
+        dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"dist_leg_{i}")
+        alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"alt_leg_{i}")
+        mission_distances.append(dist)
+        mission_altitudes.append(alt)
+        mission_legs = st.slider("Number of Mission Legs", 1, 5, 1)
+        mission_distances = []
+        mission_altitudes = []
+        for i in range(mission_legs):
+            dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"dist_leg_{i}")
+            alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"alt_leg_{i}")
+            mission_distances.append(dist)
+            mission_altitudes.append(alt)
+        if st.button("Estimate Mission Plan"):
+            total_km = sum(mission_distances)
+            avg_alt = sum(mission_altitudes) / len(mission_altitudes)
+            st.write(f"Total planned distance: **{total_km:.2f} km**")
+            st.write(f"Average flight altitude: **{avg_alt:.0f} m**")
+            st.write("Leg breakdown:")
+            for i, (d, a) in enumerate(zip(mission_distances, mission_altitudes)):
+                st.write(f"• Leg {i+1}: {d:.2f} km at {a} m")
     mission_legs = st.slider("Number of Mission Legs", 1, 5, 1)
     mission_distances = []
     mission_altitudes = []
