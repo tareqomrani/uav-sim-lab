@@ -296,7 +296,16 @@ import matplotlib.pyplot as plt
 # === Mission Planning ===
 # === Mission Planning ===
 # === Mission Planning ===
+# === Mission Planning ===
 with st.expander("📍 Mission Planning (Experimental)"):
+    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider")
+    mission_distances = []
+    mission_altitudes = []
+    for i in range(mission_legs):
+        dist = st.number_input(f"Distance for Leg {{i+1}} (km)", min_value=0.1, value=2.0, key=f"dist_leg_{{i}}")
+        alt = st.number_input(f"Altitude for Leg {{i+1}} (m)", min_value=0, value=100, key=f"alt_leg_{{i}}")
+        mission_distances.append(dist)
+        mission_altitudes.append(alt)
     mission_legs = st.slider("Number of Mission Legs", 1, 5, 1)
     mission_distances = []
     mission_altitudes = []
