@@ -310,19 +310,19 @@ with st.expander("📍 Mission Planning (Experimental)"):
     mission_distances = []
     mission_altitudes = []
     for i in range(mission_legs):
-        dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}"))
-        alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"mission_alt_{i}"))
+        dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}")
+        dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}")
         mission_distances.append(dist)
         mission_altitudes.append(alt)
         mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
         mission_distances = []
         mission_altitudes = []
         for i in range(mission_legs):
-            dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}"))
-            alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"mission_alt_{i}"))
-            mission_distances.append(dist)
-            mission_altitudes.append(alt)
-        if st.button("Estimate Mission Plan"):
+            dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}")
+        alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"mission_alt_{i}")
+mission_distances.append(dist)
+mission_altitudes.append(alt)
+if st.button("Estimate Mission Plan"):
             total_km = sum(mission_distances)
             avg_alt = sum(mission_altitudes) / len(mission_altitudes)
             st.write(f"Total planned distance: **{total_km:.2f} km**")
@@ -330,15 +330,15 @@ with st.expander("📍 Mission Planning (Experimental)"):
             st.write("Leg breakdown:")
             for i, (d, a) in enumerate(zip(mission_distances, mission_altitudes)):
                 st.write(f"• Leg {i+1}: {d:.2f} km at {a} m")
-    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
-    mission_distances = []
-    mission_altitudes = []
-    for i in range(mission_legs):
-        dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}"))
-        alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"mission_alt_{i}"))
-        mission_distances.append(dist)
-        mission_altitudes.append(alt)
-    if st.button("Estimate Mission Plan"):
+mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
+mission_distances = []
+mission_altitudes = []
+for i in range(mission_legs):
+        st.write(f"Leg {leg+1}")  # Placeholder loop body for validation
+alt = st.number_input(f"Altitude for Leg {i+1} (m)", min_value=0, value=100, key=f"mission_alt_{i}")
+mission_distances.append(dist)
+mission_altitudes.append(alt)
+if st.button("Estimate Mission Plan"):
         total_km = sum(mission_distances)
         avg_alt = sum(mission_altitudes) / len(mission_altitudes)
         st.write(f"Total planned distance: **{total_km:.2f} km**")
