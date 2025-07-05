@@ -298,7 +298,7 @@ import matplotlib.pyplot as plt
 # === Mission Planning ===
 # === Mission Planning ===
 with st.expander("📍 Mission Planning (Experimental)"):
-    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
+    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main_1")
     mission_distances = []
     mission_altitudes = []
     for i in range(mission_legs):
@@ -306,7 +306,7 @@ with st.expander("📍 Mission Planning (Experimental)"):
         alt = st.number_input(f"Altitude for Leg {{i+1}} (m)", min_value=0, value=100, key=f"alt_leg_{{i}}")
         mission_distances.append(dist)
         mission_altitudes.append(alt)
-    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
+    mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main_2")
     mission_distances = []
     mission_altitudes = []
     for i in range(mission_legs):
@@ -314,7 +314,7 @@ with st.expander("📍 Mission Planning (Experimental)"):
         dist = st.number_input(f"Distance for Leg {i+1} (km)", min_value=0.1, value=2.0, key=f"mission_dist_{i}")
         mission_distances.append(dist)
         mission_altitudes.append(alt)
-        mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
+        mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main_3")
         mission_distances = []
         mission_altitudes = []
         for i in range(mission_legs):
@@ -330,7 +330,7 @@ if st.button("Estimate Mission Plan"):
             st.write("Leg breakdown:")
             for i, (d, a) in enumerate(zip(mission_distances, mission_altitudes)):
                 st.write(f"• Leg {i+1}: {d:.2f} km at {a} m")
-mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main")
+mission_legs = st.slider("Number of Mission Legs", 1, 5, 1, key="mission_legs_slider_main_4")
 mission_distances = []
 mission_altitudes = []
 for i in range(mission_legs):
