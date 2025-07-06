@@ -1,3 +1,4 @@
+
 import streamlit as st
 import time
 import math
@@ -8,8 +9,6 @@ from datetime import datetime
 SIGMA = 5.670374419e-8
 AIR_DENSITY_SEA_LEVEL = 1.225
 GRAVITY = 9.81
-
-# --- Physics Models ---
 
 def compute_air_density(altitude_m):
     return AIR_DENSITY_SEA_LEVEL * (1 - 0.0000225577 * altitude_m) ** 5.25588
@@ -31,15 +30,25 @@ def estimate_hybrid_power_split(draw_watt, flight_mode="Cruise", hybrid_blend_ra
     else:
         return draw_watt * hybrid_blend_ratio
 
-def estimate_thermal_signature_realistic(draw_watt, efficiency, surface_area, emissivity, ambient_temp_C, convective_factor=0.3):
+def estimate_thermal_signature(draw_watt, efficiency, surface_area, emissivity, ambient_temp_C):
     waste_heat = draw_watt * (1 - efficiency)
     if waste_heat <= 0 or surface_area <= 0 or emissivity <= 0:
         return 0
-    adjusted_heat = waste_heat * (1 - convective_factor)
-    temp_K = (adjusted_heat / (emissivity * SIGMA * surface_area)) ** 0.25
+    temp_K = (waste_heat / (emissivity * SIGMA * surface_area)) ** 0.25
     temp_C = temp_K - 273.15
     delta_T = temp_C - ambient_temp_C
     return round(delta_T, 1)
+
+def thermal_risk_rating(delta_T):
+    if delta_T < 10:
+        return "Low"
+    elif delta_T < 20:
+        return "Moderate"
+    else:
+        return "High"
+
+def calculate_fuel_consumption(power_draw_watt, duration_hr, fuel_burn_rate_lph=1.5):
+    return fuel_burn_rate_lph * duration_hr if power_draw_watt > 0 else 0
 
 def compute_battery_loss(battery_wh, draw_watt):
     if draw_watt < 200:
@@ -49,7 +58,24 @@ def compute_battery_loss(battery_wh, draw_watt):
     else:
         return battery_wh * 0.8
 
-# --- UAV Profiles ---
+def insert_thermal_and_fuel_outputs(total_draw, profile, flight_time_minutes, temperature_c, ir_shielding, delta_T):
+    st.subheader("Thermal Signature & Fuel Analysis")
+    risk = thermal_risk_rating(delta_T)
+    st.metric(label="Thermal Signature Risk", value=f"{risk} (ΔT = {delta_T:.1f}°C)")
+    if profile["power_system"].lower() == "hybrid":
+        fuel_burned = calculate_fuel_consumption(
+            power_draw_watt=total_draw,
+            duration_hr=flight_time_minutes / 60
+        )
+        st.metric(label="Estimated Fuel Used", value=f"{fuel_burned:.2f} L")
+    else:
+        st.info("Fuel tracking not applicable for battery-powered UAVs.")
+
+
+
+st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+st.caption("GPT-UAV Planner | Aerospace-Grade Upgrade | 2025")
 
 UAV_PROFILES = {
     "Generic Quad": {"max_payload_g": 800, "base_weight_kg": 1.2, "power_system": "Battery", "draw_watt": 150, "battery_wh": 60, "wing_area": 0.2, "frontal_area": 0.1, "Cd": 1.2, "Cl": 0.9, "ai_capabilities": "Basic flight stabilization, waypoint navigation"},
@@ -63,42 +89,45 @@ UAV_PROFILES = {
     "Teal Golden Eagle": {"max_payload_g": 2000, "base_weight_kg": 2.2, "power_system": "Battery", "draw_watt": 220, "battery_wh": 100, "wing_area": 0.35, "frontal_area": 0.18, "Cd": 1.1, "Cl": 0.9, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"},
     "Quantum Systems Vector": {"max_payload_g": 1500, "base_weight_kg": 2.3, "power_system": "Battery", "draw_watt": 160, "battery_wh": 150, "wing_area": 0.5, "frontal_area": 0.2, "Cd": 1.0, "Cl": 1.0, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"},
     "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "wing_area": 0.4, "frontal_area": 0.2, "Cd": 1.1, "Cl": 0.9, "ai_capabilities": "User-defined platform with configurable components"}
+},
+    "MQ-9 Reaper": {"max_payload_g": 1700000, "base_weight_kg": 2223, "power_system": "Hybrid", "draw_watt": 800, "battery_wh": 200, "wing_area": 16.0, "frontal_area": 2.5, "Cd": 0.55, "Cl": 1.15, "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking"},
+    "Custom Build": {"max_payload_g": 1500, "base_weight_kg": 2.0, "power_system": "Battery", "draw_watt": 180, "battery_wh": 150, "wing_area": 0.4, "frontal_area": 0.2, "Cd": 1.1, "Cl": 0.9, "ai_capabilities": "User-defined platform"}
 }
 
-# --- Streamlit UI ---
-
-st.set_page_config(page_title='Aerospace UAV Simulator', layout='centered')
-st.markdown("<h1 style='color:#00FF00;'>Aerospace-Grade UAV Simulator</h1>", unsafe_allow_html=True)
-
-drone_model = st.selectbox("Select UAV", list(UAV_PROFILES.keys()))
+drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
-flight_mode = st.selectbox("Flight Mode", ["Hover", "Cruise", "Climb", "Loiter"])
-airspeed_kmh = st.number_input("Flight Speed (km/h)", value=60.0, min_value=0.0)
-altitude_m = st.number_input("Altitude (m)", value=500)
-ambient_temp = st.number_input("Ambient Temp (°C)", value=25.0)
+
+airspeed_kmh = st.slider("Flight Speed (km/h)", 10, 300, 80)
+altitude_m = st.slider("Flight Altitude (m)", 0, 10000, 1000)
+ambient_temp = st.number_input("Ambient Temperature (°C)", value=25.0)
+flight_mode = st.selectbox("Flight Mode", ["Cruise", "Climb", "Loiter"])
+payload_grams = st.slider("Payload (g)", 0, profile["max_payload_g"], int(profile["max_payload_g"] * 0.5))
 
 airspeed_mps = airspeed_kmh / 3.6
 rho = compute_air_density(altitude_m)
 drag_force = calculate_drag_force(airspeed_mps, profile["Cd"], profile["frontal_area"], rho)
 lift_force = calculate_lift_force(airspeed_mps, profile["Cl"], profile["wing_area"], rho)
 propulsion_power = estimate_propulsion_power_needed(drag_force, airspeed_mps)
+
 usable_battery_wh = compute_battery_loss(profile["battery_wh"], propulsion_power)
 
-battery_draw = estimate_hybrid_power_split(propulsion_power, flight_mode) if profile["power_system"] == "Hybrid" else propulsion_power
-flight_time_minutes = (usable_battery_wh / battery_draw) * 60
-delta_T = estimate_thermal_signature_realistic(draw_watt=propulsion_power, efficiency=0.85,
-                                                surface_area=profile["frontal_area"], emissivity=0.9,
-                                                ambient_temp_C=ambient_temp)
+if profile["power_system"].lower() == "hybrid":
+    battery_draw = estimate_hybrid_power_split(propulsion_power, flight_mode)
+else:
+    battery_draw = propulsion_power
 
-# --- Display Metrics ---
+flight_time_minutes = (usable_battery_wh / battery_draw) * 60
+delta_T = estimate_thermal_signature(draw_watt=propulsion_power, efficiency=0.85, surface_area=profile["frontal_area"], emissivity=0.9, ambient_temp_C=ambient_temp)
+
+# Output
 st.metric("Air Density (kg/m³)", f"{rho:.2f}")
 st.metric("Lift Force (N)", f"{lift_force:.1f}")
 st.metric("Drag Force (N)", f"{drag_force:.1f}")
-st.metric("Power Needed (W)", f"{propulsion_power:.1f}")
+st.metric("Propulsion Power (W)", f"{propulsion_power:.1f}")
 st.metric("Battery Draw (W)", f"{battery_draw:.1f}")
 st.metric("Usable Battery (Wh)", f"{usable_battery_wh:.1f}")
-st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
-st.metric("ΔT Thermal Signature", f"{delta_T:.1f}°C")
+st.metric("Flight Time", f"{flight_time_minutes:.1f} min")
+st.metric("Thermal Signature ΔT", f"{delta_T:.1f}°C")
 
 if delta_T > 15:
     st.warning("⚠️ High IR visibility risk.")
@@ -106,31 +135,3 @@ elif delta_T > 10:
     st.info("🟡 Moderate IR visibility.")
 else:
     st.success("🟢 Low IR signature.")
-
-# --- Export ---
-def export_mission_log():
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_data = {
-        "UAV Model": drone_model,
-        "Flight Mode": flight_mode,
-        "Airspeed (km/h)": airspeed_kmh,
-        "Altitude (m)": altitude_m,
-        "Ambient Temp (°C)": ambient_temp,
-        "Air Density (kg/m3)": rho,
-        "Lift Force (N)": lift_force,
-        "Drag Force (N)": drag_force,
-        "Power Needed (W)": propulsion_power,
-        "Battery Draw (W)": battery_draw,
-        "Usable Battery (Wh)": usable_battery_wh,
-        "Estimated Flight Time (min)": flight_time_minutes,
-        "Thermal Signature ΔT (°C)": delta_T,
-        "Timestamp": timestamp
-    }
-    df = pd.DataFrame([log_data])
-    filename = f"uav_mission_log_{timestamp}.csv"
-    df.to_csv(filename, index=False)
-    return filename
-
-if st.button("Export Mission Log"):
-    log_file = export_mission_log()
-    st.success(f"Mission log saved as `{log_file}`")
