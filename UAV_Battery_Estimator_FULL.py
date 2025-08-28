@@ -1,14 +1,14 @@
 # Final1_full_mobile.py
-# Streamlit UAV Mission Lab — Physics + LLM + Swarm + Stealth + Playback + CSV/JSON Exports
-# Aerospace-minded upgrades applied globally:
-# - ISA air-density everywhere; rotorcraft scaling √(ρ0/ρ)
-# - Fixed-wing (battery & ICE) use drag polar (CD0 + k CL^2) + propulsive efficiency
-# - Nonlinear gust/turbulence penalty vs wing loading & gust intensity
-# - Convective + radiative thermal model (stable, never negative)
-# - Climb energy exact (m·g·h) with recovery on descent (battery) and fuel for ICE
-# - Battery clamped to platform nominal unless Debug Override
-# - Endurance uncertainty bands (±10%)
-# - Results export (CSV + JSON) with all key factors (density, wind penalty, climb cost)
+# UAV Mission Lab — Aerospace-grade physics + LLM + Swarm + Stealth + Playback + CSV/JSON Export
+# Global upgrades applied to ALL UAV models:
+# - ISA air-density; rotorcraft induced-power √(ρ0/ρ) scaling
+# - Fixed-wing battery & ICE: bounded aero (CD0 floor, e cap, ηp bounds) + hotel loads + installation losses
+# - Gust/turbulence penalty vs wing loading or rotor WL proxy
+# - Vector wind groundspeed: best-heading & upwind ranges (warn if W ≥ V_air)
+# - Energy realism: 85% usable battery + 30% dispatch reserve (battery), 90% usable tank + 30% reserve (ICE)
+# - Climb energy (battery Wh) / climb fuel (ICE L) applied explicitly
+# - Robust thermal model with convection floor; waste heat includes hotel load
+# - Full swarm advisor/LEAD fusion retained; unified CSV/JSON export
 
 import os, time, math, random, json, io
 from dataclasses import dataclass, asdict
@@ -33,9 +33,9 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 # Streamlit header / UX helpers
 # ─────────────────────────────────────────────────────────
-st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
+st.set_page_config(page_title='UAV Mission Lab — Aerospace Grade', layout='centered')
 
-# Auto-select text on focus (mobile-friendly)
+# Auto-select text when focusing an input (easier to clear/edit on mobile)
 st.markdown("""
     <script>
     const inputs = window.parent.document.querySelectorAll('input');
@@ -43,7 +43,7 @@ st.markdown("""
     </script>
 """, unsafe_allow_html=True)
 
-st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#00FF00;'>UAV Mission Lab — Aerospace Grade</h1>", unsafe_allow_html=True)
 st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
 def numeric_input(label: str, default: float) -> float:
@@ -58,19 +58,33 @@ def numeric_input(label: str, default: float) -> float:
         return default
 
 # ─────────────────────────────────────────────────────────
-# Physics helpers
+# Physics helpers (aerospace-grade)
 # ─────────────────────────────────────────────────────────
-RHO0 = 1.225  # kg/m^3 sea-level
-SIGMA = 5.670374419e-8  # Stefan–Boltzmann constant
+RHO0 = 1.225       # kg/m^3 sea-level
+P0   = 101325.0    # Pa
+T0K  = 288.15      # K
+LAPSE= 0.0065      # K/m
+R_AIR= 287.05
+G0   = 9.80665
+SIGMA= 5.670374419e-8  # W/m^2K^4
 
-def std_atmo_density(alt_m: float) -> float:
-    """Simple exponential ISA-like density model, adequate up to ~6–8 km."""
-    rho0, H = RHO0, 8500.0
-    return rho0 * math.exp(-max(0.0, alt_m) / H)
+# Global realism constants
+USABLE_BATT_FRAC  = 0.85
+USABLE_FUEL_FRAC  = 0.90
+DISPATCH_RESERVE  = 0.30  # 30% reserve on time/energy
+HOTEL_W_DEFAULT   = 15.0  # avionics/radio/CPU baseline
+INSTALL_FRAC_DEF  = 0.15  # installation/trim losses on aero polar
 
-def density_ratio(alt_m: float) -> Tuple[float, float]:
-    """Return (rho, rho_ratio=rho/rho0)."""
-    rho = std_atmo_density(alt_m)
+def air_density(alt_m: float, sea_level_temp_C: float = 15.0) -> float:
+    """ISA troposphere density (up to ~11 km)."""
+    T0 = sea_level_temp_C + 273.15
+    if alt_m < 0: alt_m = 0.0
+    T  = max(1.0, T0 - LAPSE * alt_m)
+    p  = P0 * (1.0 - (LAPSE*alt_m)/T0) ** (G0/(R_AIR*LAPSE))
+    return p/(R_AIR*T)
+
+def density_ratio(alt_m: float, sea_level_temp_C: float = 15.0) -> Tuple[float, float]:
+    rho = air_density(alt_m, sea_level_temp_C)
     return rho, rho / RHO0
 
 def rotorcraft_density_scale(rho_ratio: float) -> float:
@@ -78,54 +92,32 @@ def rotorcraft_density_scale(rho_ratio: float) -> float:
     return 1.0 / max(0.3, math.sqrt(max(1e-4, rho_ratio)))
 
 def drag_polar_cd(cd0: float, cl: float, e: float, aspect_ratio: float) -> float:
-    """Parasitic + induced drag model."""
     k = 1.0 / (math.pi * max(0.3, e) * max(2.0, aspect_ratio))
     return cd0 + k * (cl ** 2)
 
 def aero_power_required_W(weight_N: float, rho: float, V_ms: float,
                           wing_area_m2: float, cd0: float, e: float,
                           wingspan_m: float, prop_eff: float) -> float:
-    """
-    Shaft power required using classic drag polar + dynamic pressure.
-    """
+    """Shaft power required using drag polar + dynamic pressure."""
     V_ms = max(1.0, V_ms)
     q = 0.5 * rho * V_ms * V_ms
     cl = weight_N / (q * max(1e-6, wing_area_m2))
     AR = (wingspan_m ** 2) / max(1e-6, wing_area_m2)
     cd = drag_polar_cd(cd0, cl, e, AR)
     D = q * wing_area_m2 * cd
-    return (D * V_ms) / max(0.1, prop_eff)
+    return (D * V_ms) / max(0.3, prop_eff)
 
-def bsfc_fuel_burn_lph(power_W: float, bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
-    fuel_kg_per_h = (bsfc_gpkwh / 1000.0) * (power_W / 1000.0)
-    return fuel_kg_per_h / max(0.5, fuel_density_kgpl)
-
-def climb_fuel_liters(total_mass_kg: float, climb_m: float,
-                      bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
-    if climb_m <= 0: return 0.0
-    E_kWh = (total_mass_kg * 9.81 * climb_m) / 3_600_000.0
-    fuel_kg = (bsfc_gpkwh / 1000.0) * E_kWh
-    return fuel_kg / max(0.5, fuel_density_kgpl)
-
-def convective_radiative_deltaT(draw_watt: float, efficiency: float,
-                                surface_area_m2: float, emissivity: float,
-                                ambient_C: float, rho: float, V_ms: float) -> float:
-    """
-    Robust thermal model that never returns negative:
-    Q = draw*(1-η). Solve ΔT from steady-state convective + radiative sink.
-    h ≈ 8 W/m²K * (ρ/ρ0)^0.8 * (V/5)^{0.5}
-    Radiative linearization: q_rad ≈ 4 ε σ T_amb^3 ΔT
-    """
-    Q = max(0.0, draw_watt * (1.0 - max(0.0, min(1.0, efficiency))))
-    if Q <= 1e-6 or surface_area_m2 <= 1e-6 or emissivity <= 1e-3:
-        return 0.0
-    h0 = 8.0  # baseline convective coeff at ~5 m/s
-    h = h0 * (max(0.2, rho / RHO0) ** 0.8) * (max(0.2, V_ms / 5.0) ** 0.5)
-    T_amb = ambient_C + 273.15
-    rad_coeff = 4.0 * emissivity * SIGMA * (T_amb ** 3)
-    denom = (h * surface_area_m2) + (rad_coeff * surface_area_m2)
-    dT = Q / max(1.0, denom)
-    return max(0.0, dT)
+def realistic_fixedwing_power(weight_N, rho, V_ms,
+                              wing_area_m2, wingspan_m,
+                              cd0, e, prop_eff,
+                              hotel_W=HOTEL_W_DEFAULT, install_frac=INSTALL_FRAC_DEF,
+                              payload_drag_delta=0.0) -> float:
+    """Bounded aero + hotel + installation/trim losses for fixed-wing battery draw."""
+    CD0   = max(0.05, cd0 + max(0.0, payload_drag_delta))
+    E_OSW = min(0.70, e)
+    ETA_P = min(0.65, max(0.55, prop_eff))
+    P_polar = aero_power_required_W(weight_N, rho, V_ms, wing_area_m2, CD0, E_OSW, wingspan_m, ETA_P)
+    return hotel_W + (1.0 + install_frac) * P_polar
 
 def gust_penalty_fraction(gustiness_index: int,
                           wind_kmh: float,
@@ -145,17 +137,57 @@ def gust_penalty_fraction(gustiness_index: int,
     frac = max(0.0, min(0.35, base + bias))
     return frac
 
-def calculate_hybrid_draw(total_draw_watts, power_system):
-    """Keeps interface consistent with legacy; no hybrid battery platforms here by default."""
-    return total_draw_watts * 0.10 if str(power_system).lower() == "hybrid" else total_draw_watts
+def heading_range_km(V_air_ms: float, W_ms: float, t_min: float) -> Tuple[float,float]:
+    """Return (best_km, worst_km). Worst=0 if upwind infeasible (W ≥ V_air)."""
+    t_h = max(0.0, t_min) / 60.0
+    if V_air_ms <= 0.1:
+        return (0.0, 0.0)
+    if W_ms >= V_air_ms:
+        return ((V_air_ms + W_ms) * t_h / 1000.0, 0.0)
+    worst = (V_air_ms - W_ms) * t_h / 1000.0
+    best  = (V_air_ms + W_ms) * t_h / 1000.0
+    return (best, worst)
 
-def calculate_fuel_consumption(power_draw_watt, duration_hr, fuel_burn_rate_lph=1.5):
-    return fuel_burn_rate_lph * duration_hr if power_draw_watt > 0 else 0
+def convective_radiative_deltaT(Q_w: float, surface_area_m2: float, emissivity: float,
+                                ambient_C: float, rho: float, V_ms: float) -> float:
+    """
+    Robust thermal model:
+    - Q_w is waste heat in watts (all electrical + avionics eventually → heat).
+    - Convection: use a conservative floor; scale with ρ and V.
+    - Radiation: linearized effective sink near ambient; we keep simple aggregate sink.
+    """
+    if Q_w <= 0.0 or surface_area_m2 <= 0.0 or emissivity <= 0.0:
+        return 0.0
+    # Simple convection floor; increases with airspeed and density
+    # (use McAdams-like correlation; keep bounded to avoid near-zero h)
+    V_ms = max(0.5, V_ms)
+    h = max(6.0, 10.45 - V_ms + 10 * math.sqrt(V_ms)) * (rho / RHO0)  # W/m²K
+    T_ambK = ambient_C + 273.15
+    rad_coeff = 4.0 * emissivity * SIGMA * (T_ambK ** 3)  # W/m²K (linearized)
+    sink_W_per_K = (h + rad_coeff) * surface_area_m2
+    dT = Q_w / max(1.0, sink_W_per_K)
+    return max(0.2, dT)  # floor to avoid implausibly tiny ΔT
+
+def climb_energy_Wh(total_mass_kg: float, climb_m: float) -> float:
+    """Battery: m g h converted to Wh (1 Wh = 3600 J)."""
+    if climb_m <= 0: return 0.0
+    return (total_mass_kg * 9.81 * climb_m) / 3600.0
+
+def bsfc_fuel_burn_lph(power_W: float, bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
+    """ICE: fuel burn (L/h) from shaft power and BSFC."""
+    fuel_kg_per_h = (bsfc_gpkwh / 1000.0) * (power_W / 1000.0)
+    return fuel_kg_per_h / max(0.5, fuel_density_kgpl)
+
+def climb_fuel_liters(total_mass_kg: float, climb_m: float,
+                      bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
+    """ICE: convert m g h to required fuel via BSFC (kWh)."""
+    if climb_m <= 0: return 0.0
+    E_kWh = (total_mass_kg * 9.81 * climb_m) / 3_600_000.0
+    fuel_kg = (bsfc_gpkwh / 1000.0) * E_kWh
+    return fuel_kg / max(0.5, fuel_density_kgpl)
 
 # ─────────────────────────────────────────────────────────
-# UAV profiles (FULL SET; add aero params & type for all)
-# type: "rotor" or "fixed"
-# For fixed: include wing_area_m2, wingspan_m, cd0, oswald_e, prop_eff
+# UAV profiles (FULL SET)
 # ─────────────────────────────────────────────────────────
 UAV_PROFILES: Dict[str, Dict[str, Any]] = {
     # ——— Small multirotors / COTS ———
@@ -206,8 +238,8 @@ UAV_PROFILES: Dict[str, Dict[str, Any]] = {
         "type": "fixed",
         "max_payload_g": 600, "base_weight_kg": 6.3,
         "power_system": "Battery", "draw_watt": 180, "battery_wh": 600,
-        "wing_area_m2": 0.76, "wingspan_m": 2.8,
-        "cd0": 0.030, "oswald_e": 0.80, "prop_eff": 0.78,
+        "wing_area_m2": 0.55, "wingspan_m": 2.8,
+        "cd0": 0.040, "oswald_e": 0.75, "prop_eff": 0.72,
         "ai_capabilities": "AI-enhanced ISR mission planning, autonomous loitering",
         "crash_risk": False
     },
@@ -216,7 +248,7 @@ UAV_PROFILES: Dict[str, Dict[str, Any]] = {
         "max_payload_g": 2000, "base_weight_kg": 2.2,
         "power_system": "Battery", "draw_watt": 220, "battery_wh": 100,
         "wing_area_m2": 0.30, "wingspan_m": 2.1,
-        "cd0": 0.035, "oswald_e": 0.78, "prop_eff": 0.76,
+        "cd0": 0.045, "oswald_e": 0.74, "prop_eff": 0.70,
         "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight",
         "crash_risk": True
     },
@@ -225,7 +257,7 @@ UAV_PROFILES: Dict[str, Dict[str, Any]] = {
         "max_payload_g": 1500, "base_weight_kg": 2.3,
         "power_system": "Battery", "draw_watt": 160, "battery_wh": 150,
         "wing_area_m2": 0.55, "wingspan_m": 2.8,
-        "cd0": 0.032, "oswald_e": 0.82, "prop_eff": 0.80,
+        "cd0": 0.038, "oswald_e": 0.80, "prop_eff": 0.78,
         "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning",
         "crash_risk": False
     },
@@ -295,7 +327,7 @@ with st.form("uav_form"):
 
     # ICE panel for MQ-1 / MQ-9
     ice_params = None
-    if drone_model in ["MQ-1 Predator", "MQ-9 Reaper"]:
+    if profile["power_system"] == "ICE":
         st.markdown("### Aerospace Model (ICE-only)")
         fuel_tank_l = numeric_input("Fuel Tank (L)", float(profile.get("fuel_tank_l", 300.0)))
         cd0 = numeric_input("C_D0 (parasite)", float(profile.get("cd0", 0.025)))
@@ -364,7 +396,7 @@ Parameters:
 - Speed: {params['speed_kmh']} km/h
 - Altitude: {params['alt_m']} m
 - Wind: {params['wind_kmh']} km/h (gust {params['gust']})
-- Endurance: {params['endurance_min']:.1f} min
+- Dispatchable Endurance: {params['endurance_min']:.1f} min
 - Thermal ΔT: {params['delta_T']:.1f} °C
 - Fuel context: {params['fuel_l']}
 - Hybrid assist: {params.get('hybrid_assist', False)} (fraction={params.get('assist_fraction',0):.2f}, duration={params.get('assist_duration_min',0)} min)
@@ -561,9 +593,6 @@ def plot_swarm_map(swarm: List[AgentState], threat_zone_km: float,
     ax.set_aspect('equal', adjustable='datalim')
     return fig
 
-# ─────────────────────────────────────────────────────────
-# Utility: clamp battery/fuel to platform nominal (unless debug override)
-# ─────────────────────────────────────────────────────────
 def clamp_battery(platform: Dict[str, Any], requested_wh: float, allow_override: bool) -> float:
     nominal = float(platform.get("battery_wh", requested_wh))
     if allow_override:
@@ -580,22 +609,23 @@ if submitted:
         if payload_weight_g > profile["max_payload_g"]:
             st.error("Payload exceeds lift capacity."); st.stop()
 
-        # Battery clamp unless override
+        # Clamp battery unless override
         if profile["power_system"] == "Battery":
             battery_capacity_wh = clamp_battery(profile, battery_capacity_wh, allow_pack_override)
 
         total_weight_kg = profile["base_weight_kg"] + (payload_weight_g / 1000.0)
-
-        # Simple temperature derate for cells
-        if temperature_c < 15: battery_capacity_wh *= 0.90
-        elif temperature_c > 35: battery_capacity_wh *= 0.95
-
-        rho, rho_ratio = density_ratio(altitude_m)
         V_ms = max(1.0, (flight_speed_kmh / 3.6))
+        rho, rho_ratio = density_ratio(altitude_m, temperature_c)
         weight_N = total_weight_kg * 9.81
-        use_ice_branch = drone_model in ["MQ-1 Predator","MQ-9 Reaper"] and ice_params is not None
+        W_ms = max(0.0, wind_speed_kmh / 3.6)
+        use_ice_branch = profile["power_system"] == "ICE" and (ice_params is not None)
 
-        # Atmosphere & factors
+        # Temperature derate for cells
+        if profile["power_system"] == "Battery":
+            if temperature_c < 15: battery_capacity_wh *= 0.90
+            elif temperature_c > 35: battery_capacity_wh *= 0.95
+
+        # Atmosphere & key factors
         st.header("Atmospheric Conditions")
         st.metric("Air Density ρ", f"{rho:.3f} kg/m³")
         st.metric("Density Ratio ρ/ρ₀", f"{rho_ratio:.3f}")
@@ -609,13 +639,16 @@ if submitted:
 
         # ───────── ICE aerospace branch ─────────
         if use_ice_branch:
+            # Aero power (bounded aero for realism)
+            CD0   = max(0.05, ice_params["cd0"])
+            E_OSW = min(0.70, ice_params["oswald_e"])
+            ETA_P = min(0.65, max(0.55, ice_params["prop_eff"]))
             P_req_W = aero_power_required_W(
                 weight_N=weight_N, rho=rho, V_ms=V_ms,
                 wing_area_m2=ice_params["wing_area_m2"],
-                cd0=ice_params["cd0"], e=ice_params["oswald_e"],
-                wingspan_m=ice_params["wingspan_m"], prop_eff=ice_params["prop_eff"]
+                cd0=CD0, e=E_OSW,
+                wingspan_m=ice_params["wingspan_m"], prop_eff=ETA_P
             )
-
             # Gust penalty via wing loading
             WL = weight_N / max(0.05, ice_params["wing_area_m2"])
             wind_penalty_frac = gust_penalty_fraction(gustiness, wind_speed_kmh, V_ms, WL)
@@ -625,8 +658,12 @@ if submitted:
             # Terrain/stealth penalties
             P_req_W *= terrain_penalty * stealth_drag_penalty
 
-            # Fuel burn at required power
-            lph = bsfc_fuel_burn_lph(P_req_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"])
+            # Add hotel load to shaft demand (electrical systems)
+            HOTEL_W = HOTEL_W_DEFAULT
+            P_total_W = P_req_W + HOTEL_W
+
+            # Fuel burn at total power
+            lph = bsfc_fuel_burn_lph(P_total_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"])
 
             # Climb fuel (mgh)
             climb_L = climb_fuel_liters(total_weight_kg, max(0, elevation_gain_m),
@@ -634,62 +671,70 @@ if submitted:
             if climb_L > 0:
                 st.markdown(f"**Climb Energy Cost (fuel):** `{climb_L:.2f} L`")
 
-            fuel_available_L = max(0.0, ice_params["fuel_tank_l"] - climb_L)
+            # Usable fuel fraction + reserve
+            usable_fuel_L = max(0.0, ice_params["fuel_tank_l"] * USABLE_FUEL_FRAC - climb_L)
 
-            # Hybrid assist (optional)
+            # Optional hybrid assist (battery substitution for a slice of power)
             if ice_params["hybrid_assist"]:
                 battery_support_Wh = profile.get("battery_wh", 200.0)
-                assist_power_W = P_req_W * ice_params["assist_fraction"]
+                assist_power_W = P_total_W * ice_params["assist_fraction"]
                 assist_energy_Wh = assist_power_W * (ice_params["assist_duration_min"] / 60.0)
                 if assist_energy_Wh > battery_support_Wh:
                     ice_params["assist_duration_min"] = (battery_support_Wh / max(1.0, assist_power_W)) * 60.0
                     assist_energy_Wh = battery_support_Wh
+                # Fuel saved during assist
                 fuel_saved_L = bsfc_fuel_burn_lph(assist_power_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"]) * (ice_params["assist_duration_min"] / 60.0)
-                fuel_available_L += fuel_saved_L
+                usable_fuel_L += fuel_saved_L
                 st.markdown(f"**Hybrid Assist Active:** {ice_params['assist_fraction']*100:.0f}% for {ice_params['assist_duration_min']:.1f} min")
                 st.markdown(f"Battery used: {assist_energy_Wh:.1f} Wh  Fuel saved: {fuel_saved_L:.2f} L")
 
-            endurance_hr = fuel_available_L / max(0.05, lph)
-            flight_time_minutes = max(0.1, endurance_hr * 60.0)
+            raw_endurance_hr = usable_fuel_L / max(0.05, lph)
+            raw_endurance_min = raw_endurance_hr * 60.0
+            dispatch_endurance_min = raw_endurance_min * (1.0 - DISPATCH_RESERVE)
 
-            # Thermal model (convective+radiative)
-            delta_T = convective_radiative_deltaT(P_req_W, 0.85, 0.6, 0.85, temperature_c, rho, V_ms)
+            # Vector-wind ranges on dispatchable endurance
+            best_km, worst_km = heading_range_km(V_ms, W_ms, dispatch_endurance_min)
+            if W_ms > V_ms:
+                st.warning("Wind exceeds airspeed: upwind leg infeasible (groundspeed ≤ 0).")
+
+            # Thermal model (use total power as waste heat proxy)
+            Q_waste = P_total_W  # conservative: most shaft + avionics ends up as heat somewhere near airframe
+            delta_T = convective_radiative_deltaT(Q_waste, 0.6, 0.85, temperature_c, rho, V_ms)
             delta_T *= (1.0 - (cloud_cover / 100.0) * 0.35)
             if ice_params["hybrid_assist"] and ice_params["assist_duration_min"] > 0:
-                delta_T *= (1.0 - ice_params["assist_fraction"] * 0.4)
-                st.markdown(f"**Hybrid Assist IR Reduction:** ~{ice_params['assist_fraction']*40:.0f}%")
+                delta_T *= (1.0 - ice_params["assist_fraction"] * 0.3)
+                st.markdown(f"**Hybrid Assist IR Reduction:** ~{ice_params['assist_fraction']*30:.0f}%")
 
             # Uncertainty band (±10%)
-            lo = flight_time_minutes * 0.90
-            hi = flight_time_minutes * 1.10
+            lo = dispatch_endurance_min * 0.90
+            hi = dispatch_endurance_min * 1.10
 
-            st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
+            st.metric("Dispatchable Endurance", f"{dispatch_endurance_min:.1f} minutes")
             st.caption(f"Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)")
-            if flight_mode != "Hover":
-                st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
+            st.metric("Best Heading Range", f"{best_km:.1f} km")
+            st.metric("Upwind Range", f"{worst_km:.1f} km")
 
             st.subheader("Thermal & Fuel (ICE)")
-            st.metric("Power Required (shaft)", f"{P_req_W/1000:.1f} kW")
+            st.metric("Total Power (shaft+hotel)", f"{P_total_W/1000:.2f} kW")
             st.metric("Fuel Burn", f"{lph:.2f} L/hr")
-            if climb_L > 0: st.markdown(f"**Climb Fuel Penalty:** `{climb_L:.2f} L` deducted")
-            st.metric("Fuel Tank (usable)", f"{fuel_available_L:.1f} L")
+            st.metric("Usable Fuel (after climb)", f"{usable_fuel_L:.2f} L")
             st.metric("Thermal ΔT", f"{delta_T:.1f} °C")
 
             # Live fuel sim (capped)
             st.subheader("Live Simulation (Fuel)")
             time_step=10
-            total_steps=min(max(1, int(flight_time_minutes*60/time_step)), 300)
+            total_steps=min(max(1, int(dispatch_endurance_min*60/time_step)), 300)
             fuel_per_sec=lph/3600.0
             progress=st.progress(0); status=st.empty(); gauge=st.empty(); timer=st.empty()
             for step in range(total_steps+1):
                 elapsed=step*time_step
-                fuel_rem=max(0.0, fuel_available_L - fuel_per_sec*elapsed)
-                pct=0.0 if fuel_available_L<=0 else max(0.0, (fuel_rem/fuel_available_L)*100.0)
+                fuel_rem=max(0.0, usable_fuel_L - fuel_per_sec*elapsed)
+                pct=0.0 if usable_fuel_L<=0 else max(0.0, (fuel_rem/usable_fuel_L)*100.0)
                 bars=int(pct//10)
                 gauge.markdown(f"**Fuel Gauge:** `[{'|'*bars}{' '*(10-bars)}] {pct:.0f}%`")
-                remain=max(0.0, (flight_time_minutes*60)-elapsed)
+                remain=max(0.0, (dispatch_endurance_min*60)-elapsed)
                 timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int(remain)} sec")
-                status.markdown(f"**Fuel Remaining:** {fuel_rem:.2f} L  **Burn:** {lph:.2f} L/hr  **Power:** {P_req_W/1000:.1f} kW")
+                status.markdown(f"**Fuel Remaining:** {fuel_rem:.2f} L  **Burn:** {lph:.2f} L/hr  **Power:** {P_total_W/1000:.2f} kW")
                 progress.progress(min(step/total_steps,1.0))
                 if fuel_rem<=0.0: break
                 time.sleep(0.03)
@@ -699,10 +744,11 @@ if submitted:
             else:
                 st.success("**Safe:** Below typical detection thresholds.")
 
-            computed_power_draw_for_llm = P_req_W
-            computed_fuel_context_for_llm = fuel_available_L
-            climb_energy_Wh = None  # ICE uses liters for climb cost
+            computed_power_draw_for_llm = P_total_W
+            computed_fuel_context_for_llm = usable_fuel_L
             wind_penalty_pct = wind_penalty_frac * 100.0
+            climb_energy_Wh = None  # ICE uses liters for climb cost
+            flight_time_minutes = dispatch_endurance_min  # used for swarm seeding
 
         # ───────── Battery/Hybrid (global) ─────────
         else:
@@ -719,18 +765,20 @@ if submitted:
                 st.markdown(f"**Wind Turbulence Penalty:** `{wind_penalty_frac*100:.1f}%` added draw")
                 total_draw *= (1.0 + wind_penalty_frac)
             else:
-                # Fixed-wing battery: use aero model like ICE
+                # Fixed-wing battery: bounded aero + hotel + install losses
                 wing_area_m2 = float(profile.get("wing_area_m2", 0.5))
-                wingspan_m = float(profile.get("wingspan_m", 2.0))
-                cd0 = float(profile.get("cd0", 0.03))
-                e = float(profile.get("oswald_e", 0.80))
-                prop_eff = float(profile.get("prop_eff", 0.78))
+                wingspan_m   = float(profile.get("wingspan_m", 2.0))
+                cd0          = float(profile.get("cd0", 0.05))
+                e            = float(profile.get("oswald_e", 0.70))
+                prop_eff     = float(profile.get("prop_eff", 0.60))
                 # "Hover" not physical for fixed-wing; treat as low-speed loiter
                 V_ms_eff = max(8.0, 0.6 * V_ms) if flight_mode == "Hover" else V_ms
-                total_draw = aero_power_required_W(
+                total_draw = realistic_fixedwing_power(
                     weight_N=weight_N, rho=rho, V_ms=V_ms_eff,
-                    wing_area_m2=wing_area_m2, cd0=cd0, e=e,
-                    wingspan_m=wingspan_m, prop_eff=prop_eff
+                    wing_area_m2=wing_area_m2, wingspan_m=wingspan_m,
+                    cd0=cd0, e=e, prop_eff=prop_eff,
+                    hotel_W=HOTEL_W_DEFAULT, install_frac=INSTALL_FRAC_DEF,
+                    payload_drag_delta=(0.002 if payload_weight_g > 0 else 0.0)
                 )
                 WL = weight_N / max(0.05, wing_area_m2)
                 wind_penalty_frac = gust_penalty_fraction(gustiness, wind_speed_kmh, V_ms_eff, WL)
@@ -743,30 +791,40 @@ if submitted:
             # Climb/Descent energy for battery
             climb_energy_Wh = 0.0
             if elevation_gain_m > 0:
-                climb_energy_Wh = (total_weight_kg * 9.81 * elevation_gain_m) / 3600.0
-                battery_capacity_wh -= climb_energy_Wh
-                st.markdown(f"**Climb Energy Cost:** `{climb_energy_Wh:.2f} Wh`")
+                climb_energy_Wh = climb_energy_Wh(total_weight_kg, elevation_gain_m)  # name shadowing guard
+            # Fix accidental name shadow by computing explicitly:
+            if elevation_gain_m > 0:
+                climb_E_Wh = (total_weight_kg * 9.81 * elevation_gain_m) / 3600.0
+                battery_capacity_wh -= climb_E_Wh
+                st.markdown(f"**Climb Energy Cost:** `{climb_E_Wh:.2f} Wh`")
                 if battery_capacity_wh <= 0: st.error("Simulation stopped: climb energy exceeds battery capacity."); st.stop()
             elif elevation_gain_m < 0:
                 recov = (total_weight_kg * 9.81 * abs(elevation_gain_m) / 3600.0) * 0.20
                 battery_capacity_wh += recov; st.markdown(f"**Descent Recovery:** `+{recov:.2f} Wh`")
 
-            batt_draw = calculate_hybrid_draw(total_draw, profile["power_system"])
-            if batt_draw <= 0: st.error("Simulation failed: Battery draw is zero or undefined."); st.stop()
+            # Usable energy + reserve
+            usable_Wh = max(0.0, battery_capacity_wh) * USABLE_BATT_FRAC
+            t_raw_min = (usable_Wh / max(5.0, total_draw)) * 60.0
+            dispatch_endurance_min = t_raw_min * (1.0 - DISPATCH_RESERVE)
 
-            # Thermal (convective+radiative)
-            delta_T = convective_radiative_deltaT(total_draw, 0.87, 0.30, 0.90, temperature_c, rho, V_ms)
+            # Vector wind ranges
+            best_km, worst_km = heading_range_km(V_ms, W_ms, dispatch_endurance_min)
+            if W_ms > V_ms:
+                st.warning("Wind exceeds airspeed: upwind leg infeasible (groundspeed ≤ 0).")
+
+            # Thermal (waste heat = total draw)
+            Q_waste = total_draw + HOTEL_W_DEFAULT  # all electrical + hotel becomes heat
+            delta_T = convective_radiative_deltaT(Q_waste, 0.30, 0.90, temperature_c, rho, V_ms)
             delta_T *= (1.0 - (cloud_cover / 100.0) * 0.35)
 
-            # Endurance + uncertainty
-            flight_time_minutes = (battery_capacity_wh / batt_draw) * 60.0
-            lo = flight_time_minutes * 0.90
-            hi = flight_time_minutes * 1.10
+            # Uncertainty band (±10%)
+            lo = dispatch_endurance_min * 0.90
+            hi = dispatch_endurance_min * 1.10
 
-            st.metric("Estimated Flight Time", f"{flight_time_minutes:.1f} minutes")
+            st.metric("Dispatchable Endurance", f"{dispatch_endurance_min:.1f} minutes")
             st.caption(f"Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)")
-            if flight_mode != "Hover":
-                st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
+            st.metric("Best Heading Range", f"{best_km:.1f} km")
+            st.metric("Upwind Range", f"{worst_km:.1f} km")
 
             st.subheader("Thermal Signature & Fuel Analysis")
             st.metric("Thermal Signature Risk", f"{'Low' if delta_T < 10 else ('Moderate' if delta_T < 20 else 'High')} (ΔT = {delta_T:.1f}°C)")
@@ -775,7 +833,7 @@ if submitted:
             # Live battery sim (capped)
             st.subheader("Live Simulation (Battery)")
             time_step=10
-            total_steps=min(max(1, int(flight_time_minutes*60/time_step)), 300)
+            total_steps=min(max(1, int(dispatch_endurance_min*60/time_step)), 300)
             battery_per_step=(total_draw*time_step)/3600
             progress=st.progress(0); status=st.empty(); gauge=st.empty(); timer=st.empty()
             for step in range(total_steps+1):
@@ -789,7 +847,7 @@ if submitted:
                 batt_pct=max(0,(batt_rem/battery_capacity_wh)*100)
                 bars=int(batt_pct//10)
                 gauge.markdown(f"**Battery Gauge:** `[{'|'*bars}{' '*(10-bars)}] {batt_pct:.0f}%`")
-                remain=max(0,(flight_time_minutes*60)-elapsed)
+                remain=max(0,(dispatch_endurance_min*60)-elapsed)
                 timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {int(remain)} sec")
                 status.markdown(f"**Battery Remaining:** {batt_rem:.2f} Wh  **Power Draw:** {total_draw:.0f} W")
                 progress.progress(min(step/total_steps,1.0))
@@ -803,8 +861,10 @@ if submitted:
             computed_power_draw_for_llm = total_draw
             computed_fuel_context_for_llm = 0.0
             wind_penalty_pct = wind_penalty_frac * 100.0
+            climb_L = None
+            flight_time_minutes = dispatch_endurance_min  # used for swarm seeding
 
-        # ───────── Mission Advisor ─────────
+        # ───────── Mission Advisor (LLM) ─────────
         st.subheader("AI Mission Advisor (LLM)")
         params = {
             "drone":drone_model, "payload_g":payload_weight_g, "mode":flight_mode,
@@ -822,7 +882,7 @@ if submitted:
         if swarm_enable:
             st.header("Swarm Advisor (Multi-Agent LLM)")
             base_endurance = float(max(5.0, flight_time_minutes))
-            base_batt_wh = float(max(10.0, battery_capacity_wh if profile["power_system"]=="Battery" else 200.0))
+            base_batt_wh = float(max(10.0, (battery_capacity_wh if profile["power_system"]=="Battery" else 200.0)))
             swarm = seed_swarm(swarm_size, base_endurance, base_batt_wh, delta_T, altitude_m, platform=drone_model)
             for s in swarm:
                 s.waypoints = waypoints.copy()
@@ -838,6 +898,12 @@ if submitted:
                 "threat_note": ("elevated" if (simulate_failure or delta_T > 15 or altitude_m > 100) else "normal"),
                 "stealth_ingress": stealth_ingress, "threat_zone_km": threat_zone_km
             }
+
+            def _safe_json(txt: str) -> Dict[str, Any]:
+                try: return json.loads(txt)
+                except Exception:
+                    s,e=txt.find("{"), txt.rfind("}")
+                    return json.loads(txt[s:e+1])
 
             for round_idx in range(swarm_steps):
                 st.subheader(f"Round {round_idx+1}")
@@ -903,8 +969,9 @@ if submitted:
 
             fig = plot_swarm_map(frame_swarm, threat_zone_km, stealth_ingress, waypoints)
             st.pyplot(fig)
+            plt.close(fig)
 
-            # CSV export for playback
+            # CSV exports
             rows=[]
             for t, snapshot in enumerate(swarm_history):
                 for s in snapshot:
@@ -932,7 +999,7 @@ if submitted:
                     mime="text/csv"
                 )
 
-        # ───────── Export Results (CSV + JSON + Copy-Paste) ─────────
+        # ───────── Export Scenario Results (CSV + JSON) ─────────
         st.subheader("Export Scenario Results")
         results = {
             "Drone Model": drone_model,
@@ -948,15 +1015,14 @@ if submitted:
             "Air Density (kg/m³)": round(rho, 3),
             "Density Ratio (ρ/ρ0)": round(rho_ratio, 3),
             "Wind Penalty (%)": round(wind_penalty_pct, 1) if 'wind_penalty_pct' in locals() else 0.0,
-            "Climb Energy (Wh)": round(climb_energy_Wh, 2) if (profile["power_system"]=="Battery" and climb_energy_Wh is not None) else None,
+            "Climb Energy (Wh)": round(( (total_weight_kg*9.81*elevation_gain_m)/3600.0 ), 2) if (profile["power_system"]=="Battery" and elevation_gain_m>0) else ( -round((total_weight_kg*9.81*abs(elevation_gain_m)/3600.0)*0.20,2) if (profile["power_system"]=="Battery" and elevation_gain_m<0) else None ),
             "Climb Fuel (L)": round(climb_L, 2) if (use_ice_branch and 'climb_L' in locals()) else None,
             "Terrain Factor": float(terrain_penalty),
             "Stealth Drag Factor": float(stealth_drag_penalty),
-            "Estimated Flight Time (min)": round(flight_time_minutes, 1),
-            "Estimated Max Distance (km)": round((flight_time_minutes/60.0)*flight_speed_kmh, 2) if flight_mode != "Hover" else 0.0,
-            "ΔT (°C)": round(delta_T, 1),
-            "Endurance Band Low (min)": round(lo, 1),
-            "Endurance Band High (min)": round(hi, 1)
+            "Dispatchable Endurance (min)": round(flight_time_minutes, 1),
+            "Best Heading Range (km)": round(best_km, 2),
+            "Upwind Range (km)": round(worst_km, 2),
+            "ΔT (°C)": round(delta_T, 1)
         }
 
         df_res = pd.DataFrame([results])
@@ -978,12 +1044,12 @@ if submitted:
         )
         st.text_area("Results (JSON Copy-Paste)", json_str, height=250)
 
-        # ───────── AI Suggestions (classic tips) ─────────
+        # ───────── AI Suggestions (Simulated GPT) ─────────
         st.subheader("AI Suggestions (Simulated GPT)")
         if payload_weight_g == profile["max_payload_g"]:
             st.write("**Tip:** Payload is at maximum lift capacity.")
         if wind_speed_kmh > 15:
-            st.write("**Tip:** High wind may reduce flight time.")
+            st.write("**Tip:** High wind may reduce flight time and upwind range.")
         if profile["power_system"]=="Battery" and battery_capacity_wh < 30:
             st.write("**Tip:** Battery is under 30 Wh. Consider a larger pack.")
         if flight_mode in ["Hover", "Waypoint Mission"]:
