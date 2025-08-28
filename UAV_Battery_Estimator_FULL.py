@@ -33,7 +33,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 # Streamlit header / UX helpers
 # ─────────────────────────────────────────────────────────
-st.set_page_config(page_title='UAV Mission Lab — Aerospace Grade', layout='centered')
+st.title("UAV Battery Efficiency Estimator")
 
 # Auto-select text when focusing an input (easier to clear/edit on mobile)
 st.markdown("""
