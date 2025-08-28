@@ -1,5 +1,12 @@
-streamlit
-matplotlib
-numpy
-pandas
-openpyxl
+# Core app framework
+streamlit>=1.35.0
+
+# Math & Data handling
+pandas>=2.2.2
+numpy>=1.26.4
+
+# Plotting & visualization
+matplotlib>=3.9.0
+
+# OpenAI client (for mission advisor + swarm LLM)
+openai>=1.30.0
