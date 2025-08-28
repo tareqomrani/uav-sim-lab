@@ -51,6 +51,37 @@ def numeric_input(label: str, default: float) -> float:
 # ─────────────────────────────────────────────────────────
 # Physics helpers
 # ─────────────────────────────────────────────────────────
+
+# ISA Air Density + Power Scaling (NEW)
+SEA_LEVEL_RHO = 1.225        # kg/m^3 at 15°C
+SEA_LEVEL_P   = 101325.0     # Pa
+SEA_LEVEL_TK  = 288.15       # K
+LAPSE         = 0.0065       # K/m
+R_AIR         = 287.05       # J/(kg·K)
+G0            = 9.80665      # m/s^2
+
+def air_density(alt_m: float, sea_level_temp_C: float = 15.0) -> float:
+    """Return rho at altitude using ISA troposphere model."""
+    T0 = sea_level_temp_C + 273.15
+    if alt_m < 0: alt_m = 0.0
+    T  = max(1.0, T0 - LAPSE*alt_m)
+    p  = SEA_LEVEL_P * (1.0 - (LAPSE*alt_m)/T0) ** (G0/(R_AIR*LAPSE))
+    return p/(R_AIR*T)
+
+def scale_power_for_density(base_watt: float, airframe: str, rho: float,
+                            w_parasitic: float = 0.6) -> float:
+    """
+    Density correction:
+      - Rotorcraft hover/low-speed: P ~ 1/sqrt(rho)
+      - Fixed-wing cruise: blend parasitic (∝ rho) and induced (∝ 1/rho)
+    """
+    rho0 = SEA_LEVEL_RHO
+    af = (airframe or "fixed").lower()
+    if af in ("rotor","multirotor","quad","heli","helicopter","vtol"):
+        return base_watt * (rho0/rho) ** 0.5
+    w_p, w_i = w_parasitic, 1.0 - w_parasitic
+    return base_watt * (w_p*(rho/rho0) + w_i*(rho0/rho))
+
 def calculate_hybrid_draw(total_draw_watts, power_system):
     return total_draw_watts * 0.10 if power_system.lower() == "hybrid" else total_draw_watts
 
@@ -69,6 +100,7 @@ def thermal_risk_rating(delta_T):
 
 # ——— ICE / Aerodynamics (MQ-1 / MQ-9) ———
 def std_atmo_density(alt_m: float) -> float:
+    # Legacy exponential model (kept for reference); ISA used instead.
     rho0, H = 1.225, 8500.0
     return rho0 * math.exp(-max(0.0, alt_m) / H)
 
@@ -98,28 +130,32 @@ def climb_fuel_liters(total_mass_kg: float, climb_m: float,
     return fuel_kg / max(0.5, fuel_density_kgpl)
 
 # ─────────────────────────────────────────────────────────
-# UAV profiles (FULL SET)
+# UAV profiles (FULL SET)  — now with explicit airframe tags
 # ─────────────────────────────────────────────────────────
 UAV_PROFILES = {
     # ——— Small multirotors / COTS ———
     "Generic Quad": {
         "max_payload_g": 800, "base_weight_kg": 1.2,
         "power_system": "Battery", "draw_watt": 150, "battery_wh": 60,
+        "airframe": "rotor",
         "crash_risk": False, "ai_capabilities": "Basic flight stabilization, waypoint navigation"
     },
     "DJI Phantom": {
         "max_payload_g": 500, "base_weight_kg": 1.4,
         "power_system": "Battery", "draw_watt": 120, "battery_wh": 68,
+        "airframe": "rotor",
         "crash_risk": False, "ai_capabilities": "Visual object tracking, return-to-home, autonomous mapping"
     },
     "Skydio 2+": {
         "max_payload_g": 150, "base_weight_kg": 0.8,
         "power_system": "Battery", "draw_watt": 90, "battery_wh": 45,
+        "airframe": "rotor",
         "crash_risk": False, "ai_capabilities": "Full obstacle avoidance, visual SLAM, autonomous following"
     },
     "Freefly Alta 8": {
         "max_payload_g": 9000, "base_weight_kg": 6.2,
         "power_system": "Battery", "draw_watt": 400, "battery_wh": 710,
+        "airframe": "rotor",
         "crash_risk": False, "ai_capabilities": "Autonomous camera coordination, precision loitering"
     },
 
@@ -127,21 +163,25 @@ UAV_PROFILES = {
     "RQ-11 Raven": {
         "max_payload_g": 0, "base_weight_kg": 1.9,
         "power_system": "Battery", "draw_watt": 90, "battery_wh": 50,
+        "airframe": "fixed",
         "crash_risk": False, "ai_capabilities": "Auto-stabilized flight, limited route autonomy"
     },
     "RQ-20 Puma": {
         "max_payload_g": 600, "base_weight_kg": 6.3,
         "power_system": "Battery", "draw_watt": 180, "battery_wh": 275,
+        "airframe": "fixed",
         "crash_risk": False, "ai_capabilities": "AI-enhanced ISR mission planning, autonomous loitering"
     },
     "Teal Golden Eagle": {
         "max_payload_g": 2000, "base_weight_kg": 2.2,
         "power_system": "Battery", "draw_watt": 220, "battery_wh": 100,
+        "airframe": "fixed",
         "crash_risk": True, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"
     },
     "Quantum Systems Vector": {
         "max_payload_g": 1500, "base_weight_kg": 2.3,
         "power_system": "Battery", "draw_watt": 160, "battery_wh": 150,
+        "airframe": "fixed",
         "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"
     },
 
@@ -149,6 +189,7 @@ UAV_PROFILES = {
     "MQ-1 Predator": {
         "max_payload_g": 204000, "base_weight_kg": 512,
         "power_system": "ICE", "draw_watt": 650, "battery_wh": 150,
+        "airframe": "fixed",
         "crash_risk": True, "ai_capabilities": "Semi-autonomous surveillance, pattern-of-life analysis",
         "wing_area_m2": 11.5, "wingspan_m": 14.8,
         "cd0": 0.025, "oswald_e": 0.80, "prop_eff": 0.80,
@@ -157,6 +198,7 @@ UAV_PROFILES = {
     "MQ-9 Reaper": {
         "max_payload_g": 1700000, "base_weight_kg": 2223,
         "power_system": "ICE", "draw_watt": 800, "battery_wh": 200,
+        "airframe": "fixed",
         "crash_risk": True, "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking",
         "wing_area_m2": 24.0, "wingspan_m": 20.0,
         "cd0": 0.030, "oswald_e": 0.85, "prop_eff": 0.82,
@@ -167,6 +209,7 @@ UAV_PROFILES = {
     "Custom Build": {
         "max_payload_g": 1500, "base_weight_kg": 2.0,
         "power_system": "Battery", "draw_watt": 180, "battery_wh": 150,
+        "airframe": "fixed",
         "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"
     }
 }
@@ -191,6 +234,10 @@ with st.form("uav_form"):
     temperature_c = numeric_input("Temperature (°C)", 25.0)
     altitude_m = int(numeric_input("Altitude (m)", 0))
     elevation_gain_m = int(numeric_input("Elevation Gain (m)", 0))
+
+    # Show density live in the form (NEW)
+    _rho_preview = air_density(altitude_m, sea_level_temp_C=temperature_c)
+    st.caption(f"Air Density: {_rho_preview:.3f} kg/m³  (ρ/ρ₀ = {_rho_preview/SEA_LEVEL_RHO:.3f})")
 
     flight_mode = st.selectbox("Flight Mode", ["Hover","Forward Flight","Waypoint Mission"])
     cloud_cover = st.slider("Cloud Cover (%)", 0, 100, 50)
@@ -479,7 +526,8 @@ if submitted:
         if temperature_c < 15: battery_capacity_wh *= 0.9
         elif temperature_c > 35: battery_capacity_wh *= 0.95
 
-        rho = std_atmo_density(altitude_m)
+        # Use ISA density everywhere (NEW)
+        rho = air_density(altitude_m, sea_level_temp_C=temperature_c)
         V_ms = max(1.0, (flight_speed_kmh / 3.6))
         weight_N = total_weight_kg * 9.81
         use_ice_branch = drone_model in ["MQ-1 Predator","MQ-9 Reaper"] and ice_params is not None
@@ -559,17 +607,22 @@ if submitted:
             computed_power_draw_for_llm = P_req_W
             computed_fuel_context_for_llm = fuel_available_L
 
-        # ========== Battery/Hybrid (simplified) ==========
+        # ========== Battery/Hybrid (simplified) with density scaling ==========
         else:
             base_draw = profile.get("draw_watt", 180.0)
             weight_factor = total_weight_kg / max(0.1, profile["base_weight_kg"])
             wind_factor = 1 + (wind_speed_kmh / 100.0)
+
+            # Density-scaled base draw (NEW)
+            scaled_base = scale_power_for_density(base_draw, profile.get("airframe","fixed"), rho)
+
             if flight_mode == "Hover":
-                total_draw = base_draw * 1.1 * weight_factor
+                total_draw = scaled_base * 1.1 * weight_factor
             elif flight_mode == "Waypoint Mission":
-                total_draw = (base_draw * 1.15 + 0.02 * (flight_speed_kmh ** 2)) * wind_factor
+                total_draw = (scaled_base * 1.15 + 0.02 * (flight_speed_kmh ** 2)) * wind_factor
             else:
-                total_draw = (base_draw + 0.02 * (flight_speed_kmh ** 2)) * wind_factor
+                total_draw = (scaled_base + 0.02 * (flight_speed_kmh ** 2)) * wind_factor
+
             total_draw *= terrain_penalty * stealth_drag_penalty
             if gustiness > 0: total_draw *= (1 + gustiness * 0.015)
 
