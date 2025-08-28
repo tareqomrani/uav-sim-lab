@@ -1,5 +1,5 @@
 # Final1_full_mobile.py
-# Streamlit UAV Mission Lab — Physics + LLM + Swarm + Stealth + Playback + CSV
+# Streamlit UAV Mission Lab — Physics + LLM + Swarm + Stealth + Playback + CSV + Simulated GPT Suggestions
 
 import os, time, math, random, json
 from dataclasses import dataclass, asdict
@@ -9,37 +9,34 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# --- Optional LLM client (graceful fallback if no key) ---
+# ─────────────────────────────────────────────────────────
+# Optional LLM client (graceful fallback if no key present)
+# ─────────────────────────────────────────────────────────
 OPENAI_AVAILABLE = False
 try:
     from openai import OpenAI
-    _client = OpenAI()  # requires OPENAI_API_KEY
+    _client = OpenAI()  # requires env var OPENAI_API_KEY
     OPENAI_AVAILABLE = True
 except Exception:
     _client = None
     OPENAI_AVAILABLE = False
 
-# ---------------------------------------------------------
-# Streamlit UI header
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
+# Streamlit header / UX helpers
+# ─────────────────────────────────────────────────────────
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
 
-# --- Auto highlight inputs when clicked (easier edit/clear on desktop) ---
+# Auto-select text when focusing an input (easier to clear/edit on mobile)
 st.markdown("""
     <script>
     const inputs = window.parent.document.querySelectorAll('input');
-    inputs.forEach(el => {
-        el.addEventListener('focus', function() { this.select(); });
-    });
+    inputs.forEach(el => el.addEventListener('focus', function(){ this.select(); }));
     </script>
 """, unsafe_allow_html=True)
 
 st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
-# ---------------------------------------------------------
-# Helper: mobile-friendly numeric input (keeps defaults, easy backspace)
-# ---------------------------------------------------------
 def numeric_input(label: str, default: float) -> float:
     """Mobile-friendly numeric input with default fallback and validation."""
     val_str = st.text_input(label, value=str(default))
@@ -51,13 +48,11 @@ def numeric_input(label: str, default: float) -> float:
         st.error(f"Please enter a valid number for {label}. Using default {default}.")
         return default
 
-# ---------------------------------------------------------
-# Core helpers
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
+# Physics helpers
+# ─────────────────────────────────────────────────────────
 def calculate_hybrid_draw(total_draw_watts, power_system):
-    if power_system.lower() == "hybrid":
-        return total_draw_watts * 0.10
-    return total_draw_watts
+    return total_draw_watts * 0.10 if power_system.lower() == "hybrid" else total_draw_watts
 
 def calculate_fuel_consumption(power_draw_watt, duration_hr, fuel_burn_rate_lph=1.5):
     return fuel_burn_rate_lph * duration_hr if power_draw_watt > 0 else 0
@@ -65,20 +60,14 @@ def calculate_fuel_consumption(power_draw_watt, duration_hr, fuel_burn_rate_lph=
 def estimate_thermal_signature(draw_watt, efficiency, surface_area, emissivity, ambient_temp_C):
     sigma = 5.670374419e-8
     waste_heat = draw_watt * (1 - efficiency)
-    if waste_heat <= 0 or surface_area <= 0 or emissivity <= 0:
-        return 0
+    if waste_heat <= 0 or surface_area <= 0 or emissivity <= 0: return 0
     temp_K = (waste_heat / (emissivity * sigma * surface_area)) ** 0.25
-    temp_C = temp_K - 273.15
-    return round(temp_C - ambient_temp_C, 1)
+    return round((temp_K - 273.15) - ambient_temp_C, 1)
 
 def thermal_risk_rating(delta_T):
-    if delta_T < 10: return "Low"
-    elif delta_T < 20: return "Moderate"
-    else: return "High"
+    return "Low" if delta_T < 10 else ("Moderate" if delta_T < 20 else "High")
 
-# ---------------------------------------------------------
-# Aerospace helpers (ICE UAVs)
-# ---------------------------------------------------------
+# ——— ICE / Aerodynamics (MQ-1 / MQ-9) ———
 def std_atmo_density(alt_m: float) -> float:
     rho0, H = 1.225, 8500.0
     return rho0 * math.exp(-max(0.0, alt_m) / H)
@@ -108,137 +97,83 @@ def climb_fuel_liters(total_mass_kg: float, climb_m: float,
     fuel_kg = (bsfc_gpkwh / 1000.0) * E_kWh
     return fuel_kg / max(0.5, fuel_density_kgpl)
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
 # UAV profiles (FULL SET)
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
 UAV_PROFILES = {
-    # ───────── Small multirotors / COTS ─────────
+    # ——— Small multirotors / COTS ———
     "Generic Quad": {
-        "max_payload_g": 800,
-        "base_weight_kg": 1.2,
-        "power_system": "Battery",
-        "draw_watt": 150,
-        "battery_wh": 60,
-        "crash_risk": False,
-        "ai_capabilities": "Basic flight stabilization, waypoint navigation"
+        "max_payload_g": 800, "base_weight_kg": 1.2,
+        "power_system": "Battery", "draw_watt": 150, "battery_wh": 60,
+        "crash_risk": False, "ai_capabilities": "Basic flight stabilization, waypoint navigation"
     },
     "DJI Phantom": {
-        "max_payload_g": 500,
-        "base_weight_kg": 1.4,
-        "power_system": "Battery",
-        "draw_watt": 120,
-        "battery_wh": 68,
-        "crash_risk": False,
-        "ai_capabilities": "Visual object tracking, return-to-home, autonomous mapping"
+        "max_payload_g": 500, "base_weight_kg": 1.4,
+        "power_system": "Battery", "draw_watt": 120, "battery_wh": 68,
+        "crash_risk": False, "ai_capabilities": "Visual object tracking, return-to-home, autonomous mapping"
     },
     "Skydio 2+": {
-        "max_payload_g": 150,
-        "base_weight_kg": 0.8,
-        "power_system": "Battery",
-        "draw_watt": 90,
-        "battery_wh": 45,
-        "crash_risk": False,
-        "ai_capabilities": "Full obstacle avoidance, visual SLAM, autonomous following"
+        "max_payload_g": 150, "base_weight_kg": 0.8,
+        "power_system": "Battery", "draw_watt": 90, "battery_wh": 45,
+        "crash_risk": False, "ai_capabilities": "Full obstacle avoidance, visual SLAM, autonomous following"
     },
     "Freefly Alta 8": {
-        "max_payload_g": 9000,
-        "base_weight_kg": 6.2,
-        "power_system": "Battery",
-        "draw_watt": 400,
-        "battery_wh": 710,
-        "crash_risk": False,
-        "ai_capabilities": "Autonomous camera coordination, precision loitering"
+        "max_payload_g": 9000, "base_weight_kg": 6.2,
+        "power_system": "Battery", "draw_watt": 400, "battery_wh": 710,
+        "crash_risk": False, "ai_capabilities": "Autonomous camera coordination, precision loitering"
     },
 
-    # ───────── Small tactical / fixed-wing ─────────
+    # ——— Small tactical / fixed-wing ———
     "RQ-11 Raven": {
-        "max_payload_g": 0,
-        "base_weight_kg": 1.9,
-        "power_system": "Battery",
-        "draw_watt": 90,
-        "battery_wh": 50,
-        "crash_risk": False,
-        "ai_capabilities": "Auto-stabilized flight, limited route autonomy"
+        "max_payload_g": 0, "base_weight_kg": 1.9,
+        "power_system": "Battery", "draw_watt": 90, "battery_wh": 50,
+        "crash_risk": False, "ai_capabilities": "Auto-stabilized flight, limited route autonomy"
     },
     "RQ-20 Puma": {
-        "max_payload_g": 600,
-        "base_weight_kg": 6.3,
-        "power_system": "Battery",
-        "draw_watt": 180,
-        "battery_wh": 275,
-        "crash_risk": False,
-        "ai_capabilities": "AI-enhanced ISR mission planning, autonomous loitering"
+        "max_payload_g": 600, "base_weight_kg": 6.3,
+        "power_system": "Battery", "draw_watt": 180, "battery_wh": 275,
+        "crash_risk": False, "ai_capabilities": "AI-enhanced ISR mission planning, autonomous loitering"
     },
     "Teal Golden Eagle": {
-        "max_payload_g": 2000,
-        "base_weight_kg": 2.2,
-        "power_system": "Battery",
-        "draw_watt": 220,
-        "battery_wh": 100,
-        "crash_risk": True,
-        "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"
+        "max_payload_g": 2000, "base_weight_kg": 2.2,
+        "power_system": "Battery", "draw_watt": 220, "battery_wh": 100,
+        "crash_risk": True, "ai_capabilities": "AI-driven ISR, edge-based visual classification, GPS-denied flight"
     },
     "Quantum Systems Vector": {
-        "max_payload_g": 1500,
-        "base_weight_kg": 2.3,
-        "power_system": "Battery",
-        "draw_watt": 160,
-        "battery_wh": 150,
-        "crash_risk": False,
-        "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"
+        "max_payload_g": 1500, "base_weight_kg": 2.3,
+        "power_system": "Battery", "draw_watt": 160, "battery_wh": 150,
+        "crash_risk": False, "ai_capabilities": "Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning"
     },
 
-    # ───────── MALE class (ICE) ─────────
+    # ——— MALE class (ICE) ———
     "MQ-1 Predator": {
-        "max_payload_g": 204000,
-        "base_weight_kg": 512,
-        "power_system": "ICE",
-        "draw_watt": 650,
-        "battery_wh": 150,
-        "crash_risk": True,
-        "ai_capabilities": "Semi-autonomous surveillance, pattern-of-life analysis",
-        "wing_area_m2": 11.5,
-        "wingspan_m": 14.8,
-        "cd0": 0.025,
-        "oswald_e": 0.80,
-        "prop_eff": 0.80,
-        "bsfc_gpkwh": 260.0,
-        "fuel_density_kgpl": 0.72,
-        "fuel_tank_l": 300.0
+        "max_payload_g": 204000, "base_weight_kg": 512,
+        "power_system": "ICE", "draw_watt": 650, "battery_wh": 150,
+        "crash_risk": True, "ai_capabilities": "Semi-autonomous surveillance, pattern-of-life analysis",
+        "wing_area_m2": 11.5, "wingspan_m": 14.8,
+        "cd0": 0.025, "oswald_e": 0.80, "prop_eff": 0.80,
+        "bsfc_gpkwh": 260.0, "fuel_density_kgpl": 0.72, "fuel_tank_l": 300.0
     },
     "MQ-9 Reaper": {
-        "max_payload_g": 1700000,
-        "base_weight_kg": 2223,
-        "power_system": "ICE",
-        "draw_watt": 800,
-        "battery_wh": 200,
-        "crash_risk": True,
-        "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking",
-        "wing_area_m2": 24.0,
-        "wingspan_m": 20.0,
-        "cd0": 0.030,
-        "oswald_e": 0.85,
-        "prop_eff": 0.82,
-        "bsfc_gpkwh": 330.0,
-        "fuel_density_kgpl": 0.80,
-        "fuel_tank_l": 900.0
+        "max_payload_g": 1700000, "base_weight_kg": 2223,
+        "power_system": "ICE", "draw_watt": 800, "battery_wh": 200,
+        "crash_risk": True, "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking",
+        "wing_area_m2": 24.0, "wingspan_m": 20.0,
+        "cd0": 0.030, "oswald_e": 0.85, "prop_eff": 0.82,
+        "bsfc_gpkwh": 330.0, "fuel_density_kgpl": 0.80, "fuel_tank_l": 900.0
     },
 
-    # ───────── Sandbox / Custom ─────────
+    # ——— Sandbox / Custom ———
     "Custom Build": {
-        "max_payload_g": 1500,
-        "base_weight_kg": 2.0,
-        "power_system": "Battery",
-        "draw_watt": 180,
-        "battery_wh": 150,
-        "crash_risk": False,
-        "ai_capabilities": "User-defined platform with configurable components"
+        "max_payload_g": 1500, "base_weight_kg": 2.0,
+        "power_system": "Battery", "draw_watt": 180, "battery_wh": 150,
+        "crash_risk": False, "ai_capabilities": "User-defined platform with configurable components"
     }
 }
 
-# ---------------------------------------------------------
-# Form Inputs
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
+# Form
+# ─────────────────────────────────────────────────────────
 debug_mode = st.checkbox("Enable Debug Mode")
 drone_model = st.selectbox("Drone Model", list(UAV_PROFILES.keys()))
 profile = UAV_PROFILES[drone_model]
@@ -249,7 +184,6 @@ st.caption(f"Power system: `{profile['power_system']}`")
 
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
-
     battery_capacity_wh = numeric_input("Battery Capacity (Wh)", float(profile["battery_wh"]))
     payload_weight_g = int(numeric_input("Payload (g)", int(profile["max_payload_g"]*0.5)))
     flight_speed_kmh = numeric_input("Speed (km/h)", 30.0)
@@ -265,7 +199,7 @@ with st.form("uav_form"):
     stealth_drag_penalty = st.slider("Stealth Drag Factor", 1.0, 1.5, 1.0)
     simulate_failure = st.checkbox("Enable Failure Simulation")
 
-    # ICE aerospace panel (MQ-1 / MQ-9 only)
+    # ICE panel for MQ-1 / MQ-9
     ice_params = None
     if drone_model in ["MQ-1 Predator", "MQ-9 Reaper"]:
         st.markdown("### Aerospace Model (ICE-only)")
@@ -277,24 +211,17 @@ with st.form("uav_form"):
         prop_eff = numeric_input("Propulsive η_p", float(profile.get("prop_eff", 0.80)))
         bsfc_gpkwh = numeric_input("BSFC (g/kWh)", float(profile.get("bsfc_gpkwh", 260.0)))
         fuel_density_kgpl = numeric_input("Fuel Density (kg/L)", float(profile.get("fuel_density_kgpl", 0.72)))
-
         hybrid_assist = st.checkbox("Enable Hybrid Assist (experimental)")
-        assist_fraction = st.slider("Assist Fraction (battery share of shaft power)", 0.05, 0.30, 0.10, step=0.01)
+        assist_fraction = st.slider("Assist Fraction", 0.05, 0.30, 0.10, step=0.01)
         assist_duration_min = st.slider("Assist Duration (minutes)", 1, 30, 10)
 
-        ice_params = {
-            "fuel_tank_l": fuel_tank_l,
-            "wing_area_m2": wing_area_m2,
-            "wingspan_m": wingspan_m,
-            "cd0": cd0,
-            "oswald_e": oswald_e,
-            "prop_eff": prop_eff,
-            "bsfc_gpkwh": bsfc_gpkwh,
-            "fuel_density_kgpl": fuel_density_kgpl,
-            "hybrid_assist": hybrid_assist,
-            "assist_fraction": assist_fraction,
-            "assist_duration_min": assist_duration_min
-        }
+        ice_params = dict(
+            fuel_tank_l=fuel_tank_l, wing_area_m2=wing_area_m2, wingspan_m=wingspan_m,
+            cd0=cd0, oswald_e=oswald_e, prop_eff=prop_eff,
+            bsfc_gpkwh=bsfc_gpkwh, fuel_density_kgpl=fuel_density_kgpl,
+            hybrid_assist=hybrid_assist, assist_fraction=assist_fraction,
+            assist_duration_min=assist_duration_min
+        )
     else:
         hybrid_assist = False
         assist_fraction = 0.0
@@ -302,9 +229,7 @@ with st.form("uav_form"):
 
     submitted = st.form_submit_button("Estimate")
 
-# ---------------------------------------------------------
-# Swarm & Stealth controls (outside form)
-# ---------------------------------------------------------
+# Swarm & Stealth controls
 st.markdown("### Swarm & Stealth")
 swarm_enable = st.checkbox("Enable Swarm Advisor", value=True)
 swarm_size = st.slider("Swarm Size", 2, 8, 3)
@@ -316,7 +241,6 @@ with st.expander("Mission Waypoints"):
     st.caption("Enter waypoints as (x,y) km coordinates relative to origin.")
     waypoint_str = st.text_area("Waypoints (e.g., 2,2; 5,0; 8,-3)", "2,2; 5,0; 8,-3")
 
-# Parse waypoints
 waypoints = []
 try:
     for pair in waypoint_str.split(";"):
@@ -326,9 +250,9 @@ except Exception:
     st.error("Invalid waypoint format. Using (0,0).")
     waypoints = [(0.0, 0.0)]
 
-# ---------------------------------------------------------
-# LLM — Mission Advisor (single UAV)
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
+# LLM Mission Advisor
+# ─────────────────────────────────────────────────────────
 def generate_llm_advice(params):
     if not OPENAI_AVAILABLE:
         return ("LLM unavailable — heuristic advice:\n"
@@ -351,7 +275,6 @@ Parameters:
 - Fuel context: {params['fuel_l']}
 - Hybrid assist: {params.get('hybrid_assist', False)} (fraction={params.get('assist_fraction',0):.2f}, duration={params.get('assist_duration_min',0)} min)
 
-If hybrid assist is active, consider reduced IR signature and where best to use it (climb, ingress, loiter).
 Be concise, bullet style.
 """
     try:
@@ -368,13 +291,10 @@ Be concise, bullet style.
                 "- Descend 100–200 m if gusts rise.\n"
                 "- Engage assist only in high-threat sectors.")
 
-# ---------------------------------------------------------
-# Swarm — Multi-Agent LLM scaffolding
-# ---------------------------------------------------------
-ALLOWED_ACTIONS = [
-    "RTB","LOITER","HANDOFF_TRACK","RELOCATE",
-    "ALTITUDE_CHANGE","SPEED_CHANGE","RELAY_COMMS","STANDBY","HYBRID_ASSIST"
-]
+# ─────────────────────────────────────────────────────────
+# Swarm (multi-agent) scaffolding
+# ─────────────────────────────────────────────────────────
+ALLOWED_ACTIONS = ["RTB","LOITER","HANDOFF_TRACK","RELOCATE","ALTITUDE_CHANGE","SPEED_CHANGE","RELAY_COMMS","STANDBY","HYBRID_ASSIST"]
 
 @dataclass
 class AgentState:
@@ -397,52 +317,47 @@ class AgentState:
     warning: str = ""
 
 def summarize_state(s: AgentState) -> Dict[str, Any]:
-    d = asdict(s).copy()
-    d.pop("waypoints", None)
-    return d
+    d = asdict(s).copy(); d.pop("waypoints", None); return d
 
 def seed_swarm(n, base_endurance, base_batt_wh, delta_T, altitude_m, platform) -> List[AgentState]:
     roles = ["LEAD","SCOUT","TRACKER","RELAY","STRIKER"]
-    states=[]
+    out=[]
     for i in range(n):
         role=roles[i%len(roles)]
-        states.append(AgentState(
+        out.append(AgentState(
             id=f"UAV_{i+1}", role=role, platform=platform,
             endurance_min=float(random.uniform(0.7,1.1)*max(5.0, base_endurance)),
             battery_wh=float(random.uniform(0.8,1.1)*max(10.0, base_batt_wh)),
-            fuel_l=float(random.uniform(70.0, 200.0) if "MQ-" in platform else random.uniform(5.0, 25.0)),
-            speed_kmh=float(random.uniform(25,40)),
-            altitude_m=int(altitude_m+random.uniform(-20,20)),
+            fuel_l=float(random.uniform(70.0,200.0) if "MQ-" in platform else random.uniform(5.0,25.0)),
+            speed_kmh=float(random.uniform(25,40)), altitude_m=int(altitude_m+random.uniform(-20,20)),
             x_km=float(random.uniform(-1,1)), y_km=float(random.uniform(-1,1)),
             delta_T=float(delta_T*random.uniform(0.9,1.2))
         ))
-    return states
+    return out
 
 AGENT_SYSTEM_TMPL = """You are {role} for {uav_id}, a UAV swarm agent.
 Return STRICT JSON:
 - "message": short comms (<20 words)
-- "proposed_action": one of {allowed} (HYBRID_ASSIST only for MQ-1 Predator / MQ-9 Reaper)
+- "proposed_action": one of {allowed}
 - "params": dict (assist: {{"fraction":0-0.3,"duration_min":1-20}})
 - "confidence": 0-1 float
 Rules:
 - If endurance < 8 → prefer RTB/hand-off.
-- If threat_note='elevated' and platform is MQ-1/MQ-9 → consider HYBRID_ASSIST for ingress/loiter.
-- Avoid altitude changes >150 m; avoid large speed deltas.
+- If threat_note='elevated' and platform is MQ-1/MQ-9 → consider HYBRID_ASSIST.
 """
 
 LEAD_SYSTEM = """You are LEAD, the swarm orchestrator.
 Input: env + UAV states + proposals.
 Output STRICT JSON with:
-- "conversation": [{ "from":"...", "msg":"..." }] (≤4 lines)
+- "conversation": [{ "from":"...", "msg":"..." }]
 - "actions": [{ "uav_id":"...", "action":"...", "reason":"...", ...params }]
 Rules:
-- HYBRID_ASSIST valid only for MQ-1/MQ-9.
-- If stealth_ingress=true AND UAV inside threat_zone_km, prefer HYBRID_ASSIST for ingress UAVs (not all at once).
+- HYBRID_ASSIST only for MQ-1/MQ-9.
+- If stealth_ingress=true AND UAV inside threat_zone_km, prefer HYBRID_ASSIST (not all at once).
 - If low endurance, RTB over assist.
-- Keep altitude/speed changes modest.
 """
 
-def safe_loads(txt: str) -> Dict[str, Any]:
+def _safe_json(txt: str) -> Dict[str, Any]:
     try: return json.loads(txt)
     except Exception:
         s,e=txt.find("{"), txt.rfind("}")
@@ -462,7 +377,7 @@ def agent_call(env: Dict[str,Any], s: AgentState) -> Dict[str, Any]:
                       {"role":"user","content": json.dumps(payload, ensure_ascii=False)}],
             temperature=0.2, max_tokens=220, response_format={"type":"json_object"}
         )
-        return safe_loads(resp.choices[0].message.content)
+        return _safe_json(resp.choices[0].message.content)
     except Exception:
         return {"message":"Standby","proposed_action":"STANDBY","params":{},"confidence":0.5}
 
@@ -479,12 +394,7 @@ def lead_call(env: Dict[str,Any], swarm: List[AgentState], proposals: Dict[str,A
             else:
                 actions.append({"uav_id":s.id,"action":"LOITER","reason":"Holding"})
         return {"conversation":[{"from":"LEAD","msg":"Fallback fusion active"}],"actions":actions}
-    packed = {
-        "env": env,
-        "swarm":[summarize_state(s) for s in swarm],
-        "proposals": proposals,
-        "allowed_actions": ALLOWED_ACTIONS
-    }
+    packed = {"env": env,"swarm":[summarize_state(s) for s in swarm],"proposals": proposals,"allowed_actions": ALLOWED_ACTIONS}
     try:
         resp = _client.chat.completions.create(
             model="gpt-4o-mini",
@@ -492,7 +402,7 @@ def lead_call(env: Dict[str,Any], swarm: List[AgentState], proposals: Dict[str,A
                       {"role":"user","content": json.dumps(packed, ensure_ascii=False)}],
             temperature=0.2, max_tokens=600, response_format={"type":"json_object"}
         )
-        return safe_loads(resp.choices[0].message.content)
+        return _safe_json(resp.choices[0].message.content)
     except Exception:
         return {"conversation":[{"from":"LEAD","msg":"LLM error fallback"}],
                 "actions":[{"uav_id":s.id,"action":"LOITER","reason":"LLM error"} for s in swarm]}
@@ -503,14 +413,13 @@ def apply_actions(swarm: List[AgentState], acts: List[Dict[str,Any]],
         return (s.x_km**2 + s.y_km**2)**0.5 <= threat_zone_km
     idx = {s.id: s for s in swarm}
     for a in acts:
-        s = idx.get(a.get("uav_id"))
+        s = idx.get(a.get("uav_id")); 
         if not s: continue
         act = a.get("action")
         if act == "HYBRID_ASSIST" and ("MQ-1" in s.platform or "MQ-9" in s.platform):
             frac = float(a.get("fraction",0.10)); dur = float(a.get("duration_min",8))
             s.hybrid_assist=True; s.assist_fraction=frac; s.assist_time_min=dur
-            s.delta_T *= (1 - frac*0.7)     # IR reduction model
-            s.fuel_l += 0.05*dur            # small endurance bump proxy
+            s.delta_T *= (1 - frac*0.7); s.fuel_l += 0.05*dur
             s.warning = f"Hybrid Assist {frac*100:.0f}% for {dur:.0f} min"
         elif act == "RTB":
             s.warning="RTB ordered"; s.speed_kmh=max(15,s.speed_kmh)
@@ -525,7 +434,6 @@ def apply_actions(swarm: List[AgentState], acts: List[Dict[str,Any]],
         elif act == "RELAY_COMMS":
             s.warning="Relay"
         s.endurance_min = max(0, s.endurance_min - random.uniform(0.5, 1.5))
-    # Auto stealth ingress assist
     if stealth_ingress:
         for s in swarm:
             if ("MQ-1" in s.platform or "MQ-9" in s.platform) and in_zone(s) and not s.hybrid_assist:
@@ -534,65 +442,50 @@ def apply_actions(swarm: List[AgentState], acts: List[Dict[str,Any]],
                 s.warning="Auto Hybrid Assist (Stealth Ingress)"
     return swarm
 
-# ---------------------------------------------------------
-# Map plotting (matplotlib)
-# ---------------------------------------------------------
+# Map
 def plot_swarm_map(swarm: List[AgentState], threat_zone_km: float,
                    stealth_ingress: bool, waypoints=None):
     fig, ax = plt.subplots(figsize=(5, 5))
-
     if stealth_ingress:
         circle = plt.Circle((0, 0), threat_zone_km, color='red', alpha=0.2, label="Threat Zone")
         ax.add_patch(circle)
-
     if waypoints:
         xs, ys = zip(*waypoints)
         ax.plot(xs, ys, "k--", linewidth=1, label="Mission Path")
         ax.scatter(xs, ys, c="orange", marker="x", s=80, label="Waypoints")
-
     for s in swarm:
         color = "blue"; marker = "o"
-        if s.platform in ["MQ-1 Predator","MQ-9 Reaper"]:
-            marker="s"; color="purple"
-        if s.hybrid_assist:
-            color="green"
+        if s.platform in ["MQ-1 Predator","MQ-9 Reaper"]: marker="s"; color="purple"
+        if s.hybrid_assist: color="green"
         ax.scatter(s.x_km, s.y_km, c=color, marker=marker, s=100, label=s.id)
-        ax.text(s.x_km+0.2, s.y_km+0.2,
-                f"{s.id}\nAlt {s.altitude_m}m\nΔT {s.delta_T:.1f}°C", fontsize=7)
-
+        ax.text(s.x_km+0.2, s.y_km+0.2, f"{s.id}\nAlt {s.altitude_m}m\nΔT {s.delta_T:.1f}°C", fontsize=7)
     ax.set_title("Swarm Mission Map")
     ax.set_xlabel("X (km)"); ax.set_ylabel("Y (km)")
     ax.axhline(0, color='grey', linewidth=0.5); ax.axvline(0, color='grey', linewidth=0.5)
-    handles, labels = ax.get_legend_handles_labels()
-    uniq = dict(zip(labels, handles))
+    handles, labels = ax.get_legend_handles_labels(); uniq = dict(zip(labels, handles))
     ax.legend(uniq.values(), uniq.keys(), loc="upper right", fontsize=6)
     ax.set_aspect('equal', adjustable='datalim')
     return fig
 
-# ---------------------------------------------------------
-# Simulation
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────
+# Simulation + Results
+# ─────────────────────────────────────────────────────────
 if submitted:
     try:
-        max_payload = profile["max_payload_g"]
-        if payload_weight_g > max_payload:
+        if payload_weight_g > profile["max_payload_g"]:
             st.error("Payload exceeds lift capacity."); st.stop()
 
         total_weight_kg = profile["base_weight_kg"] + (payload_weight_g / 1000.0)
-
-        # Temperature derate on battery (used for non-ICE branch)
         if temperature_c < 15: battery_capacity_wh *= 0.9
         elif temperature_c > 35: battery_capacity_wh *= 0.95
 
         rho = std_atmo_density(altitude_m)
         V_ms = max(1.0, (flight_speed_kmh / 3.6))
         weight_N = total_weight_kg * 9.81
-
         use_ice_branch = drone_model in ["MQ-1 Predator","MQ-9 Reaper"] and ice_params is not None
 
-        # ----------------- ICE aerospace branch -----------------
+        # ========== ICE aerospace branch ==========
         if use_ice_branch:
-            # Aerodynamic power
             P_req_W = aero_power_required_W(
                 weight_N=weight_N, rho=rho, V_ms=V_ms,
                 wing_area_m2=ice_params["wing_area_m2"],
@@ -602,13 +495,11 @@ if submitted:
             gust_pen = (1.0 + (gustiness * 0.015)) if gustiness > 0 else 1.0
             P_req_W *= terrain_penalty * stealth_drag_penalty * gust_pen
 
-            # Fuel burn & climb penalty
             lph = bsfc_fuel_burn_lph(P_req_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"])
             climb_L = climb_fuel_liters(total_weight_kg, max(0, elevation_gain_m),
                                         ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"])
             fuel_available_L = max(0.0, ice_params["fuel_tank_l"] - climb_L)
 
-            # Optional hybrid assist
             if ice_params["hybrid_assist"]:
                 battery_support_Wh = profile.get("battery_wh", 200.0)
                 assist_power_W = P_req_W * ice_params["assist_fraction"]
@@ -616,14 +507,11 @@ if submitted:
                 if assist_energy_Wh > battery_support_Wh:
                     ice_params["assist_duration_min"] = (battery_support_Wh / max(1.0, assist_power_W)) * 60.0
                     assist_energy_Wh = battery_support_Wh
-                fuel_saved_L = bsfc_fuel_burn_lph(
-                    assist_power_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"]
-                ) * (ice_params["assist_duration_min"] / 60.0)
+                fuel_saved_L = bsfc_fuel_burn_lph(assist_power_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"]) * (ice_params["assist_duration_min"] / 60.0)
                 fuel_available_L += fuel_saved_L
                 st.markdown(f"**Hybrid Assist Active:** {ice_params['assist_fraction']*100:.0f}% for {ice_params['assist_duration_min']:.1f} min")
                 st.markdown(f"Battery used: {assist_energy_Wh:.1f} Wh  Fuel saved: {fuel_saved_L:.2f} L")
 
-            # Endurance / distance
             endurance_hr = fuel_available_L / max(0.05, lph)
             flight_time_minutes = max(0.1, endurance_hr * 60.0)
 
@@ -640,8 +528,7 @@ if submitted:
             st.subheader("Thermal & Fuel (ICE)")
             st.metric("Power Required (shaft)", f"{P_req_W/1000:.1f} kW")
             st.metric("Fuel Burn", f"{lph:.2f} L/hr")
-            if climb_L > 0:
-                st.markdown(f"**Climb Fuel Penalty:** `{climb_L:.2f} L` deducted")
+            if climb_L > 0: st.markdown(f"**Climb Fuel Penalty:** `{climb_L:.2f} L` deducted")
             st.metric("Fuel Tank (usable)", f"{fuel_available_L:.1f} L")
             st.metric("Thermal ΔT", f"{delta_T:.1f} °C")
 
@@ -664,21 +551,16 @@ if submitted:
                 if fuel_rem<=0.0: break
                 time.sleep(0.03)
 
-            st.success("Simulation complete.")
             if simulate_failure or (delta_T > 15 or altitude_m > 100):
-                if ice_params["hybrid_assist"]:
-                    st.warning("**Threat Reduced:** Hybrid assist lowers IR, but detection risk remains.")
-                else:
-                    st.warning("**Threat Alert:** UAV may be visible to AI-based IR/radar.")
+                st.warning("**Threat Alert:** UAV may be visible to AI-based IR/radar." + (" (Hybrid assist reduces IR.)" if ice_params["hybrid_assist"] else ""))
             else:
                 st.success("**Safe:** Below typical detection thresholds.")
 
             computed_power_draw_for_llm = P_req_W
             computed_fuel_context_for_llm = fuel_available_L
 
-        # ----------------- Battery/Hybrid educational branch -----------------
+        # ========== Battery/Hybrid (simplified) ==========
         else:
-            # Simple draw model (kept from original spirit)
             base_draw = profile.get("draw_watt", 180.0)
             weight_factor = total_weight_kg / max(0.1, profile["base_weight_kg"])
             wind_factor = 1 + (wind_speed_kmh / 100.0)
@@ -689,23 +571,18 @@ if submitted:
             else:
                 total_draw = (base_draw + 0.02 * (flight_speed_kmh ** 2)) * wind_factor
             total_draw *= terrain_penalty * stealth_drag_penalty
-            if gustiness > 0:
-                total_draw *= (1 + gustiness * 0.015)
+            if gustiness > 0: total_draw *= (1 + gustiness * 0.015)
 
             if elevation_gain_m > 0:
                 climb_E = (total_weight_kg * 9.81 * elevation_gain_m) / 3600
-                battery_capacity_wh -= climb_E
-                st.markdown(f"**Climb Energy:** {climb_E:.2f} Wh")
-                if battery_capacity_wh <= 0:
-                    st.error("Simulation stopped: climb energy exceeds battery capacity."); st.stop()
+                battery_capacity_wh -= climb_E; st.markdown(f"**Climb Energy:** {climb_E:.2f} Wh")
+                if battery_capacity_wh <= 0: st.error("Simulation stopped: climb energy exceeds battery capacity."); st.stop()
             elif elevation_gain_m < 0:
                 recov = (total_weight_kg * 9.81 * abs(elevation_gain_m) / 3600) * 0.2
-                battery_capacity_wh += recov
-                st.markdown(f"**Descent Recovery:** +{recov:.2f} Wh")
+                battery_capacity_wh += recov; st.markdown(f"**Descent Recovery:** +{recov:.2f} Wh")
 
             batt_draw = calculate_hybrid_draw(total_draw, profile["power_system"])
-            if batt_draw <= 0:
-                st.error("Simulation failed: Battery draw is zero or undefined."); st.stop()
+            if batt_draw <= 0: st.error("Simulation failed: Battery draw is zero or undefined."); st.stop()
 
             delta_T = estimate_thermal_signature(total_draw, 0.85, 0.3, 0.9, temperature_c)
             delta_T *= (1.0 - (cloud_cover / 100.0) * 0.5)
@@ -716,8 +593,7 @@ if submitted:
                 st.metric("Estimated Max Distance", f"{(flight_time_minutes / 60) * flight_speed_kmh:.2f} km")
 
             st.subheader("Thermal Signature & Fuel Analysis")
-            risk = thermal_risk_rating(delta_T)
-            st.metric("Thermal Signature Risk", f"{risk} (ΔT = {delta_T:.1f}°C)")
+            st.metric("Thermal Signature Risk", f"{thermal_risk_rating(delta_T)} (ΔT = {delta_T:.1f}°C)")
             st.info("Fuel tracking not applicable for battery-only UAVs.")
 
             # Live battery sim (capped)
@@ -751,18 +627,13 @@ if submitted:
             computed_power_draw_for_llm = total_draw
             computed_fuel_context_for_llm = calculate_fuel_consumption(total_draw, flight_time_minutes/60.0)
 
-        # ----------------- LLM Mission Advisor -----------------
+        # ========== Mission Advisor ==========
         st.subheader("AI Mission Advisor (LLM)")
         params = {
-            "drone":drone_model,
-            "payload_g":payload_weight_g,
-            "mode":flight_mode,
-            "speed_kmh":flight_speed_kmh,
-            "alt_m":altitude_m,
-            "wind_kmh":wind_speed_kmh,
-            "gust":gustiness,
-            "endurance_min":flight_time_minutes,
-            "delta_T":delta_T,
+            "drone":drone_model, "payload_g":payload_weight_g, "mode":flight_mode,
+            "speed_kmh":flight_speed_kmh, "alt_m":altitude_m,
+            "wind_kmh":wind_speed_kmh, "gust":gustiness,
+            "endurance_min":flight_time_minutes, "delta_T":delta_T,
             "fuel_l":computed_fuel_context_for_llm,
             "hybrid_assist": (use_ice_branch and ice_params.get("hybrid_assist", False)) if use_ice_branch else False,
             "assist_fraction": (ice_params.get("assist_fraction",0.0) if use_ice_branch else 0.0),
@@ -770,15 +641,12 @@ if submitted:
         }
         st.write(generate_llm_advice(params))
 
-        # ----------------- Swarm Advisor + Playback + CSV -----------------
+        # ========== Swarm Advisor ==========
         if swarm_enable:
             st.header("Swarm Advisor (Multi-Agent LLM)")
             base_endurance = float(max(5.0, flight_time_minutes))
             base_batt_wh = float(max(10.0, battery_capacity_wh))
-            swarm = seed_swarm(swarm_size, base_endurance, base_batt_wh,
-                               delta_T, altitude_m, platform=drone_model)
-
-            # Assign waypoints
+            swarm = seed_swarm(swarm_size, base_endurance, base_batt_wh, delta_T, altitude_m, platform=drone_model)
             for s in swarm:
                 s.waypoints = waypoints.copy()
                 s.current_wp = 0
@@ -789,12 +657,9 @@ if submitted:
                          f"Fuel {s.fuel_l:.1f} L | Alt {s.altitude_m} m | Pos ({s.x_km:+.1f},{s.y_km:+.1f}) km | ΔT {s.delta_T:.1f}°C")
 
             env = {
-                "wind_kmh": wind_speed_kmh,
-                "gust": gustiness,
-                "mission": flight_mode,
+                "wind_kmh": wind_speed_kmh, "gust": gustiness, "mission": flight_mode,
                 "threat_note": ("elevated" if (simulate_failure or delta_T > 15 or altitude_m > 100) else "normal"),
-                "stealth_ingress": stealth_ingress,
-                "threat_zone_km": threat_zone_km
+                "stealth_ingress": stealth_ingress, "threat_zone_km": threat_zone_km
             }
 
             for round_idx in range(swarm_steps):
@@ -820,10 +685,10 @@ if submitted:
                     alert = f" ⚠ {s.warning}" if s.warning else ""
                     st.write(f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | Fuel {s.fuel_l:.1f} L | Alt {s.altitude_m} m | ΔT {s.delta_T:.1f}°C{assist_txt}{alert} {zone_flag}")
 
-            # Playback history along waypoints
+            # Playback history + simple waypoint following
             st.subheader("Mission Playback")
             swarm_history = []
-            timesteps = 10  # ticks (~minutes)
+            timesteps = 10
 
             def move_towards(s: AgentState, target: tuple, step_km: float = 0.5):
                 tx, ty = target
@@ -832,10 +697,9 @@ if submitted:
                 if dist < step_km:
                     s.x_km, s.y_km = tx, ty
                     s.current_wp = min(s.current_wp + 1, (len(s.waypoints)-1 if s.waypoints else 0))
-                else:
-                    if dist > 0:
-                        s.x_km += step_km * dx/dist
-                        s.y_km += step_km * dy/dist
+                elif dist > 0:
+                    s.x_km += step_km * dx/dist
+                    s.y_km += step_km * dy/dist
                 return s
 
             for t in range(timesteps):
@@ -846,11 +710,8 @@ if submitted:
                     s.endurance_min = max(0, s.endurance_min - random.uniform(0.5, 1.0))
                     s.fuel_l = max(0, s.fuel_l - random.uniform(1.0, 2.0))
                     if stealth_ingress and s.platform in ["MQ-1 Predator","MQ-9 Reaper"] and ((s.x_km**2 + s.y_km**2)**0.5 <= threat_zone_km):
-                        s.hybrid_assist = True
-                        s.assist_fraction = 0.15
-                        s.assist_time_min = 10
-                        s.delta_T *= (1 - 0.15*0.7)
-                        s.warning = "Auto Hybrid Assist (Stealth Ingress)"
+                        s.hybrid_assist = True; s.assist_fraction = 0.15; s.assist_time_min = 10
+                        s.delta_T *= (1 - 0.15*0.7); s.warning = "Auto Hybrid Assist (Stealth Ingress)"
                     snapshot.append(asdict(s))
                 swarm_history.append(snapshot)
 
@@ -871,20 +732,11 @@ if submitted:
             for t, snapshot in enumerate(swarm_history):
                 for s in snapshot:
                     rows.append({
-                        "time_min": t,
-                        "uav_id": s["id"],
-                        "role": s["role"],
-                        "platform": s["platform"],
-                        "x_km": s["x_km"],
-                        "y_km": s["y_km"],
-                        "altitude_m": s["altitude_m"],
-                        "endurance_min": s["endurance_min"],
-                        "fuel_l": s["fuel_l"],
-                        "delta_T": s["delta_T"],
-                        "hybrid_assist": s["hybrid_assist"],
-                        "assist_fraction": s["assist_fraction"],
-                        "assist_time_min": s["assist_time_min"],
-                        "warning": s["warning"]
+                        "time_min": t, "uav_id": s["id"], "role": s["role"], "platform": s["platform"],
+                        "x_km": s["x_km"], "y_km": s["y_km"], "altitude_m": s["altitude_m"],
+                        "endurance_min": s["endurance_min"], "fuel_l": s["fuel_l"], "delta_T": s["delta_T"],
+                        "hybrid_assist": s["hybrid_assist"], "assist_fraction": s["assist_fraction"],
+                        "assist_time_min": s["assist_time_min"], "warning": s["warning"]
                     })
             df = pd.DataFrame(rows)
             st.subheader("Export Mission Data")
@@ -902,6 +754,25 @@ if submitted:
                     file_name="mission_waypoints.csv",
                     mime="text/csv"
                 )
+
+        # ========== Simulated GPT Suggestions (classic tips) ==========
+        st.subheader("AI Suggestions (Simulated GPT)")
+        if payload_weight_g == profile["max_payload_g"]:
+            st.write("**Tip:** Payload is at maximum lift capacity.")
+        if wind_speed_kmh > 15:
+            st.write("**Tip:** High wind may reduce flight time.")
+        if battery_capacity_wh < 30:
+            st.write("**Tip:** Battery is under 30 Wh. Consider a larger pack.")
+        if flight_mode in ["Hover", "Waypoint Mission"]:
+            st.write("**Tip:** Hover and waypoint missions draw extra power.")
+        if stealth_drag_penalty > 1.2:
+            st.write("**Tip:** Stealth loadout may reduce endurance.")
+        if delta_T > 15:
+            st.write("**Tip:** Thermal load is high. Consider lighter payload or lower altitude.")
+        if altitude_m > 100:
+            st.write("**Tip:** Flying above 100m may increase detection risk.")
+        if gustiness >= 5:
+            st.write("**Tip:** Gust factor above 5 may destabilize small UAVs.")
 
         st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
