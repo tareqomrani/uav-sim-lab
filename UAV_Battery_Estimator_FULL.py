@@ -755,6 +755,9 @@ if submitted:
             flight_time_minutes = dispatch_endurance_min
             climb_L = climb_L_val
 
+            # ===== NEW: Total distance (km) for selected parameters (ICE) =====
+            total_distance_km = (flight_time_minutes / 60.0) * float(flight_speed_kmh)
+
             # User-facing metrics (ICE)
             st.subheader("Thermal & Fuel (ICE)")
             st.metric("Total Power (shaft+hotel)", f"{P_total_W/1000:.2f} kW")
@@ -894,6 +897,9 @@ if submitted:
             flight_time_minutes = dispatch_endurance_min
             climb_L = None
 
+            # ===== NEW: Total distance (km) for selected parameters (Battery) =====
+            total_distance_km = (flight_time_minutes / 60.0) * float(flight_speed_kmh)
+
             # User-facing metrics (Battery)
             st.subheader("Thermal Signature & Battery")
             risk = 'Low' if delta_T < 10 else ('Moderate' if delta_T < 20 else 'High')
@@ -931,6 +937,7 @@ if submitted:
         st.header("Selected UAV — Mission Performance")
         st.metric("Dispatchable Endurance", f"{flight_time_minutes:.1f} minutes")
         st.caption(f"Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)")
+        st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")  # <— NEW VISIBLE FIELD
         st.metric("Best Heading Range", f"{best_km:.1f} km")
         st.metric("Upwind Range", f"{worst_km:.1f} km")
 
@@ -959,6 +966,7 @@ if submitted:
         human.append(f"- **Terrain × Stealth factor**: {terrain_penalty*stealth_drag_penalty:.3f}")
         human.append(f"- **Thermal ΔT**: {delta_T:.1f} °C")
         human.append(f"- **Dispatchable Endurance**: {flight_time_minutes:.1f} min")
+        human.append(f"- **Total Distance (km)**: {total_distance_km:.2f} km")  # <— NEW LINE IN DETAILED PANEL
         human.append(f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km")
 
         st.markdown("\n".join(human))
@@ -966,6 +974,7 @@ if submitted:
         # Machine-readable JSON for the detailed panel
         detail.update({
             "dispatch_endurance_min": round(flight_time_minutes,1),
+            "total_distance_km": round(total_distance_km,2),      # <— NEW IN JSON
             "best_heading_range_km": round(best_km,2),
             "upwind_range_km": round(worst_km,2),
             "thermal_deltaT_C": round(delta_T,1),
@@ -1137,10 +1146,9 @@ if submitted:
             "Density Ratio (ρ/ρ0)": round(rho_ratio, 3),
             "Wind Penalty (%)": round(wind_penalty_pct, 1) if 'wind_penalty_pct' in locals() else 0.0,
             "Climb Energy (Wh)": round(climb_energy_Wh_value, 2) if (profile["power_system"]=="Battery") else None,
-            "Climb Fuel (L)": round(climb_L, 2) if (use_ice_branch and 'climb_L' in locals() and climb_L is not None) else None,
-            "Terrain Factor": float(terrain_penalty),
-            "Stealth Drag Factor": float(stealth_drag_penalty),
+            "Climb Fuel (L)": round(climb_L, 2) if ('climb_L' in locals() and climb_L is not None) else None,
             "Dispatchable Endurance (min)": round(flight_time_minutes, 1),
+            "Total Distance (km)": round(total_distance_km, 2),   # <— NEW IN EXPORT
             "Best Heading Range (km)": round(best_km, 2),
             "Upwind Range (km)": round(worst_km, 2),
             "ΔT (°C)": round(delta_T, 1)
