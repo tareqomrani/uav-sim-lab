@@ -52,6 +52,86 @@ def numeric_input(label: str, default: float) -> float:
         return default
 
 # ─────────────────────────────────────────────────────────
+# Detectability model (AI/IR) helpers  ⬅️ NEW
+# ─────────────────────────────────────────────────────────
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+def _risk_bucket(score: float):
+    """Return (label, streamlit_kind, hex_bg) for score 0..100."""
+    if score < 33:
+        return ("Low", "success", "#0f9d58")      # green
+    elif score < 67:
+        return ("Moderate", "warning", "#f4b400")  # amber
+    else:
+        return ("High", "error", "#db4437")        # red
+
+def _badge(label: str, score: float, bg: str) -> str:
+    return (
+        f"<span style='display:inline-block;padding:6px 10px;margin-right:8px;"
+        f"border-radius:8px;background:{bg};color:#fff;font-weight:600;"
+        f"font-size:13px;white-space:nowrap;'>"
+        f"{label}: {score:.0f}/100</span>"
+    )
+
+def compute_ai_ir_scores(
+    delta_T: float,
+    altitude_m: float,
+    cloud_cover: int,
+    speed_kmh: float,
+    gustiness: int,
+    stealth_factor: float,
+    drone_type: str,       # 'fixed' | 'rotor'
+    power_system: str      # 'Battery' | 'ICE'
+) -> Tuple[float, float]:
+    """
+    Heuristic risk scoring (0..100). Tuned for interpretability:
+      • AI-Visual rises at low altitude, higher speed, gusty motion; rotorcraft slightly higher.
+      • IR-Thermal rises with ΔT; distance (altitude) and cloud cover attenuate; ICE adds a small bias.
+      • 'Stealth Drag Factor' (>1) slightly reduces detectability (assumes stealth kit adds drag/IR masking).
+    """
+    # --- AI (visual) ---
+    alt_term     = 1.0 - min(0.80, altitude_m / 800.0)        # lower altitude → more risk
+    speed_term   = min(1.0, speed_kmh / 60.0) * 0.25          # faster → slightly more conspicuous
+    type_bonus   = 0.15 if drone_type == "rotor" else 0.07    # rotors are more conspicuous at low alt
+    gust_term    = min(0.15, (gustiness / 10.0) * 0.15)       # twitchiness adds a tad
+    cloud_factor = 1.0 - 0.25 * (cloud_cover / 100.0)         # clouds soften contrast/shadows
+    stealth_k    = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.15)
+
+    ai_raw = (0.55 * alt_term) + (0.15 * type_bonus) + (0.10 * speed_term) + (0.05 * gust_term)
+    ai_score = 100.0 * _clamp01(ai_raw * cloud_factor * stealth_k)
+
+    # --- IR (thermal) ---
+    delta_norm  = _clamp01(delta_T / 22.0)                    # ~22°C ΔT ≈ high risk
+    alt_atten   = 1.0 - min(0.60, (altitude_m / 1200.0) * 0.60)
+    cloud_attn  = 1.0 - 0.30 * (cloud_cover / 100.0)          # cloud cover partly blocks sky-looking sensors
+    ice_bias    = 0.10 if power_system == "ICE" else 0.00     # engines add thermal signature
+    stealth_k2  = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.10)
+
+    ir_raw = (0.70 * delta_norm) + ice_bias
+    ir_score = 100.0 * _clamp01(ir_raw * alt_atten * cloud_attn * stealth_k2)
+
+    return ai_score, ir_score
+
+def render_detectability_alert(ai_score: float, ir_score: float) -> Tuple[str, str]:
+    """
+    Returns (overall_streamlit_kind, html_badges). Overall = worse of the two buckets.
+    """
+    ai_label, ai_kind, ai_bg = _risk_bucket(ai_score)
+    ir_label, ir_kind, ir_bg = _risk_bucket(ir_score)
+
+    # Worst-of logic for overall banner
+    overall_kind = "error" if "High" in (ai_label, ir_label) else ("warning" if "Moderate" in (ai_label, ir_label) else "success")
+
+    badges = (
+        "<div style='margin:6px 0;'>"
+        f"{_badge(f'AI Visual • {ai_label}', ai_score, ai_bg)}"
+        f"{_badge(f'IR Thermal • {ir_label}', ir_score, ir_bg)}"
+        "</div>"
+    )
+    return overall_kind, badges
+
+# ─────────────────────────────────────────────────────────
 # Physics helpers (aerospace-grade)
 # ─────────────────────────────────────────────────────────
 RHO0 = 1.225       # kg/m^3 sea-level
@@ -177,27 +257,6 @@ def climb_fuel_liters(total_mass_kg: float, climb_m: float,
     E_kWh = (total_mass_kg * 9.81 * climb_m) / 3_600_000.0
     fuel_kg = (bsfc_gpkwh / 1000.0) * E_kWh
     return fuel_kg / max(0.5, fuel_density_kgpl)
-
-# ─────────────────────────────────────────────────────────
-# Detection risk utilities (color-coded)
-# ─────────────────────────────────────────────────────────
-def _badge_for_sev(sev: int) -> str:
-    return {0: "🟢 Low", 1: "🟡 Moderate", 2: "🔴 High", 3: "🟥 Critical"}.get(sev, "—")
-
-def assess_detection(delta_T: float, altitude_m: float, simulate_failure: bool=False) -> Dict[str, Any]:
-    """Separate Radar vs AI/IR risk, plus overall. Returns badges + severities."""
-    radar_sev = 2 if altitude_m > 200 else (1 if altitude_m > 100 else 0)
-    ai_sev    = 2 if delta_T   > 20 else (1 if delta_T   > 15 else 0)
-    overall_sev = 3 if simulate_failure else max(radar_sev, ai_sev)
-    return {
-        "radar_sev": radar_sev,
-        "ai_sev": ai_sev,
-        "overall_sev": overall_sev,
-        "radar_badge": _badge_for_sev(radar_sev),
-        "ai_badge": _badge_for_sev(ai_sev),
-        "overall_badge": _badge_for_sev(overall_sev),
-        "explain": f"Drivers → Altitude: {altitude_m} m | ΔT: {delta_T:.1f}°C | Failure: {simulate_failure}"
-    }
 
 # ─────────────────────────────────────────────────────────
 # UAV profiles (FULL SET)
@@ -373,6 +432,29 @@ with st.form("uav_form"):
         )
 
     submitted = st.form_submit_button("Estimate")
+
+# ─────────────────────────────────────────────────────────
+# Swarm & Stealth controls + Waypoints
+# ─────────────────────────────────────────────────────────
+st.markdown("### Swarm & Stealth")
+swarm_enable      = st.checkbox("Enable Swarm Advisor", value=True)
+swarm_size        = st.slider("Swarm Size", 2, 8, 3)
+swarm_steps       = st.slider("Swarm Conversation Rounds", 1, 5, 2)
+stealth_ingress   = st.checkbox("Enable Stealth Ingress Mode", value=True)
+threat_zone_km    = st.slider("Threat Zone Radius (km)", 1.0, 20.0, 5.0)
+
+with st.expander("Mission Waypoints"):
+    st.caption("Enter waypoints as (x,y) km coordinates relative to origin.")
+    waypoint_str = st.text_area("Waypoints (e.g., 2,2; 5,0; 8,-3)", "2,2; 5,0; 8,-3")
+
+waypoints = []
+try:
+    for pair in waypoint_str.split(";"):
+        x_str, y_str = pair.split(",")
+        waypoints.append((float(x_str.strip()), float(y_str.strip())))
+except Exception:
+    st.error("Invalid waypoint format. Using (0,0).")
+    waypoints = [(0.0, 0.0)]
 
 # ─────────────────────────────────────────────────────────
 # LLM Mission Advisor
@@ -583,7 +665,7 @@ def plot_swarm_map(swarm: List[AgentState], threat_zone_km: float,
         color = "blue"; marker = "o"
         if s.platform in ["MQ-1 Predator","MQ-9 Reaper"]: marker="s"; color="purple"
         if s.hybrid_assist: color="green"
-        ax.scatter(s.x_km, s.y_km, c=color, marker=marker, s=100, label=s.id)
+        ax.scatter(s.x_km, s.y_km, c=color, marker=marker, s=100, label{s.id})
         ax.text(s.x_km+0.2, s.y_km+0.2, f"{s.id}\nAlt {s.altitude_m}m\nΔT {s.delta_T:.1f}°C", fontsize=7)
     ax.set_title("Swarm Mission Map")
     ax.set_xlabel("X (km)"); ax.set_ylabel("Y (km)")
@@ -753,7 +835,7 @@ if submitted:
             flight_time_minutes = dispatch_endurance_min
             climb_L = climb_L_val
 
-            # Total distance (ICE)
+            # ===== Total distance (km) for selected parameters (ICE) =====
             total_distance_km = (flight_time_minutes / 60.0) * float(flight_speed_kmh)
 
             # User-facing metrics (ICE)
@@ -895,7 +977,7 @@ if submitted:
             flight_time_minutes = dispatch_endurance_min
             climb_L = None
 
-            # Total distance (Battery)
+            # ===== Total distance (km) for selected parameters (Battery) =====
             total_distance_km = (flight_time_minutes / 60.0) * float(flight_speed_kmh)
 
             # User-facing metrics (Battery)
@@ -904,7 +986,7 @@ if submitted:
             st.metric("Thermal Signature Risk", f"{risk} (ΔT = {delta_T:.1f}°C)")
             st.metric("Total Draw (incl. hotel/penalties)", f"{total_draw:.0f} W")
 
-            # Simple live battery sim (capped)
+            # Simple live battery sim (capped) — percent uses starting Wh for correct gauge
             st.subheader("Live Simulation (Battery)")
             time_step=10
             total_steps=min(max(1, int(dispatch_endurance_min*60/time_step)), 240)
@@ -927,6 +1009,27 @@ if submitted:
                 progress.progress(min(step/total_steps,1.0))
                 time.sleep(0.02)
 
+        # ───────────────── Detectability Alert (AI / IR)  ⬅️ NEW (after delta_T) ─────────────────
+        ai_score, ir_score = compute_ai_ir_scores(
+            delta_T=delta_T,
+            altitude_m=altitude_m,
+            cloud_cover=cloud_cover,
+            speed_kmh=flight_speed_kmh,
+            gustiness=gustiness,
+            stealth_factor=stealth_drag_penalty,
+            drone_type=profile["type"],
+            power_system=profile["power_system"]
+        )
+        overall_kind, badges_html = render_detectability_alert(ai_score, ir_score)
+        st.subheader("AI/IR Detectability Alert")
+        if overall_kind == "success":
+            st.success("Overall detectability: LOW")
+        elif overall_kind == "warning":
+            st.warning("Overall detectability: MODERATE")
+        else:
+            st.error("Overall detectability: HIGH")
+        st.markdown(badges_html, unsafe_allow_html=True)
+
         # ───────── Shared: mission performance metrics for selected UAV ─────────
         # Uncertainty band (±10%)
         lo = flight_time_minutes * 0.90
@@ -938,23 +1041,6 @@ if submitted:
         st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")
         st.metric("Best Heading Range", f"{best_km:.1f} km")
         st.metric("Upwind Range", f"{worst_km:.1f} km")
-
-        # ───────── Color-coded Detection Risk Assessment ─────────
-        det = assess_detection(delta_T, altitude_m, simulate_failure)
-        st.header("Detection Risk Assessment")
-        overall_line = f"{det['overall_badge']} — Overall detection risk"
-        radar_line   = f"Radar: {det['radar_badge']}"
-        ai_line      = f"AI/IR: {det['ai_badge']}"
-
-        if det["overall_sev"] >= 2:   # High or Critical
-            st.error(overall_line)
-        elif det["overall_sev"] == 1: # Moderate
-            st.warning(overall_line)
-        else:
-            st.success(overall_line)
-        st.write(f"- {radar_line}")
-        st.write(f"- {ai_line}")
-        st.caption(det["explain"])
 
         # ───────── Individual UAV Detailed Calculations (selected model only) ─────────
         st.header("Individual UAV Detailed Results (Selected Model)")
@@ -979,10 +1065,12 @@ if submitted:
         human.append(f"- **Gust penalty**: {wind_penalty_pct:.1f}%")
         human.append(f"- **Terrain × Stealth factor**: {terrain_penalty*stealth_drag_penalty:.3f}")
         human.append(f"- **Thermal ΔT**: {delta_T:.1f} °C")
+        # ⬇️ NEW human-readable detectability
+        human.append(f"- **Detectability (AI visual / IR thermal):** {ai_score:.0f}/100 / {ir_score:.0f}/100")
+        human.append(f"- **Overall Detectability:** {'LOW' if overall_kind=='success' else 'MODERATE' if overall_kind=='warning' else 'HIGH'}")
         human.append(f"- **Dispatchable Endurance**: {flight_time_minutes:.1f} min")
         human.append(f"- **Total Distance (km)**: {total_distance_km:.2f} km")
         human.append(f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km")
-        human.append(f"- **Detection Risk**: {det['overall_badge']} (Radar {det['radar_badge']}, AI/IR {det['ai_badge']})")
 
         st.markdown("\n".join(human))
 
@@ -994,9 +1082,10 @@ if submitted:
             "upwind_range_km": round(worst_km,2),
             "thermal_deltaT_C": round(delta_T,1),
             "wind_penalty_%": round(wind_penalty_pct,1),
-            "detection_overall": det["overall_badge"],
-            "detection_radar": det["radar_badge"],
-            "detection_ai_ir": det["ai_badge"]
+            # ⬇️ NEW detail fields
+            "ai_visual_score_0_100": round(ai_score, 1),
+            "ir_thermal_score_0_100": round(ir_score, 1),
+            "detectability_overall": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         })
         st.json(detail, expanded=False)
 
@@ -1029,28 +1118,9 @@ if submitted:
         }
         st.write(generate_llm_advice(params))
 
-        # ───────── Swarm Advisor ─────────
-        st.header("Swarm Advisor (Multi-Agent LLM)")
-        swarm_enable = st.checkbox("Enable Swarm Advisor", value=True)
-        swarm_size        = st.slider("Swarm Size", 2, 8, 3)
-        swarm_steps       = st.slider("Swarm Conversation Rounds", 1, 5, 2)
-        stealth_ingress   = st.checkbox("Enable Stealth Ingress Mode", value=True)
-        threat_zone_km    = st.slider("Threat Zone Radius (km)", 1.0, 20.0, 5.0)
-
-        with st.expander("Mission Waypoints"):
-            st.caption("Enter waypoints as (x,y) km coordinates relative to origin.")
-            waypoint_str = st.text_area("Waypoints (e.g., 2,2; 5,0; 8,-3)", "2,2; 5,0; 8,-3")
-
-        waypoints = []
-        try:
-            for pair in waypoint_str.split(";"):
-                x_str, y_str = pair.split(",")
-                waypoints.append((float(x_str.strip()), float(y_str.strip())))
-        except Exception:
-            st.error("Invalid waypoint format. Using (0,0).")
-            waypoints = [(0.0, 0.0)]
-
+        # ───────── Swarm Advisor (Multi-Agent LLM) ─────────
         if swarm_enable:
+            st.header("Swarm Advisor (Multi-Agent LLM)")
             base_endurance = float(max(5.0, flight_time_minutes))
             base_batt_wh = float(max(10.0, (battery_capacity_wh if profile["power_system"]=="Battery" else 200.0)))
             swarm = seed_swarm(swarm_size, base_endurance, base_batt_wh, delta_T, altitude_m, platform=drone_model)
@@ -1060,10 +1130,8 @@ if submitted:
 
             st.write("**Initial Swarm State**")
             for s in swarm:
-                det_s = assess_detection(s.delta_T, s.altitude_m, simulate_failure)
                 st.write(f"- {s.id} [{s.role}] ({s.platform}) — End {s.endurance_min:.1f} min | "
-                         f"Fuel {s.fuel_l:.1f} L | Alt {s.altitude_m} m | Pos ({s.x_km:+.1f},{s.y_km:+.1f}) km "
-                         f"| ΔT {s.delta_T:.1f}°C | Detect: {det_s['overall_badge']}")
+                         f"Fuel {s.fuel_l:.1f} L | Alt {s.altitude_m} m | Pos ({s.x_km:+.1f},{s.y_km:+.1f}) km | ΔT {s.delta_T:.1f}°C")
 
             env = {
                 "wind_kmh": wind_speed_kmh, "gust": gustiness, "mission": flight_mode,
@@ -1091,13 +1159,10 @@ if submitted:
                     st.info("No actions returned.")
                 st.markdown("**Updated Swarm State**")
                 for s in swarm:
-                    det_s = assess_detection(s.delta_T, s.altitude_m, simulate_failure)
                     assist_txt = f" [Assist {s.assist_fraction*100:.0f}% {s.assist_time_min:.0f} min]" if s.hybrid_assist else ""
                     zone_flag = "🟥 IN ZONE" if (stealth_ingress and ((s.x_km**2 + s.y_km**2)**0.5 <= threat_zone_km)) else ""
                     alert = f" ⚠ {s.warning}" if s.warning else ""
-                    st.write(f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | Fuel {s.fuel_l:.1f} L | "
-                             f"Alt {s.altitude_m} m | ΔT {s.delta_T:.1f}°C{assist_txt}{alert} {zone_flag} "
-                             f"| Detect: {det_s['overall_badge']}")
+                    st.write(f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | Fuel {s.fuel_l:.1f} L | Alt {s.altitude_m} m | ΔT {s.delta_T:.1f}°C{assist_txt}{alert} {zone_flag}")
 
             # Playback history + simple waypoint following
             st.subheader("Mission Playback")
@@ -1134,13 +1199,10 @@ if submitted:
             frame_swarm = [AgentState(**data) for data in swarm_history[frame]]
 
             for s in frame_swarm:
-                det_s = assess_detection(s.delta_T, s.altitude_m, simulate_failure)
                 assist_txt = f" [Assist {s.assist_fraction*100:.0f}% {s.assist_time_min:.0f} min]" if s.hybrid_assist else ""
                 zone_flag = "🟥 IN ZONE" if (stealth_ingress and ((s.x_km**2 + s.y_km**2)**0.5 <= threat_zone_km)) else ""
                 alert = f" ⚠ {s.warning}" if s.warning else ""
-                st.write(f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | Fuel {s.fuel_l:.1f} L | "
-                         f"Alt {s.altitude_m} m | ΔT {s.delta_T:.1f}°C{assist_txt}{alert} {zone_flag} "
-                         f"| Detect: {det_s['overall_badge']}")
+                st.write(f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | Fuel {s.fuel_l:.1f} L | Alt {s.altitude_m} m | ΔT {s.delta_T:.1f}°C{assist_txt}{alert} {zone_flag}")
 
             fig = plot_swarm_map(frame_swarm, threat_zone_km, stealth_ingress, waypoints)
             st.pyplot(fig)
@@ -1150,14 +1212,12 @@ if submitted:
             rows=[]
             for t, snapshot in enumerate(swarm_history):
                 for s in snapshot:
-                    det_s = assess_detection(s["delta_T"], s["altitude_m"], simulate_failure)
                     rows.append({
                         "time_min": t, "uav_id": s["id"], "role": s["role"], "platform": s["platform"],
                         "x_km": s["x_km"], "y_km": s["y_km"], "altitude_m": s["altitude_m"],
                         "endurance_min": s["endurance_min"], "fuel_l": s["fuel_l"], "delta_T": s["delta_T"],
                         "hybrid_assist": s["hybrid_assist"], "assist_fraction": s["assist_fraction"],
-                        "assist_time_min": s["assist_time_min"], "warning": s["warning"],
-                        "detection_overall": det_s["overall_badge"]
+                        "assist_time_min": s["assist_time_min"], "warning": s["warning"]
                     })
             df = pd.DataFrame(rows)
             st.subheader("Export Mission Data")
@@ -1199,9 +1259,10 @@ if submitted:
             "Best Heading Range (km)": round(best_km, 2),
             "Upwind Range (km)": round(worst_km, 2),
             "ΔT (°C)": round(delta_T, 1),
-            "Detection Overall": det["overall_badge"],
-            "Detection Radar": det["radar_badge"],
-            "Detection AI/IR": det["ai_badge"]
+            # ⬇️ NEW export fields
+            "AI Visual Detectability (0-100)": round(ai_score, 1),
+            "IR Thermal Detectability (0-100)": round(ir_score, 1),
+            "Overall Detectability": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         }
 
         df_res = pd.DataFrame([results])
