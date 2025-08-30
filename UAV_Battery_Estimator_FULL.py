@@ -52,77 +52,54 @@ def numeric_input(label: str, default: float) -> float:
         return default
 
 # ─────────────────────────────────────────────────────────
-# Detectability model (AI/IR) helpers  ⬅️ NEW
+# NEW: Detectability model (AI/IR) helpers
 # ─────────────────────────────────────────────────────────
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 def _risk_bucket(score: float):
-    """Return (label, streamlit_kind, hex_bg) for score 0..100."""
     if score < 33:
-        return ("Low", "success", "#0f9d58")      # green
+        return ("Low", "success", "#0f9d58")
     elif score < 67:
-        return ("Moderate", "warning", "#f4b400")  # amber
+        return ("Moderate", "warning", "#f4b400")
     else:
-        return ("High", "error", "#db4437")        # red
+        return ("High", "error", "#db4437")
 
 def _badge(label: str, score: float, bg: str) -> str:
     return (
         f"<span style='display:inline-block;padding:6px 10px;margin-right:8px;"
         f"border-radius:8px;background:{bg};color:#fff;font-weight:600;"
-        f"font-size:13px;white-space:nowrap;'>"
-        f"{label}: {score:.0f}/100</span>"
+        f"font-size:13px;white-space:nowrap;'>{label}: {score:.0f}/100</span>"
     )
 
-def compute_ai_ir_scores(
-    delta_T: float,
-    altitude_m: float,
-    cloud_cover: int,
-    speed_kmh: float,
-    gustiness: int,
-    stealth_factor: float,
-    drone_type: str,       # 'fixed' | 'rotor'
-    power_system: str      # 'Battery' | 'ICE'
-) -> Tuple[float, float]:
-    """
-    Heuristic risk scoring (0..100). Tuned for interpretability:
-      • AI-Visual rises at low altitude, higher speed, gusty motion; rotorcraft slightly higher.
-      • IR-Thermal rises with ΔT; distance (altitude) and cloud cover attenuate; ICE adds a small bias.
-      • 'Stealth Drag Factor' (>1) slightly reduces detectability (assumes stealth kit adds drag/IR masking).
-    """
-    # --- AI (visual) ---
-    alt_term     = 1.0 - min(0.80, altitude_m / 800.0)        # lower altitude → more risk
-    speed_term   = min(1.0, speed_kmh / 60.0) * 0.25          # faster → slightly more conspicuous
-    type_bonus   = 0.15 if drone_type == "rotor" else 0.07    # rotors are more conspicuous at low alt
-    gust_term    = min(0.15, (gustiness / 10.0) * 0.15)       # twitchiness adds a tad
-    cloud_factor = 1.0 - 0.25 * (cloud_cover / 100.0)         # clouds soften contrast/shadows
-    stealth_k    = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.15)
-
+def compute_ai_ir_scores(delta_T: float, altitude_m: float, cloud_cover: int,
+                         speed_kmh: float, gustiness: int, stealth_factor: float,
+                         drone_type: str, power_system: str) -> Tuple[float, float]:
+    # AI visual detectability
+    alt_term = 1.0 - min(0.80, altitude_m / 800.0)
+    speed_term = min(1.0, speed_kmh / 60.0) * 0.25
+    type_bonus = 0.15 if drone_type == "rotor" else 0.07
+    gust_term = min(0.15, (gustiness / 10.0) * 0.15)
+    cloud_factor = 1.0 - 0.25 * (cloud_cover / 100.0)
+    stealth_k = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.15)
     ai_raw = (0.55 * alt_term) + (0.15 * type_bonus) + (0.10 * speed_term) + (0.05 * gust_term)
     ai_score = 100.0 * _clamp01(ai_raw * cloud_factor * stealth_k)
 
-    # --- IR (thermal) ---
-    delta_norm  = _clamp01(delta_T / 22.0)                    # ~22°C ΔT ≈ high risk
-    alt_atten   = 1.0 - min(0.60, (altitude_m / 1200.0) * 0.60)
-    cloud_attn  = 1.0 - 0.30 * (cloud_cover / 100.0)          # cloud cover partly blocks sky-looking sensors
-    ice_bias    = 0.10 if power_system == "ICE" else 0.00     # engines add thermal signature
-    stealth_k2  = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.10)
-
+    # IR thermal detectability
+    delta_norm = _clamp01(delta_T / 22.0)
+    alt_atten = 1.0 - min(0.60, (altitude_m / 1200.0) * 0.60)
+    cloud_attn = 1.0 - 0.30 * (cloud_cover / 100.0)
+    ice_bias = 0.10 if power_system == "ICE" else 0.00
+    stealth_k2 = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.10)
     ir_raw = (0.70 * delta_norm) + ice_bias
     ir_score = 100.0 * _clamp01(ir_raw * alt_atten * cloud_attn * stealth_k2)
 
     return ai_score, ir_score
 
 def render_detectability_alert(ai_score: float, ir_score: float) -> Tuple[str, str]:
-    """
-    Returns (overall_streamlit_kind, html_badges). Overall = worse of the two buckets.
-    """
-    ai_label, ai_kind, ai_bg = _risk_bucket(ai_score)
-    ir_label, ir_kind, ir_bg = _risk_bucket(ir_score)
-
-    # Worst-of logic for overall banner
+    ai_label, _, ai_bg = _risk_bucket(ai_score)
+    ir_label, _, ir_bg = _risk_bucket(ir_score)
     overall_kind = "error" if "High" in (ai_label, ir_label) else ("warning" if "Moderate" in (ai_label, ir_label) else "success")
-
     badges = (
         "<div style='margin:6px 0;'>"
         f"{_badge(f'AI Visual • {ai_label}', ai_score, ai_bg)}"
@@ -665,7 +642,7 @@ def plot_swarm_map(swarm: List[AgentState], threat_zone_km: float,
         color = "blue"; marker = "o"
         if s.platform in ["MQ-1 Predator","MQ-9 Reaper"]: marker="s"; color="purple"
         if s.hybrid_assist: color="green"
-        ax.scatter(s.x_km, s.y_km, c=color, marker=marker, s=100, label{s.id})
+        ax.scatter(s.x_km, s.y_km, c=color, marker=marker, s=100, label=s.id)
         ax.text(s.x_km+0.2, s.y_km+0.2, f"{s.id}\nAlt {s.altitude_m}m\nΔT {s.delta_T:.1f}°C", fontsize=7)
     ax.set_title("Swarm Mission Map")
     ax.set_xlabel("X (km)"); ax.set_ylabel("Y (km)")
@@ -813,6 +790,28 @@ if submitted:
             delta_T *= (1.0 - (cloud_cover / 100.0) * 0.35)
             if ice_params["hybrid_assist"] and ice_params["assist_duration_min"] > 0:
                 delta_T *= (1.0 - ice_params["assist_fraction"] * 0.3)
+
+            # ───────────────── Detectability Alert (ICE) ─────────────────
+            ai_score, ir_score = compute_ai_ir_scores(
+                delta_T=delta_T,
+                altitude_m=altitude_m,
+                cloud_cover=cloud_cover,
+                speed_kmh=flight_speed_kmh,
+                gustiness=gustiness,
+                stealth_factor=stealth_drag_penalty,
+                drone_type=profile["type"],
+                power_system=profile["power_system"]
+            )
+            overall_kind, badges_html = render_detectability_alert(ai_score, ir_score)
+            st.subheader("AI/IR Detectability Alert")
+            if overall_kind == "success":
+                st.success("Overall detectability: LOW")
+            elif overall_kind == "warning":
+                st.warning("Overall detectability: MODERATE")
+            else:
+                st.error("Overall detectability: HIGH")
+            st.markdown(badges_html, unsafe_allow_html=True)
+            # ─────────────────────────────────────────────────────────────
 
             # Detail panel fields (ICE)
             detail.update({
@@ -962,6 +961,28 @@ if submitted:
             delta_T = convective_radiative_deltaT(Q_waste, ref_surface, 0.90, temperature_c, rho, V_ref_ms)
             delta_T *= (1.0 - (cloud_cover / 100.0) * 0.35)
 
+            # ───────────────── Detectability Alert (Battery) ─────────────────
+            ai_score, ir_score = compute_ai_ir_scores(
+                delta_T=delta_T,
+                altitude_m=altitude_m,
+                cloud_cover=cloud_cover,
+                speed_kmh=flight_speed_kmh,
+                gustiness=gustiness,
+                stealth_factor=stealth_drag_penalty,
+                drone_type=profile["type"],
+                power_system=profile["power_system"]
+            )
+            overall_kind, badges_html = render_detectability_alert(ai_score, ir_score)
+            st.subheader("AI/IR Detectability Alert")
+            if overall_kind == "success":
+                st.success("Overall detectability: LOW")
+            elif overall_kind == "warning":
+                st.warning("Overall detectability: MODERATE")
+            else:
+                st.error("Overall detectability: HIGH")
+            st.markdown(badges_html, unsafe_allow_html=True)
+            # ────────────────────────────────────────────────────────────────
+
             # Detail panel fields (Battery)
             detail.update({
                 "total_draw_W": round(total_draw,1),
@@ -1009,27 +1030,6 @@ if submitted:
                 progress.progress(min(step/total_steps,1.0))
                 time.sleep(0.02)
 
-        # ───────────────── Detectability Alert (AI / IR)  ⬅️ NEW (after delta_T) ─────────────────
-        ai_score, ir_score = compute_ai_ir_scores(
-            delta_T=delta_T,
-            altitude_m=altitude_m,
-            cloud_cover=cloud_cover,
-            speed_kmh=flight_speed_kmh,
-            gustiness=gustiness,
-            stealth_factor=stealth_drag_penalty,
-            drone_type=profile["type"],
-            power_system=profile["power_system"]
-        )
-        overall_kind, badges_html = render_detectability_alert(ai_score, ir_score)
-        st.subheader("AI/IR Detectability Alert")
-        if overall_kind == "success":
-            st.success("Overall detectability: LOW")
-        elif overall_kind == "warning":
-            st.warning("Overall detectability: MODERATE")
-        else:
-            st.error("Overall detectability: HIGH")
-        st.markdown(badges_html, unsafe_allow_html=True)
-
         # ───────── Shared: mission performance metrics for selected UAV ─────────
         # Uncertainty band (±10%)
         lo = flight_time_minutes * 0.90
@@ -1044,6 +1044,7 @@ if submitted:
 
         # ───────── Individual UAV Detailed Calculations (selected model only) ─────────
         st.header("Individual UAV Detailed Results (Selected Model)")
+        # Accumulate a human-readable summary as well
         human = []
         human.append(f"- **Model**: {drone_model} ({profile['type']}, {profile['power_system']})")
         human.append(f"- **Payload used**: {payload_weight_g} g (max {profile['max_payload_g']} g)")
@@ -1065,12 +1066,13 @@ if submitted:
         human.append(f"- **Gust penalty**: {wind_penalty_pct:.1f}%")
         human.append(f"- **Terrain × Stealth factor**: {terrain_penalty*stealth_drag_penalty:.3f}")
         human.append(f"- **Thermal ΔT**: {delta_T:.1f} °C")
-        # ⬇️ NEW human-readable detectability
-        human.append(f"- **Detectability (AI visual / IR thermal):** {ai_score:.0f}/100 / {ir_score:.0f}/100")
-        human.append(f"- **Overall Detectability:** {'LOW' if overall_kind=='success' else 'MODERATE' if overall_kind=='warning' else 'HIGH'}")
         human.append(f"- **Dispatchable Endurance**: {flight_time_minutes:.1f} min")
         human.append(f"- **Total Distance (km)**: {total_distance_km:.2f} km")
         human.append(f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km")
+
+        # Detectability in Detailed Panel
+        human.append(f"- **Detectability (AI visual / IR thermal):** {ai_score:.0f}/100 / {ir_score:.0f}/100")
+        human.append(f"- **Overall Detectability:** {'LOW' if overall_kind=='success' else 'MODERATE' if overall_kind=='warning' else 'HIGH'}")
 
         st.markdown("\n".join(human))
 
@@ -1082,9 +1084,9 @@ if submitted:
             "upwind_range_km": round(worst_km,2),
             "thermal_deltaT_C": round(delta_T,1),
             "wind_penalty_%": round(wind_penalty_pct,1),
-            # ⬇️ NEW detail fields
-            "ai_visual_score_0_100": round(ai_score, 1),
-            "ir_thermal_score_0_100": round(ir_score, 1),
+            # NEW Detectability fields
+            "ai_visual_score_0_100": round(ai_score,1),
+            "ir_thermal_score_0_100": round(ir_score,1),
             "detectability_overall": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         })
         st.json(detail, expanded=False)
@@ -1118,7 +1120,7 @@ if submitted:
         }
         st.write(generate_llm_advice(params))
 
-        # ───────── Swarm Advisor (Multi-Agent LLM) ─────────
+        # ───────── Swarm Advisor ─────────
         if swarm_enable:
             st.header("Swarm Advisor (Multi-Agent LLM)")
             base_endurance = float(max(5.0, flight_time_minutes))
@@ -1259,9 +1261,9 @@ if submitted:
             "Best Heading Range (km)": round(best_km, 2),
             "Upwind Range (km)": round(worst_km, 2),
             "ΔT (°C)": round(delta_T, 1),
-            # ⬇️ NEW export fields
-            "AI Visual Detectability (0-100)": round(ai_score, 1),
-            "IR Thermal Detectability (0-100)": round(ir_score, 1),
+            # Detectability fields
+            "AI Visual Detectability (0-100)": round(ai_score,1),
+            "IR Thermal Detectability (0-100)": round(ir_score,1),
             "Overall Detectability": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         }
 
