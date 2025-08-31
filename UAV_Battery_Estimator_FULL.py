@@ -236,6 +236,45 @@ def climb_fuel_liters(total_mass_kg: float, climb_m: float,
     return fuel_kg / max(0.5, fuel_density_kgpl)
 
 # ─────────────────────────────────────────────────────────
+# Breguet (propeller) helpers
+# ─────────────────────────────────────────────────────────
+def lift_to_drag_ratio(weight_N: float, rho: float, V_ms: float,
+                       wing_area_m2: float, cd0: float, e: float, wingspan_m: float) -> float:
+    """
+    Uses the same polar used in power sizing to compute an L/D at a representative
+    mid-mission weight and speed.
+    """
+    V_ms = max(1.0, V_ms)
+    q = 0.5 * rho * V_ms * V_ms
+    cl = weight_N / (q * max(1e-6, wing_area_m2))
+    AR = (wingspan_m ** 2) / max(1e-6, wing_area_m2)
+    k  = 1.0 / (math.pi * max(0.3, e) * max(2.0, AR))
+    cd = cd0 + k * (cl ** 2)
+    return cl / cd
+
+def cp_from_bsfc_gpkwh(bsfc_gpkwh: float) -> float:
+    """
+    Convert brake specific fuel consumption (g/kWh) to c_p [kg / (W·s)].
+    """
+    return (bsfc_gpkwh / 1000.0) / 3_600_000.0  # kg/(W·s)
+
+def breguet_prop_range_m(eta_prop: float, cp: float, L_D: float, Wi_N: float, Wf_N: float) -> float:
+    """
+    Breguet range (prop) — simplified closed-form using L/D at representative point.
+    """
+    if Wi_N <= 0 or Wf_N <= 0 or Wi_N <= Wf_N:
+        return 0.0
+    return (eta_prop / (G0 * max(cp,1e-12))) * L_D * math.log(Wi_N / Wf_N)
+
+def breguet_prop_endurance_s(eta_prop: float, cp: float, L_D: float, Wi_N: float, Wf_N: float) -> float:
+    """
+    Breguet endurance (prop) — same structure here for pragmatic validation use.
+    """
+    if Wi_N <= 0 or Wf_N <= 0 or Wi_N <= Wf_N:
+        return 0.0
+    return (eta_prop / (G0 * max(cp,1e-12))) * L_D * math.log(Wi_N / Wf_N)
+
+# ─────────────────────────────────────────────────────────
 # UAV profiles (FULL SET)
 # ─────────────────────────────────────────────────────────
 UAV_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -461,7 +500,7 @@ Parameters:
 Be concise, bullet style.
 """
     try:
-        resp = _client.chat.completions.create(
+        resp = _client.chat_completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"system","content":"You are a precise UAV mission advisor."},
                       {"role":"user","content":prompt}],
@@ -719,6 +758,12 @@ if submitted:
             "flight_mode": flight_mode
         }
 
+        # Initialize placeholders for Breguet values (so exports don't break on Battery branch)
+        E_breguet_min = None
+        R_breguet_km = None
+        L_D_val = None
+        lnWiWf_val = None
+
         # ───────── ICE aerospace branch ─────────
         if use_ice_branch:
             # Aero power (bounded aero for realism)
@@ -791,6 +836,37 @@ if submitted:
             if ice_params["hybrid_assist"] and ice_params["assist_duration_min"] > 0:
                 delta_T *= (1.0 - ice_params["assist_fraction"] * 0.3)
 
+            # ───────── NEW: Breguet Endurance & Range (ICE) ─────────
+            fuel_mass_initial_kg = max(0.0, usable_fuel_L_start) * ice_params["fuel_density_kgpl"]
+            fuel_mass_reserve_kg = fuel_mass_initial_kg * DISPATCH_RESERVE
+            m_struct_kg = total_weight_kg
+
+            Wi_N = (m_struct_kg + fuel_mass_initial_kg) * G0
+            Wf_N = (m_struct_kg + fuel_mass_reserve_kg) * G0
+            Wavg_N = 0.5 * (Wi_N + Wf_N)
+
+            L_D_val = lift_to_drag_ratio(
+                Wavg_N, rho, V_ms_eff,
+                ice_params["wing_area_m2"], CD0, E_OSW, ice_params["wingspan_m"]
+            )
+            cp_val = cp_from_bsfc_gpkwh(ice_params["bsfc_gpkwh"])
+            eta_p = ETA_P
+
+            R_breguet_km = breguet_prop_range_m(eta_p, cp_val, L_D_val, Wi_N, Wf_N) / 1000.0
+            E_breguet_min = breguet_prop_endurance_s(eta_p, cp_val, L_D_val, Wi_N, Wf_N) / 60.0
+            lnWiWf_val = math.log(max(Wi_N, 1.0) / max(Wf_N, 1e-6))
+
+            agree_end = 100.0 - abs(dispatch_endurance_min - E_breguet_min)/max(E_breguet_min,1e-6)*100.0
+            agree_rng = 100.0 - abs(((dispatch_endurance_min/60.0)*flight_speed_kmh) - R_breguet_km)/max(R_breguet_km,1e-6)*100.0
+
+            st.subheader("Breguet Validation (ICE)")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: st.metric("L/D @ mid-weight", f"{L_D_val:.1f}")
+            with c2: st.metric("ln(Wi/Wf)", f"{lnWiWf_val:.3f}")
+            with c3: st.metric("Breguet Endurance", f"{E_breguet_min:.1f} min")
+            with c4: st.metric("Breguet Range", f"{R_breguet_km:.1f} km")
+            st.caption(f"Agreement vs sim: {agree_end:.1f}% endurance, {agree_rng:.1f}% range")
+
             # ───────────────── Detectability Alert (ICE) ─────────────────
             ai_score, ir_score = compute_ai_ir_scores(
                 delta_T=delta_T,
@@ -827,6 +903,13 @@ if submitted:
                 "usable_fuel_L_start": round(usable_fuel_L_start,3),
                 "usable_fuel_L_after_assist": round(usable_fuel_L,3),
                 "raw_endurance_min": round(raw_endurance_min,2),
+                # Breguet detail
+                "breguet_endurance_min": round(E_breguet_min,2),
+                "breguet_range_km": round(R_breguet_km,2),
+                "breguet_L_D": round(L_D_val,2),
+                "breguet_ln_Wi_Wf": round(lnWiWf_val,3),
+                "breguet_vs_sim_endurance_%": round(agree_end,1),
+                "breguet_vs_sim_range_%": round(agree_rng,1)
             })
 
             wind_penalty_pct = wind_penalty_frac * 100.0
@@ -839,10 +922,189 @@ if submitted:
 
             # User-facing metrics (ICE)
             st.subheader("Thermal & Fuel (ICE)")
-            st.metric("Total Power (shaft+hotel)", f"{P_total_W/1000:.2f} kW")
-            st.metric("Fuel Burn", f"{lph:.2f} L/hr")
-            st.metric("Usable Fuel (after climb/assist)", f"{usable_fuel_L:.2f} L")
-            st.metric("Thermal ΔT", f"{delta_T:.1f} °C")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: st.metric("Total Power (shaft+hotel)", f"{P_total_W/1000:.2f} kW")
+            with c2: st.metric("Fuel Burn", f"{lph:.2f} L/hr")
+            with c3: st.metric("Usable Fuel", f"{usable_fuel_L:.2f} L")
+            with c4: st.metric("Thermal ΔT", f"{delta_T:.1f} °C")
+
+            # ─────────────────────────────────────────────────────────
+            # Validation vs Manufacturer Specs (ICE only)
+            # ─────────────────────────────────────────────────────────
+            with st.expander("Validation vs Manufacturer Specs (ICE only)"):
+                st.caption("Enter published specs for comparison. Datasheets often list ~24 hr endurance and ~1200–1850 km range for MQ-class.")
+
+                pub_endurance_hr = numeric_input("Published Endurance (hours)", 24.0 if "MQ-" in drone_model else 1.0)
+                pub_range_km     = numeric_input("Published Range (km)", 1850.0 if "MQ-" in drone_model else 50.0)
+
+                # Convert to minutes for fair comparison
+                pub_endurance_min = pub_endurance_hr * 60.0
+
+                eps = 1e-6
+                # % match = 100 - % error
+                breg_vs_pub_end = 100.0 - (0.0 if pub_endurance_min < eps else 100.0 * abs(E_breguet_min - pub_endurance_min) / pub_endurance_min)
+                kin_vs_pub_end  = 100.0 - (0.0 if pub_endurance_min < eps else 100.0 * abs(dispatch_endurance_min - pub_endurance_min) / pub_endurance_min)
+
+                breg_vs_pub_rng = 100.0 - (0.0 if pub_range_km < eps else 100.0 * abs(R_breguet_km - pub_range_km) / pub_range_km)
+                kin_vs_pub_rng  = 100.0 - (0.0 if pub_range_km < eps else 100.0 * abs(total_distance_km - pub_range_km) / pub_range_km)
+
+                st.subheader("Validation Results")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Published Endurance", f"{pub_endurance_min:.0f} min")
+                with col2:
+                    st.metric("Breguet vs Published", f"{breg_vs_pub_end:.1f}%")
+                with col3:
+                    st.metric("Sim vs Published", f"{kin_vs_pub_end:.1f}%")
+
+                col4, col5, col6 = st.columns(3)
+                with col4:
+                    st.metric("Published Range", f"{pub_range_km:.0f} km")
+                with col5:
+                    st.metric("Breguet vs Published", f"{breg_vs_pub_rng:.1f}%")
+                with col6:
+                    st.metric("Sim vs Published", f"{kin_vs_pub_rng:.1f}%")
+
+                # JSON export for audit trail
+                validation = {
+                    "published_endurance_min": round(pub_endurance_min,1),
+                    "published_range_km": round(pub_range_km,1),
+                    "breguet_vs_published_endurance_pct": round(breg_vs_pub_end,1),
+                    "sim_vs_published_endurance_pct": round(kin_vs_pub_end,1),
+                    "breguet_vs_published_range_pct": round(breg_vs_pub_rng,1),
+                    "sim_vs_published_range_pct": round(kin_vs_pub_rng,1)
+                }
+                st.json(validation, expanded=False)
+
+            # ─────────────────────────────────────────────────────────
+            # Validation Plot — Model Curve vs Published Spec Points (Endurance)
+            # ─────────────────────────────────────────────────────────
+            with st.expander("Validation Plot (Payload Sweep — Endurance vs Published Data)"):
+                st.caption("Overlay your model’s Breguet endurance curve against published spec points. Format: g,hr; g,hr; ...")
+                pub_points_str = st.text_area(
+                    "Published Payload-Endurance Data",
+                    "0,24; 500,22; 1000,20" if "MQ-" in drone_model else "0,2; 300,1.5"
+                )
+                pub_points = []
+                try:
+                    for pair in pub_points_str.split(";"):
+                        if pair.strip()=="":
+                            continue
+                        g_str, hr_str = pair.split(",")
+                        pub_points.append((float(g_str.strip()), float(hr_str.strip())))
+                except Exception:
+                    st.error("Invalid format. Use g,hr; g,hr; ...")
+
+                try:
+                    import numpy as np
+                    payloads = np.linspace(0, profile["max_payload_g"], 9)
+                    e_hours_model = []
+                    for pg in payloads:
+                        m_struct = profile["base_weight_kg"] + pg/1000.0
+                        Wi = (m_struct + fuel_mass_initial_kg) * G0
+                        Wf = (m_struct + fuel_mass_reserve_kg) * G0
+                        Wavg = 0.5*(Wi+Wf)
+                        L_Ds = lift_to_drag_ratio(Wavg, rho, V_ms_eff,
+                                                  ice_params["wing_area_m2"], CD0, E_OSW, ice_params["wingspan_m"])
+                        e_hr = breguet_prop_endurance_s(ETA_P, cp_val, L_Ds, Wi, Wf) / 3600.0
+                        e_hours_model.append(max(0.0, e_hr))
+
+                    # Plot
+                    fig, ax = plt.subplots(figsize=(6.0,3.6))
+                    ax.plot(payloads, e_hours_model, linewidth=2, label="Model Breguet Curve")
+
+                    rmse = None
+                    if pub_points:
+                        xs = [p[0] for p in pub_points]
+                        ys = [p[1] for p in pub_points]
+                        ax.scatter(xs, ys, c="red", marker="x", s=80, label="Published Specs")
+
+                        # Compute RMSE as validation metric
+                        diffs = []
+                        for px, py in zip(xs, ys):
+                            if payloads[0] <= px <= payloads[-1]:
+                                idx = int(np.searchsorted(payloads, px))
+                                idx = max(1, min(idx, len(payloads)-1))
+                                x0, x1 = payloads[idx-1], payloads[idx]
+                                y0, y1 = e_hours_model[idx-1], e_hours_model[idx]
+                                # linear interpolation
+                                y_pred = y0 + (y1-y0) * ((px-x0)/(x1-x0) if (x1-x0)!=0 else 0)
+                                diffs.append((y_pred - py)**2)
+                        if diffs:
+                            rmse = float(np.sqrt(sum(diffs)/len(diffs)))
+                            st.metric("RMSE vs Published (hours)", f"{rmse:.2f}")
+
+                    ax.set_xlabel("Payload (g)")
+                    ax.set_ylabel("Endurance (hours)")
+                    ax.set_title(f"Breguet Endurance vs Payload — {drone_model}")
+                    ax.legend()
+                    st.pyplot(fig); plt.close(fig)
+                except Exception:
+                    st.info("NumPy/Matplotlib not available for validation plot.")
+
+            # ─────────────────────────────────────────────────────────
+            # Validation Plot — Breguet Range vs Published Spec Points
+            # ─────────────────────────────────────────────────────────
+            with st.expander("Validation Plot (Payload Sweep — Range vs Published Data)"):
+                st.caption("Overlay your model’s Breguet range curve against published spec points. Format: g,km; g,km; ...")
+                pub_rng_points_str = st.text_area(
+                    "Published Payload-Range Data",
+                    "0,1850; 500,1700; 1000,1500" if "MQ-" in drone_model else "0,50; 300,40"
+                )
+                pub_rng_points = []
+                try:
+                    for pair in pub_rng_points_str.split(";"):
+                        if pair.strip()=="":
+                            continue
+                        g_str, km_str = pair.split(",")
+                        pub_rng_points.append((float(g_str.strip()), float(km_str.strip())))
+                except Exception:
+                    st.error("Invalid format. Use g,km; g,km; ...")
+
+                try:
+                    import numpy as np
+                    payloads = np.linspace(0, profile["max_payload_g"], 9)
+                    r_km_model = []
+                    for pg in payloads:
+                        m_struct = profile["base_weight_kg"] + pg/1000.0
+                        Wi = (m_struct + fuel_mass_initial_kg) * G0
+                        Wf = (m_struct + fuel_mass_reserve_kg) * G0
+                        Wavg = 0.5*(Wi+Wf)
+                        L_Ds = lift_to_drag_ratio(Wavg, rho, V_ms_eff,
+                                                  ice_params["wing_area_m2"], CD0, E_OSW, ice_params["wingspan_m"])
+                        rng_m = breguet_prop_range_m(ETA_P, cp_val, L_Ds, Wi, Wf)
+                        r_km_model.append(max(0.0, rng_m/1000.0))
+
+                    # Plot
+                    fig, ax = plt.subplots(figsize=(6.0,3.6))
+                    ax.plot(payloads, r_km_model, linewidth=2, label="Model Breguet Curve")
+
+                    rmse = None
+                    if pub_rng_points:
+                        xs = [p[0] for p in pub_rng_points]
+                        ys = [p[1] for p in pub_rng_points]
+                        ax.scatter(xs, ys, c="red", marker="x", s=80, label="Published Specs")
+
+                        diffs = []
+                        for px, py in zip(xs, ys):
+                            if payloads[0] <= px <= payloads[-1]:
+                                idx = int(np.searchsorted(payloads, px))
+                                idx = max(1, min(idx, len(payloads)-1))
+                                x0, x1 = payloads[idx-1], payloads[idx]
+                                y0, y1 = r_km_model[idx-1], r_km_model[idx]
+                                y_pred = y0 + (y1-y0) * ((px-x0)/(x1-x0) if (x1-x0)!=0 else 0)
+                                diffs.append((y_pred - py)**2)
+                        if diffs:
+                            rmse = float(np.sqrt(sum(diffs)/len(diffs)))
+                            st.metric("RMSE vs Published (km)", f"{rmse:.1f}")
+
+                    ax.set_xlabel("Payload (g)")
+                    ax.set_ylabel("Range (km)")
+                    ax.set_title(f"Breguet Range vs Payload — {drone_model}")
+                    ax.legend()
+                    st.pyplot(fig); plt.close(fig)
+                except Exception:
+                    st.info("NumPy/Matplotlib not available for validation plot.")
 
             # Simple live fuel sim (capped)
             st.subheader("Live Simulation (Fuel)")
@@ -1004,8 +1266,9 @@ if submitted:
             # User-facing metrics (Battery)
             st.subheader("Thermal Signature & Battery")
             risk = 'Low' if delta_T < 10 else ('Moderate' if delta_T < 20 else 'High')
-            st.metric("Thermal Signature Risk", f"{risk} (ΔT = {delta_T:.1f}°C)")
-            st.metric("Total Draw (incl. hotel/penalties)", f"{total_draw:.0f} W")
+            c1, c2 = st.columns(2)
+            with c1: st.metric("Thermal Signature Risk", f"{risk} (ΔT = {delta_T:.1f}°C)")
+            with c2: st.metric("Total Draw (incl. hotel/penalties)", f"{total_draw:.0f} W")
 
             # Simple live battery sim (capped) — percent uses starting Wh for correct gauge
             st.subheader("Live Simulation (Battery)")
@@ -1038,9 +1301,10 @@ if submitted:
         st.header("Selected UAV — Mission Performance")
         st.metric("Dispatchable Endurance", f"{flight_time_minutes:.1f} minutes")
         st.caption(f"Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)")
-        st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")
-        st.metric("Best Heading Range", f"{best_km:.1f} km")
-        st.metric("Upwind Range", f"{worst_km:.1f} km")
+        c1, c2, c3 = st.columns(3)
+        with c1: st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")
+        with c2: st.metric("Best Heading Range", f"{best_km:.1f} km")
+        with c3: st.metric("Upwind Range", f"{worst_km:.1f} km")
 
         # ───────── Individual UAV Detailed Calculations (selected model only) ─────────
         st.header("Individual UAV Detailed Results (Selected Model)")
@@ -1073,6 +1337,11 @@ if submitted:
         # Detectability in Detailed Panel
         human.append(f"- **Detectability (AI visual / IR thermal):** {ai_score:.0f}/100 / {ir_score:.0f}/100")
         human.append(f"- **Overall Detectability:** {'LOW' if overall_kind=='success' else 'MODERATE' if overall_kind=='warning' else 'HIGH'}")
+
+        # Breguet details (ICE only)
+        if E_breguet_min is not None and R_breguet_km is not None:
+            human.append(f"- **Breguet (Endurance / Range):** {E_breguet_min:.1f} min / {R_breguet_km:.1f} km")
+            human.append(f"- **Breguet L/D & ln(Wi/Wf):** {L_D_val:.1f}, {lnWiWf_val:.3f}")
 
         st.markdown("\n".join(human))
 
@@ -1266,6 +1535,14 @@ if submitted:
             "IR Thermal Detectability (0-100)": round(ir_score,1),
             "Overall Detectability": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         }
+        # Include Breguet fields if ICE branch ran
+        if E_breguet_min is not None and R_breguet_km is not None:
+            results.update({
+                "Breguet Endurance (min)": round(E_breguet_min,1),
+                "Breguet Range (km)": round(R_breguet_km,1),
+                "Breguet L/D": round(L_D_val,1) if L_D_val is not None else None,
+                "ln(Wi/Wf)": round(lnWiWf_val,3) if lnWiWf_val is not None else None
+            })
 
         df_res = pd.DataFrame([results])
         csv_buffer = io.BytesIO()
