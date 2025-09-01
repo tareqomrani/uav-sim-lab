@@ -1304,7 +1304,7 @@ if submitted:
         c1, c2, c3 = st.columns(3)
         with c1: st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")
         with c2: st.metric("Best Heading Range", f"{best_km:.1f} km")
-        with c3: st.metric("Upwind Range", f"{worst_km:.1f} 
+        with c3: st.metric("Upwind Range", f"{worst_km:.1f} km")
                 # ───────── Phase Simulation Module ─────────
         st.header("Phase Simulation (Segmented Mission)")
 
