@@ -28,7 +28,6 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 st.set_page_config(page_title='UAV Battery Efficiency Estimator', layout='centered')
 
-# Mobile-friendly: auto-select input text on focus for quick edits
 st.markdown("""
     <script>
     const inputs = window.parent.document.querySelectorAll('input');
@@ -36,12 +35,10 @@ st.markdown("""
     </script>
 """, unsafe_allow_html=True)
 
-# Title (digital green)
 st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 st.caption("GPT-UAV Planner | Built by Tareq Omrani | 2025")
 
 def numeric_input(label: str, default: float) -> float:
-    """Mobile-friendly numeric input with default fallback and validation."""
     val_str = st.text_input(label, value=str(default))
     if val_str.strip() == "":
         return default
@@ -52,18 +49,15 @@ def numeric_input(label: str, default: float) -> float:
         return default
 
 # ─────────────────────────────────────────────────────────
-# NEW: Detectability model (AI/IR) helpers
+# Detectability model (AI/IR) helpers
 # ─────────────────────────────────────────────────────────
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 def _risk_bucket(score: float):
-    if score < 33:
-        return ("Low", "success", "#0f9d58")
-    elif score < 67:
-        return ("Moderate", "warning", "#f4b400")
-    else:
-        return ("High", "error", "#db4437")
+    if score < 33: return ("Low", "success", "#0f9d58")
+    elif score < 67: return ("Moderate", "warning", "#f4b400")
+    else: return ("High", "error", "#db4437")
 
 def _badge(label: str, score: float, bg: str) -> str:
     return (
@@ -75,7 +69,6 @@ def _badge(label: str, score: float, bg: str) -> str:
 def compute_ai_ir_scores(delta_T: float, altitude_m: float, cloud_cover: int,
                          speed_kmh: float, gustiness: int, stealth_factor: float,
                          drone_type: str, power_system: str) -> Tuple[float, float]:
-    # AI visual detectability
     alt_term = 1.0 - min(0.80, altitude_m / 800.0)
     speed_term = min(1.0, speed_kmh / 60.0) * 0.25
     type_bonus = 0.15 if drone_type == "rotor" else 0.07
@@ -85,7 +78,6 @@ def compute_ai_ir_scores(delta_T: float, altitude_m: float, cloud_cover: int,
     ai_raw = (0.55 * alt_term) + (0.15 * type_bonus) + (0.10 * speed_term) + (0.05 * gust_term)
     ai_score = 100.0 * _clamp01(ai_raw * cloud_factor * stealth_k)
 
-    # IR thermal detectability
     delta_norm = _clamp01(delta_T / 22.0)
     alt_atten = 1.0 - min(0.60, (altitude_m / 1200.0) * 0.60)
     cloud_attn = 1.0 - 0.30 * (cloud_cover / 100.0)
@@ -93,7 +85,6 @@ def compute_ai_ir_scores(delta_T: float, altitude_m: float, cloud_cover: int,
     stealth_k2 = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.10)
     ir_raw = (0.70 * delta_norm) + ice_bias
     ir_score = 100.0 * _clamp01(ir_raw * alt_atten * cloud_attn * stealth_k2)
-
     return ai_score, ir_score
 
 def render_detectability_alert(ai_score: float, ir_score: float) -> Tuple[str, str]:
@@ -109,29 +100,18 @@ def render_detectability_alert(ai_score: float, ir_score: float) -> Tuple[str, s
     return overall_kind, badges
 
 # ─────────────────────────────────────────────────────────
-# Physics helpers (aerospace-grade)
+# Physics helpers
 # ─────────────────────────────────────────────────────────
-RHO0 = 1.225       # kg/m^3 sea-level
-P0   = 101325.0    # Pa
-T0K  = 288.15      # K
-LAPSE= 0.0065      # K/m
-R_AIR= 287.05
-G0   = 9.80665
-SIGMA= 5.670374419e-8  # W/m^2K^4
-
-# Global realism constants
-USABLE_BATT_FRAC  = 0.85
-USABLE_FUEL_FRAC  = 0.90
-DISPATCH_RESERVE  = 0.30  # 30% reserve on time/energy
-HOTEL_W_DEFAULT   = 15.0  # avionics/radio/CPU baseline
-INSTALL_FRAC_DEF  = 0.15  # installation/trim losses on aero polar
+RHO0, P0, T0K, LAPSE, R_AIR, G0 = 1.225, 101325.0, 288.15, 0.0065, 287.05, 9.80665
+SIGMA = 5.670374419e-8
+USABLE_BATT_FRAC, USABLE_FUEL_FRAC, DISPATCH_RESERVE = 0.85, 0.90, 0.30
+HOTEL_W_DEFAULT, INSTALL_FRAC_DEF = 15.0, 0.15
 
 def air_density(alt_m: float, sea_level_temp_C: float = 15.0) -> float:
-    """ISA troposphere density (up to ~11 km)."""
     T0 = sea_level_temp_C + 273.15
     if alt_m < 0: alt_m = 0.0
-    T  = max(1.0, T0 - LAPSE * alt_m)
-    p  = P0 * (1.0 - (LAPSE*alt_m)/T0) ** (G0/(R_AIR*LAPSE))
+    T = max(1.0, T0 - LAPSE * alt_m)
+    p = P0 * (1.0 - (LAPSE*alt_m)/T0) ** (G0/(R_AIR*LAPSE))
     return p/(R_AIR*T)
 
 def density_ratio(alt_m: float, sea_level_temp_C: float = 15.0) -> Tuple[float, float]:
@@ -139,7 +119,6 @@ def density_ratio(alt_m: float, sea_level_temp_C: float = 15.0) -> Tuple[float, 
     return rho, rho / RHO0
 
 def rotorcraft_density_scale(rho_ratio: float) -> float:
-    """Ideal induced-power scaling for rotors: P_induced ∝ 1/sqrt(ρ)."""
     return 1.0 / max(0.3, math.sqrt(max(1e-4, rho_ratio)))
 
 def drag_polar_cd(cd0: float, cl: float, e: float, aspect_ratio: float) -> float:
@@ -149,7 +128,6 @@ def drag_polar_cd(cd0: float, cl: float, e: float, aspect_ratio: float) -> float
 def aero_power_required_W(weight_N: float, rho: float, V_ms: float,
                           wing_area_m2: float, cd0: float, e: float,
                           wingspan_m: float, prop_eff: float) -> float:
-    """Shaft power required using drag polar + dynamic pressure."""
     V_ms = max(1.0, V_ms)
     q = 0.5 * rho * V_ms * V_ms
     cl = weight_N / (q * max(1e-6, wing_area_m2))
@@ -163,119 +141,136 @@ def realistic_fixedwing_power(weight_N, rho, V_ms,
                               cd0, e, prop_eff,
                               hotel_W=HOTEL_W_DEFAULT, install_frac=INSTALL_FRAC_DEF,
                               payload_drag_delta=0.0) -> float:
-    """Bounded aero + hotel + installation/trim losses for fixed-wing battery draw."""
-    CD0   = max(0.05, cd0 + max(0.0, payload_drag_delta))
+    CD0 = max(0.05, cd0 + max(0.0, payload_drag_delta))
     E_OSW = min(0.70, e)
     ETA_P = min(0.65, max(0.55, prop_eff))
     P_polar = aero_power_required_W(weight_N, rho, V_ms, wing_area_m2, CD0, E_OSW, wingspan_m, ETA_P)
     return hotel_W + (1.0 + install_frac) * P_polar
 
-def gust_penalty_fraction(gustiness_index: int,
-                          wind_kmh: float,
-                          V_ms: float,
-                          wing_loading_Nm2: float) -> float:
-    """
-    Nonlinear gust penalty. Heavier penalty for low wing-loading and strong gusts.
-    Returns fractional increase in power draw (0.0 .. 0.35).
-    """
-    gust_ms = max(0.0, 0.6 * float(gustiness_index))  # 0..6 m/s from slider 0..10
+def gust_penalty_fraction(gustiness_index: int, wind_kmh: float, V_ms: float, wing_loading_Nm2: float) -> float:
+    gust_ms = max(0.0, 0.6 * float(gustiness_index))
     V_ms = max(3.0, V_ms)
     WL = max(25.0, wing_loading_Nm2)
-    WL_ref = 70.0  # typical small fixed-wing WL
+    WL_ref = 70.0
     base = 1.5 * (gust_ms / V_ms) ** 2 * (WL_ref / WL) ** 0.7
     wind_ms = max(0.0, wind_kmh / 3.6)
     bias = 0.03 * (wind_ms / 8.0)
-    frac = max(0.0, min(0.35, base + bias))
-    return frac
+    return max(0.0, min(0.35, base + bias))
 
 def heading_range_km(V_air_ms: float, W_ms: float, t_min: float) -> Tuple[float,float]:
-    """Return (best_km, worst_km). Worst=0 if upwind infeasible (W ≥ V_air)."""
     t_h = max(0.0, t_min) / 60.0
-    if V_air_ms <= 0.1:
-        return (0.0, 0.0)
-    if W_ms >= V_air_ms:
-        return ((V_air_ms + W_ms) * t_h / 1000.0, 0.0)
-    worst = (V_air_ms - W_ms) * t_h / 1000.0
-    best  = (V_air_ms + W_ms) * t_h / 1000.0
-    return (best, worst)
+    if V_air_ms <= 0.1: return (0.0, 0.0)
+    if W_ms >= V_air_ms: return ((V_air_ms + W_ms) * t_h / 1000.0, 0.0)
+    return ((V_air_ms + W_ms) * t_h / 1000.0, (V_air_ms - W_ms) * t_h / 1000.0)
 
 def convective_radiative_deltaT(Q_w: float, surface_area_m2: float, emissivity: float,
                                 ambient_C: float, rho: float, V_ms: float) -> float:
-    """
-    Robust thermal model:
-    - Q_w is waste heat in watts (all electrical + avionics eventually → heat).
-    - Convection: conservative floor; scales with ρ and V.
-    - Radiation: linearized effective sink near ambient.
-    """
-    if Q_w <= 0.0 or surface_area_m2 <= 0.0 or emissivity <= 0.0:
-        return 0.0
+    if Q_w <= 0.0 or surface_area_m2 <= 0.0 or emissivity <= 0.0: return 0.0
     V_ms = max(0.5, V_ms)
-    h = max(6.0, 10.45 - V_ms + 10 * math.sqrt(V_ms)) * (rho / RHO0)  # W/m²K
+    h = max(6.0, 10.45 - V_ms + 10 * math.sqrt(V_ms)) * (rho / RHO0)
     T_ambK = ambient_C + 273.15
-    rad_coeff = 4.0 * emissivity * SIGMA * (T_ambK ** 3)  # W/m²K
+    rad_coeff = 4.0 * emissivity * SIGMA * (T_ambK ** 3)
     sink_W_per_K = (h + rad_coeff) * surface_area_m2
-    dT = Q_w / max(1.0, sink_W_per_K)
-    return max(0.2, dT)
+    return max(0.2, Q_w / max(1.0, sink_W_per_K))
 
 def climb_energy_wh(total_mass_kg: float, climb_m: float) -> float:
-    """Battery: m g h converted to Wh (1 Wh = 3600 J)."""
     if climb_m <= 0: return 0.0
     return (total_mass_kg * 9.81 * climb_m) / 3600.0
 
 def bsfc_fuel_burn_lph(power_W: float, bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
-    """ICE: fuel burn (L/h) from shaft power and BSFC."""
     fuel_kg_per_h = (bsfc_gpkwh / 1000.0) * (power_W / 1000.0)
     return fuel_kg_per_h / max(0.5, fuel_density_kgpl)
 
-def climb_fuel_liters(total_mass_kg: float, climb_m: float,
-                      bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
-    """ICE: convert m g h to required fuel via BSFC (kWh)."""
+def climb_fuel_liters(total_mass_kg: float, climb_m: float, bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
     if climb_m <= 0: return 0.0
     E_kWh = (total_mass_kg * 9.81 * climb_m) / 3_600_000.0
     fuel_kg = (bsfc_gpkwh / 1000.0) * E_kWh
     return fuel_kg / max(0.5, fuel_density_kgpl)
+    # ─────────────────────────────────────────────────────────
+# Spec Book (for universal sanity checks & published envelopes)
+# NOTE: These envelopes are conservative bands intended to catch
+#       clearly unrealistic inputs/outputs at runtime.
+# ─────────────────────────────────────────────────────────
+SPEC_BOOK: Dict[str, Dict[str, Any]] = {
+    # --- Small multirotors / COTS ---
+    "Generic Quad": {
+        "type": "rotor", "power_system": "Battery",
+        "mass_kg_nom": 1.2, "battery_wh_range": (40, 120),
+        "cruise_kmh_range": (0, 55), "endurance_hr_nom": (0.12, 0.5),
+        "draw_W_range": (90, 260)
+    },
+    "DJI Phantom": {
+        "type": "rotor", "power_system": "Battery",
+        "mass_kg_nom": 1.4, "battery_wh_range": (50, 90),
+        "cruise_kmh_range": (0, 60), "endurance_hr_nom": (0.25, 0.6),
+        "draw_W_range": (90, 220)
+    },
+    "Skydio 2+": {
+        "type": "rotor", "power_system": "Battery",
+        "mass_kg_nom": 0.8, "battery_wh_range": (35, 60),
+        "cruise_kmh_range": (0, 55), "endurance_hr_nom": (0.2, 0.5),
+        "draw_W_range": (70, 160)
+    },
+    "Freefly Alta 8": {
+        "type": "rotor", "power_system": "Battery",
+        "mass_kg_nom": 6.2, "battery_wh_range": (600, 1500),
+        "cruise_kmh_range": (0, 55), "endurance_hr_nom": (0.12, 0.45),
+        "draw_W_range": (300, 1200)
+    },
+
+    # --- Small tactical / fixed-wing (battery) ---
+    "RQ-11 Raven": {
+        "type": "fixed", "power_system": "Battery",
+        "mass_kg_nom": 1.9, "battery_wh_range": (250, 500),
+        "cruise_kmh_range": (35, 90), "endurance_hr_nom": (0.9, 1.6),
+        "draw_W_range": (60, 150), "wing_area_m2": 0.24, "span_m": 1.4
+    },
+    "RQ-20 Puma": {
+        "type": "fixed", "power_system": "Battery",
+        "mass_kg_nom": 6.3, "battery_wh_range": (450, 800),
+        "cruise_kmh_range": (40, 90), "endurance_hr_nom": (1.5, 3.5),
+        "draw_W_range": (120, 260), "wing_area_m2": 0.55, "span_m": 2.8
+    },
+    "Teal Golden Eagle": {
+        "type": "fixed", "power_system": "Battery",
+        "mass_kg_nom": 2.2, "battery_wh_range": (70, 150),
+        "cruise_kmh_range": (40, 120), "endurance_hr_nom": (0.5, 1.5),
+        "draw_W_range": (120, 280), "wing_area_m2": 0.30, "span_m": 2.1
+    },
+    "Quantum Systems Vector": {
+        "type": "fixed", "power_system": "Battery",
+        "mass_kg_nom": 2.3, "battery_wh_range": (120, 250),
+        "cruise_kmh_range": (40, 110), "endurance_hr_nom": (1.5, 3.0),
+        "draw_W_range": (120, 210), "wing_area_m2": 0.55, "span_m": 2.8
+    },
+
+    # --- MALE class (ICE) ---
+    "MQ-1 Predator": {
+        "type": "fixed", "power_system": "ICE",
+        # Rotax 914 (approx 115 hp ≈ 86 kW) class piston engine; 24 h class endurance
+        "engine_kw_max": 86.0, "fuel_l_range": (260, 360),
+        "cruise_kmh_range": (110, 220), "endurance_hr_nom": (18, 30),
+        "wing_area_m2": 11.5, "span_m": 14.8
+    },
+    "MQ-9 Reaper": {
+        "type": "fixed", "power_system": "ICE",
+        # TPE331-10 turboprop ~900 shp ≈ 671 kW; ~27–34 h endurance (configuration dependent)
+        "engine_kw_max": 670.0, "fuel_l_range": (1200, 2000),
+        "cruise_kmh_range": (300, 420), "endurance_hr_nom": (24, 36),
+        "wing_area_m2": 24.0, "span_m": 20.0
+    },
+
+    # --- Sandbox / Custom ---
+    "Custom Build": {
+        "type": "rotor", "power_system": "Battery",
+        "mass_kg_nom": 2.0, "battery_wh_range": (80, 400),
+        "cruise_kmh_range": (0, 70), "endurance_hr_nom": (0.2, 1.5),
+        "draw_W_range": (120, 500)
+    }
+}
 
 # ─────────────────────────────────────────────────────────
-# Breguet (propeller) helpers
-# ─────────────────────────────────────────────────────────
-def lift_to_drag_ratio(weight_N: float, rho: float, V_ms: float,
-                       wing_area_m2: float, cd0: float, e: float, wingspan_m: float) -> float:
-    """
-    Uses the same polar used in power sizing to compute an L/D at a representative
-    mid-mission weight and speed.
-    """
-    V_ms = max(1.0, V_ms)
-    q = 0.5 * rho * V_ms * V_ms
-    cl = weight_N / (q * max(1e-6, wing_area_m2))
-    AR = (wingspan_m ** 2) / max(1e-6, wing_area_m2)
-    k  = 1.0 / (math.pi * max(0.3, e) * max(2.0, AR))
-    cd = cd0 + k * (cl ** 2)
-    return cl / cd
-
-def cp_from_bsfc_gpkwh(bsfc_gpkwh: float) -> float:
-    """
-    Convert brake specific fuel consumption (g/kWh) to c_p [kg / (W·s)].
-    """
-    return (bsfc_gpkwh / 1000.0) / 3_600_000.0  # kg/(W·s)
-
-def breguet_prop_range_m(eta_prop: float, cp: float, L_D: float, Wi_N: float, Wf_N: float) -> float:
-    """
-    Breguet range (prop) — simplified closed-form using L/D at representative point.
-    """
-    if Wi_N <= 0 or Wf_N <= 0 or Wi_N <= Wf_N:
-        return 0.0
-    return (eta_prop / (G0 * max(cp,1e-12))) * L_D * math.log(Wi_N / Wf_N)
-
-def breguet_prop_endurance_s(eta_prop: float, cp: float, L_D: float, Wi_N: float, Wf_N: float) -> float:
-    """
-    Breguet endurance (prop) — same structure here for pragmatic validation use.
-    """
-    if Wi_N <= 0 or Wf_N <= 0 or Wi_N <= Wf_N:
-        return 0.0
-    return (eta_prop / (G0 * max(cp,1e-12))) * L_D * math.log(Wi_N / Wf_N)
-
-# ─────────────────────────────────────────────────────────
-# UAV profiles (FULL SET)
+# UAV profiles (Operational parameters & aero data)
 # ─────────────────────────────────────────────────────────
 UAV_PROFILES: Dict[str, Dict[str, Any]] = {
     # ——— Small multirotors / COTS ———
@@ -357,7 +352,7 @@ UAV_PROFILES: Dict[str, Dict[str, Any]] = {
         "power_system": "ICE", "draw_watt": 650, "battery_wh": 150,
         "wing_area_m2": 11.5, "wingspan_m": 14.8,
         "cd0": 0.025, "oswald_e": 0.80, "prop_eff": 0.80,
-        "bsfc_gpkwh": 260.0, "fuel_density_kgpl": 0.72, "fuel_tank_l": 300.0,
+        "bsfc_gpkwh": 270.0, "fuel_density_kgpl": 0.72, "fuel_tank_l": 320.0,
         "ai_capabilities": "Semi-autonomous surveillance, pattern-of-life analysis",
         "crash_risk": True
     },
@@ -367,7 +362,7 @@ UAV_PROFILES: Dict[str, Dict[str, Any]] = {
         "power_system": "ICE", "draw_watt": 800, "battery_wh": 200,
         "wing_area_m2": 24.0, "wingspan_m": 20.0,
         "cd0": 0.030, "oswald_e": 0.85, "prop_eff": 0.82,
-        "bsfc_gpkwh": 330.0, "fuel_density_kgpl": 0.80, "fuel_tank_l": 900.0,
+        "bsfc_gpkwh": 310.0, "fuel_density_kgpl": 0.80, "fuel_tank_l": 1500.0,
         "ai_capabilities": "Real-time threat detection, sensor fusion, autonomous target tracking",
         "crash_risk": True
     },
@@ -397,20 +392,17 @@ st.caption(f"Base weight: {profile['base_weight_kg']} kg — Max payload: {profi
 st.caption(f"Power system: `{profile['power_system']}` | Type: `{profile['type']}`")
 
 # Dynamic flight modes:
-# - Fixed-wing: Forward Flight, Loiter, Waypoint Mission (no Hover)
-# - Rotor/VTOL: Hover, Forward Flight, Loiter, Waypoint Mission
 if profile["type"] == "fixed":
     flight_mode_options = ["Forward Flight", "Loiter", "Waypoint Mission"]
 else:
-    flight_mode_options = ["Hover", "Forward Flight", "Loiter", "Waypoint Mission"]
-
+    flight_mode_options = ["Hover", "Forward Flight", "Loiter", "Waypoint Mission"] 
 # ─────────────────────────────────────────────────────────
 # Main form
 # ─────────────────────────────────────────────────────────
 with st.form("uav_form"):
     st.subheader("Flight Parameters")
     battery_capacity_wh = numeric_input("Battery Capacity (Wh)", float(profile.get("battery_wh", 100.0)))
-    payload_weight_g    = int(numeric_input("Payload (g)", min( max(0, int(profile["max_payload_g"]*0.5)), profile["max_payload_g"] )))
+    payload_weight_g    = int(numeric_input("Payload (g)", min(max(0, int(profile["max_payload_g"]*0.5)), profile["max_payload_g"])))
     flight_speed_kmh    = numeric_input("Speed (km/h)", 30.0)
     wind_speed_kmh      = numeric_input("Wind (km/h)", 10.0)
     temperature_c       = numeric_input("Temperature (°C)", 25.0)
@@ -423,7 +415,7 @@ with st.form("uav_form"):
     stealth_drag_penalty= st.slider("Stealth Drag Factor", 1.0, 1.5, 1.0)
     simulate_failure    = st.checkbox("Enable Failure Simulation")
 
-    # ICE panel (only for MQ-1 / MQ-9 classes)
+    # ICE panel (only for MQ-1 / MQ-9 classes or any ICE profile)
     ice_params = None
     if profile["power_system"] == "ICE":
         st.markdown("### Aerospace Model (ICE-only)")
@@ -450,6 +442,52 @@ with st.form("uav_form"):
     submitted = st.form_submit_button("Estimate")
 
 # ─────────────────────────────────────────────────────────
+# Universal sanity check against SPEC_BOOK
+# ─────────────────────────────────────────────────────────
+def sanity_check_model(drone: str, params: Dict[str, Any]) -> List[str]:
+    """Cross-checks UAV inputs/outputs against published spec envelopes."""
+    warnings = []
+    spec = SPEC_BOOK.get(drone)
+    if not spec:
+        return warnings
+
+    # Battery capacity range
+    if "battery_wh_range" in spec and "Battery" in spec["power_system"]:
+        lo, hi = spec["battery_wh_range"]
+        if not (lo <= params.get("battery_wh", 0) <= hi):
+            warnings.append(f"⚠ Battery capacity {params.get('battery_wh',0)} Wh outside spec range {lo}-{hi} Wh")
+
+    # Fuel tank sanity
+    if "fuel_l_range" in spec and "ICE" in spec["power_system"]:
+        lo, hi = spec["fuel_l_range"]
+        if not (lo <= params.get("fuel_tank_l", 0) <= hi):
+            warnings.append(f"⚠ Fuel tank {params.get('fuel_tank_l',0)} L outside spec range {lo}-{hi} L")
+
+    # Cruise speed range
+    if "cruise_kmh_range" in spec:
+        lo, hi = spec["cruise_kmh_range"]
+        if not (lo <= params.get("speed_kmh", 0) <= hi):
+            warnings.append(f"⚠ Cruise speed {params.get('speed_kmh',0)} km/h outside expected {lo}-{hi} km/h")
+
+    # Endurance sanity (if provided)
+    if "endurance_hr_nom" in spec and "endurance_min" in params:
+        lo, hi = spec["endurance_hr_nom"]
+        endurance_hr = params["endurance_min"] / 60.0
+        if not (lo <= endurance_hr <= hi):
+            warnings.append(f"⚠ Endurance {endurance_hr:.1f} hr outside published {lo}-{hi} hr")
+
+    # Power sanity (Battery draw or ICE shaft)
+    if "draw_W_range" in spec and "total_draw_W" in params:
+        lo, hi = spec["draw_W_range"]
+        if not (lo <= params["total_draw_W"] <= hi):
+            warnings.append(f"⚠ Power draw {params['total_draw_W']} W outside expected {lo}-{hi} W")
+
+    if "engine_kw_max" in spec and "P_total_W" in params:
+        if params["P_total_W"]/1000.0 > 1.2*spec["engine_kw_max"]:
+            warnings.append(f"⚠ Shaft+hotel power {params['P_total_W']/1000:.1f} kW exceeds engine class {spec['engine_kw_max']} kW")
+
+    return warnings
+    # ─────────────────────────────────────────────────────────
 # Swarm & Stealth controls + Waypoints
 # ─────────────────────────────────────────────────────────
 st.markdown("### Swarm & Stealth")
@@ -463,7 +501,7 @@ with st.expander("Mission Waypoints"):
     st.caption("Enter waypoints as (x,y) km coordinates relative to origin.")
     waypoint_str = st.text_area("Waypoints (e.g., 2,2; 5,0; 8,-3)", "2,2; 5,0; 8,-3")
 
-waypoints = []
+waypoints: List[Tuple[float, float]] = []
 try:
     for pair in waypoint_str.split(";"):
         x_str, y_str = pair.split(",")
@@ -475,7 +513,8 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 # LLM Mission Advisor
 # ─────────────────────────────────────────────────────────
-def generate_llm_advice(params):
+def generate_llm_advice(params: Dict[str, Any]) -> str:
+    """Returns short mission tips; gracefully degrades if no OpenAI key is configured."""
     if not OPENAI_AVAILABLE:
         return ("LLM unavailable — heuristic advice:\n"
                 "- Reduce payload for longer endurance.\n"
@@ -500,7 +539,7 @@ Parameters:
 Be concise, bullet style.
 """
     try:
-        resp = _client.chat_completions.create(
+        resp = _client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"system","content":"You are a precise UAV mission advisor."},
                       {"role":"user","content":prompt}],
@@ -516,7 +555,10 @@ Be concise, bullet style.
 # ─────────────────────────────────────────────────────────
 # Swarm (multi-agent) scaffolding
 # ─────────────────────────────────────────────────────────
-ALLOWED_ACTIONS = ["RTB","LOITER","HANDOFF_TRACK","RELOCATE","ALTITUDE_CHANGE","SPEED_CHANGE","RELAY_COMMS","STANDBY","HYBRID_ASSIST"]
+ALLOWED_ACTIONS = [
+    "RTB","LOITER","HANDOFF_TRACK","RELOCATE",
+    "ALTITUDE_CHANGE","SPEED_CHANGE","RELAY_COMMS","STANDBY","HYBRID_ASSIST"
+]
 
 @dataclass
 class AgentState:
@@ -543,17 +585,19 @@ def summarize_state(s: AgentState) -> Dict[str, Any]:
     d.pop("waypoints", None)
     return d
 
-def seed_swarm(n, base_endurance, base_batt_wh, delta_T, altitude_m, platform) -> List[AgentState]:
+def seed_swarm(n: int, base_endurance: float, base_batt_wh: float,
+               delta_T: float, altitude_m: int, platform: str) -> List[AgentState]:
     roles = ["LEAD","SCOUT","TRACKER","RELAY","STRIKER"]
     out=[]
     for i in range(n):
-        role=roles[i%len(roles)]
+        role = roles[i % len(roles)]
         out.append(AgentState(
             id=f"UAV_{i+1}", role=role, platform=platform,
             endurance_min=float(random.uniform(0.7,1.1)*max(5.0, base_endurance)),
             battery_wh=float(random.uniform(0.8,1.1)*max(10.0, base_batt_wh)),
             fuel_l=float(random.uniform(70.0,200.0) if "MQ-" in platform else random.uniform(5.0,25.0)),
-            speed_kmh=float(random.uniform(25,40)), altitude_m=int(altitude_m+random.uniform(-20,20)),
+            speed_kmh=float(random.uniform(25,40)),
+            altitude_m=int(altitude_m+random.uniform(-20,20)),
             x_km=float(random.uniform(-1,1)), y_km=float(random.uniform(-1,1)),
             delta_T=float(delta_T*random.uniform(0.9,1.2))
         ))
@@ -686,7 +730,8 @@ def plot_swarm_map(swarm: List[AgentState], threat_zone_km: float,
     ax.set_title("Swarm Mission Map")
     ax.set_xlabel("X (km)"); ax.set_ylabel("Y (km)")
     ax.axhline(0, color='grey', linewidth=0.5); ax.axvline(0, color='grey', linewidth=0.5)
-    handles, labels = ax.get_legend_handles_labels(); uniq = dict(zip(labels, handles))
+    handles, labels = ax.get_legend_handles_labels()
+    uniq = dict(zip(labels, handles))
     ax.legend(uniq.values(), uniq.keys(), loc="upper right", fontsize=6)
     ax.set_aspect('equal', adjustable='datalim')
     return fig
@@ -698,8 +743,7 @@ def clamp_battery(platform: Dict[str, Any], requested_wh: float, allow_override:
     if requested_wh > nominal:
         st.warning(f"Battery clamped to platform nominal: {nominal:.0f} Wh (requested {requested_wh:.0f} Wh).")
     return max(0.0, min(requested_wh, nominal))
-
-# ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
 # Simulation + Results
 # ─────────────────────────────────────────────────────────
 if submitted:
@@ -719,7 +763,7 @@ if submitted:
         W_ms = max(0.0, wind_speed_kmh / 3.6)
         use_ice_branch = profile["power_system"] == "ICE" and (ice_params is not None)
 
-        # Temperature derate for cells
+        # Temperature derate for cells (battery-only)
         if profile["power_system"] == "Battery":
             if temperature_c < 15: battery_capacity_wh *= 0.90
             elif temperature_c > 35: battery_capacity_wh *= 0.95
@@ -758,70 +802,93 @@ if submitted:
             "flight_mode": flight_mode
         }
 
-        # Initialize placeholders for Breguet values (so exports don't break on Battery branch)
-        E_breguet_min = None
-        R_breguet_km = None
-        L_D_val = None
-        lnWiWf_val = None
+        sanity_warnings: List[str] = []
 
-        # ───────── ICE aerospace branch ─────────
+        # ───────── ICE aerospace branch (revised) ─────────
         if use_ice_branch:
-            # Aero power (bounded aero for realism)
-            CD0   = max(0.05, ice_params["cd0"])
-            E_OSW = min(0.70, ice_params["oswald_e"])
-            ETA_P = min(0.65, max(0.55, ice_params["prop_eff"]))
-            # Effective speed for Loiter (fixed-wing) — slower endurance speed
-            V_ms_eff = V_ms
-            if flight_mode == "Loiter":
-                V_ms_eff = max(8.0, 0.6 * V_ms)
+            # Pull spec for engine class (for power sanity and capping)
+            spec = SPEC_BOOK.get(drone_model, {})
+            engine_kw_max = float(spec.get("engine_kw_max", 999.0))  # fallback very high if unknown
+            engine_kw_cont = 0.85 * engine_kw_max  # conservative continuous rating
+            engine_W_cont  = engine_kw_cont * 1000.0
 
+            # Aerodynamic parameters (allow realistic values; lightly bounded)
+            CD0   = max(0.020, float(ice_params["cd0"]))                        # floor parasite drag
+            E_OSW = min(0.95, max(0.60, float(ice_params["oswald_e"])))         # 0.60–0.95
+            ETA_P = min(0.88, max(0.60, float(ice_params["prop_eff"])))         # 0.60–0.88
+
+            # Effective speed for Loiter (fixed-wing) — slightly slower than cruise
+            V_ms_eff = V_ms if flight_mode != "Loiter" else max(8.0, 0.70 * V_ms)
+
+            # Shaft power required from drag polar
             P_req_W = aero_power_required_W(
                 weight_N=weight_N, rho=rho, V_ms=V_ms_eff,
-                wing_area_m2=ice_params["wing_area_m2"],
+                wing_area_m2=float(ice_params["wing_area_m2"]),
                 cd0=CD0, e=E_OSW,
-                wingspan_m=ice_params["wingspan_m"], prop_eff=ETA_P
+                wingspan_m=float(ice_params["wingspan_m"]), prop_eff=ETA_P
             )
-            # Maneuvering penalties by mission mode
+
+            # Maneuvering penalties by mission mode (mild)
             if flight_mode == "Waypoint Mission":
-                P_req_W *= 1.05
+                P_req_W *= 1.03
             elif flight_mode == "Loiter":
-                P_req_W *= 1.10
+                P_req_W *= 1.06
 
             # Gust penalty via wing loading
-            WL = weight_N / max(0.05, ice_params["wing_area_m2"])
+            WL = weight_N / max(0.05, float(ice_params["wing_area_m2"]))
             wind_penalty_frac = gust_penalty_fraction(gustiness, wind_speed_kmh, V_ms_eff, WL)
             P_req_W *= (1.0 + wind_penalty_frac)
 
-            # Terrain/stealth penalties
+            # Terrain/stealth penalties (installation, pods, external stores)
             P_req_W *= terrain_penalty * stealth_drag_penalty
 
             # Add hotel load to shaft demand (electrical systems)
             HOTEL_W = HOTEL_W_DEFAULT
-            P_total_W = P_req_W + HOTEL_W
+            P_total_W_uncapped = P_req_W + HOTEL_W
 
-            # Fuel burn at total power
-            lph = bsfc_fuel_burn_lph(P_total_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"])
+            # Cap by engine continuous power (sanity + safety)
+            engine_cap_applied = False
+            if P_total_W_uncapped > engine_W_cont:
+                sanity_warnings.append(
+                    f"⚠ Required shaft+hotel power {P_total_W_uncapped/1000:.1f} kW exceeds "
+                    f"continuous engine rating ~{engine_kw_cont:.1f} kW — capping to continuous."
+                )
+                engine_cap_applied = True
+            P_total_W = min(P_total_W_uncapped, engine_W_cont)
 
-            # Climb fuel (mgh)
-            climb_L_val = climb_fuel_liters(total_weight_kg, max(0, elevation_gain_m),
-                                            ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"])
+            # Fuel burn at total power (shaft), using BSFC
+            bsfc = float(ice_params["bsfc_gpkwh"])
+            fuel_density = float(ice_params["fuel_density_kgpl"])
+            lph = bsfc_fuel_burn_lph(P_total_W, bsfc, fuel_density)
 
-            # Usable fuel fraction + reserve
-            usable_fuel_L_start = max(0.0, ice_params["fuel_tank_l"] * USABLE_FUEL_FRAC - max(0.0, climb_L_val))
+            # Climb fuel (m g h → kWh → kg → liters)
+            climb_L_val = climb_fuel_liters(total_weight_kg, max(0, elevation_gain_m), bsfc, fuel_density)
+
+            # Usable fuel fraction + dispatch reserve
+            tank_L = float(ice_params["fuel_tank_l"])
+            usable_fuel_L_start = max(0.0, tank_L * USABLE_FUEL_FRAC - max(0.0, climb_L_val))
             usable_fuel_L = usable_fuel_L_start
 
             # Optional hybrid assist (battery substitution for a slice of power)
             if ice_params["hybrid_assist"]:
-                battery_support_Wh = profile.get("battery_wh", 200.0)
-                assist_power_W = P_total_W * ice_params["assist_fraction"]
-                assist_energy_Wh = assist_power_W * (ice_params["assist_duration_min"] / 60.0)
-                if assist_energy_Wh > battery_support_Wh:
-                    ice_params["assist_duration_min"] = (battery_support_Wh / max(1.0, assist_power_W)) * 60.0
-                    assist_energy_Wh = battery_support_Wh
-                # Fuel saved during assist
-                fuel_saved_L = bsfc_fuel_burn_lph(assist_power_W, ice_params["bsfc_gpkwh"], ice_params["fuel_density_kgpl"]) * (ice_params["assist_duration_min"] / 60.0)
+                battery_support_Wh = float(profile.get("battery_wh", 200.0))
+                assist_power_W = P_total_W * float(ice_params["assist_fraction"])
+                assist_energy_Wh_req = assist_power_W * (float(ice_params["assist_duration_min"]) / 60.0)
+
+                if assist_energy_Wh_req > battery_support_Wh:
+                    # shorten duration to fit available battery energy
+                    new_minutes = (battery_support_Wh / max(1.0, assist_power_W)) * 60.0
+                    ice_params["assist_duration_min"] = new_minutes
+                    assist_energy_Wh_req = battery_support_Wh
+                    sanity_warnings.append(
+                        f"ℹ️ Hybrid assist duration truncated to {new_minutes:.1f} min to fit battery capacity."
+                    )
+
+                # Fuel saved during assist window
+                fuel_saved_L = bsfc_fuel_burn_lph(assist_power_W, bsfc, fuel_density) * (float(ice_params["assist_duration_min"]) / 60.0)
                 usable_fuel_L += fuel_saved_L
 
+            # Endurance and dispatchable endurance
             raw_endurance_hr = usable_fuel_L / max(0.05, lph)
             raw_endurance_min = raw_endurance_hr * 60.0
             dispatch_endurance_min = raw_endurance_min * (1.0 - DISPATCH_RESERVE)
@@ -834,38 +901,7 @@ if submitted:
             delta_T = convective_radiative_deltaT(Q_waste, 0.6, 0.85, temperature_c, rho, V_ms_eff)
             delta_T *= (1.0 - (cloud_cover / 100.0) * 0.35)
             if ice_params["hybrid_assist"] and ice_params["assist_duration_min"] > 0:
-                delta_T *= (1.0 - ice_params["assist_fraction"] * 0.3)
-
-            # ───────── NEW: Breguet Endurance & Range (ICE) ─────────
-            fuel_mass_initial_kg = max(0.0, usable_fuel_L_start) * ice_params["fuel_density_kgpl"]
-            fuel_mass_reserve_kg = fuel_mass_initial_kg * DISPATCH_RESERVE
-            m_struct_kg = total_weight_kg
-
-            Wi_N = (m_struct_kg + fuel_mass_initial_kg) * G0
-            Wf_N = (m_struct_kg + fuel_mass_reserve_kg) * G0
-            Wavg_N = 0.5 * (Wi_N + Wf_N)
-
-            L_D_val = lift_to_drag_ratio(
-                Wavg_N, rho, V_ms_eff,
-                ice_params["wing_area_m2"], CD0, E_OSW, ice_params["wingspan_m"]
-            )
-            cp_val = cp_from_bsfc_gpkwh(ice_params["bsfc_gpkwh"])
-            eta_p = ETA_P
-
-            R_breguet_km = breguet_prop_range_m(eta_p, cp_val, L_D_val, Wi_N, Wf_N) / 1000.0
-            E_breguet_min = breguet_prop_endurance_s(eta_p, cp_val, L_D_val, Wi_N, Wf_N) / 60.0
-            lnWiWf_val = math.log(max(Wi_N, 1.0) / max(Wf_N, 1e-6))
-
-            agree_end = 100.0 - abs(dispatch_endurance_min - E_breguet_min)/max(E_breguet_min,1e-6)*100.0
-            agree_rng = 100.0 - abs(((dispatch_endurance_min/60.0)*flight_speed_kmh) - R_breguet_km)/max(R_breguet_km,1e-6)*100.0
-
-            st.subheader("Breguet Validation (ICE)")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: st.metric("L/D @ mid-weight", f"{L_D_val:.1f}")
-            with c2: st.metric("ln(Wi/Wf)", f"{lnWiWf_val:.3f}")
-            with c3: st.metric("Breguet Endurance", f"{E_breguet_min:.1f} min")
-            with c4: st.metric("Breguet Range", f"{R_breguet_km:.1f} km")
-            st.caption(f"Agreement vs sim: {agree_end:.1f}% endurance, {agree_rng:.1f}% range")
+                delta_T *= (1.0 - float(ice_params["assist_fraction"]) * 0.3)
 
             # ───────────────── Detectability Alert (ICE) ─────────────────
             ai_score, ir_score = compute_ai_ir_scores(
@@ -892,24 +928,21 @@ if submitted:
             # Detail panel fields (ICE)
             detail.update({
                 "CD0_eff": CD0, "e_oswald_eff": E_OSW, "eta_prop_eff": ETA_P,
-                "wing_area_m2": ice_params["wing_area_m2"], "wingspan_m": ice_params["wingspan_m"],
+                "wing_area_m2": float(ice_params["wing_area_m2"]), "wingspan_m": float(ice_params["wingspan_m"]),
                 "V_ms_effective": round(V_ms_eff,3),
                 "wing_loading_N_per_m2": round(WL,2),
                 "gust_penalty_frac": round(wind_penalty_frac,4),
-                "P_total_W": round(P_total_W,1), "BSFC_g_per_kWh": ice_params["bsfc_gpkwh"],
-                "fuel_density_kg_per_L": ice_params["fuel_density_kgpl"],
+                "P_total_W_uncapped": round(P_total_W_uncapped,1),
+                "P_total_W": round(P_total_W,1),
+                "engine_W_cont": round(engine_W_cont,1),
+                "BSFC_g_per_kWh": bsfc,
+                "fuel_density_kg_per_L": fuel_density,
                 "fuel_burn_L_per_hr": round(lph,3),
                 "climb_fuel_L": round(climb_L_val,3),
                 "usable_fuel_L_start": round(usable_fuel_L_start,3),
                 "usable_fuel_L_after_assist": round(usable_fuel_L,3),
                 "raw_endurance_min": round(raw_endurance_min,2),
-                # Breguet detail
-                "breguet_endurance_min": round(E_breguet_min,2),
-                "breguet_range_km": round(R_breguet_km,2),
-                "breguet_L_D": round(L_D_val,2),
-                "breguet_ln_Wi_Wf": round(lnWiWf_val,3),
-                "breguet_vs_sim_endurance_%": round(agree_end,1),
-                "breguet_vs_sim_range_%": round(agree_rng,1)
+                "engine_cap_applied": engine_cap_applied
             })
 
             wind_penalty_pct = wind_penalty_frac * 100.0
@@ -922,189 +955,24 @@ if submitted:
 
             # User-facing metrics (ICE)
             st.subheader("Thermal & Fuel (ICE)")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: st.metric("Total Power (shaft+hotel)", f"{P_total_W/1000:.2f} kW")
-            with c2: st.metric("Fuel Burn", f"{lph:.2f} L/hr")
-            with c3: st.metric("Usable Fuel", f"{usable_fuel_L:.2f} L")
-            with c4: st.metric("Thermal ΔT", f"{delta_T:.1f} °C")
+            st.metric("Total Power (shaft+hotel)", f"{P_total_W/1000:.2f} kW")
+            st.metric("Fuel Burn", f"{lph:.2f} L/hr")
+            st.metric("Usable Fuel (after climb/assist)", f"{usable_fuel_L:.2f} L")
+            st.metric("Thermal ΔT", f"{delta_T:.1f} °C")
 
-            # ─────────────────────────────────────────────────────────
-            # Validation vs Manufacturer Specs (ICE only)
-            # ─────────────────────────────────────────────────────────
-            with st.expander("Validation vs Manufacturer Specs (ICE only)"):
-                st.caption("Enter published specs for comparison. Datasheets often list ~24 hr endurance and ~1200–1850 km range for MQ-class.")
+            # ── Universal sanity check for ICE models
+            sanity_params = {
+                "fuel_tank_l": tank_L,
+                "speed_kmh": float(flight_speed_kmh),
+                "endurance_min": float(flight_time_minutes),
+                "P_total_W": float(P_total_W)
+            }
+            sanity_warnings.extend(sanity_check_model(drone_model, sanity_params))
 
-                pub_endurance_hr = numeric_input("Published Endurance (hours)", 24.0 if "MQ-" in drone_model else 1.0)
-                pub_range_km     = numeric_input("Published Range (km)", 1850.0 if "MQ-" in drone_model else 50.0)
-
-                # Convert to minutes for fair comparison
-                pub_endurance_min = pub_endurance_hr * 60.0
-
-                eps = 1e-6
-                # % match = 100 - % error
-                breg_vs_pub_end = 100.0 - (0.0 if pub_endurance_min < eps else 100.0 * abs(E_breguet_min - pub_endurance_min) / pub_endurance_min)
-                kin_vs_pub_end  = 100.0 - (0.0 if pub_endurance_min < eps else 100.0 * abs(dispatch_endurance_min - pub_endurance_min) / pub_endurance_min)
-
-                breg_vs_pub_rng = 100.0 - (0.0 if pub_range_km < eps else 100.0 * abs(R_breguet_km - pub_range_km) / pub_range_km)
-                kin_vs_pub_rng  = 100.0 - (0.0 if pub_range_km < eps else 100.0 * abs(total_distance_km - pub_range_km) / pub_range_km)
-
-                st.subheader("Validation Results")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Published Endurance", f"{pub_endurance_min:.0f} min")
-                with col2:
-                    st.metric("Breguet vs Published", f"{breg_vs_pub_end:.1f}%")
-                with col3:
-                    st.metric("Sim vs Published", f"{kin_vs_pub_end:.1f}%")
-
-                col4, col5, col6 = st.columns(3)
-                with col4:
-                    st.metric("Published Range", f"{pub_range_km:.0f} km")
-                with col5:
-                    st.metric("Breguet vs Published", f"{breg_vs_pub_rng:.1f}%")
-                with col6:
-                    st.metric("Sim vs Published", f"{kin_vs_pub_rng:.1f}%")
-
-                # JSON export for audit trail
-                validation = {
-                    "published_endurance_min": round(pub_endurance_min,1),
-                    "published_range_km": round(pub_range_km,1),
-                    "breguet_vs_published_endurance_pct": round(breg_vs_pub_end,1),
-                    "sim_vs_published_endurance_pct": round(kin_vs_pub_end,1),
-                    "breguet_vs_published_range_pct": round(breg_vs_pub_rng,1),
-                    "sim_vs_published_range_pct": round(kin_vs_pub_rng,1)
-                }
-                st.json(validation, expanded=False)
-
-            # ─────────────────────────────────────────────────────────
-            # Validation Plot — Model Curve vs Published Spec Points (Endurance)
-            # ─────────────────────────────────────────────────────────
-            with st.expander("Validation Plot (Payload Sweep — Endurance vs Published Data)"):
-                st.caption("Overlay your model’s Breguet endurance curve against published spec points. Format: g,hr; g,hr; ...")
-                pub_points_str = st.text_area(
-                    "Published Payload-Endurance Data",
-                    "0,24; 500,22; 1000,20" if "MQ-" in drone_model else "0,2; 300,1.5"
-                )
-                pub_points = []
-                try:
-                    for pair in pub_points_str.split(";"):
-                        if pair.strip()=="":
-                            continue
-                        g_str, hr_str = pair.split(",")
-                        pub_points.append((float(g_str.strip()), float(hr_str.strip())))
-                except Exception:
-                    st.error("Invalid format. Use g,hr; g,hr; ...")
-
-                try:
-                    import numpy as np
-                    payloads = np.linspace(0, profile["max_payload_g"], 9)
-                    e_hours_model = []
-                    for pg in payloads:
-                        m_struct = profile["base_weight_kg"] + pg/1000.0
-                        Wi = (m_struct + fuel_mass_initial_kg) * G0
-                        Wf = (m_struct + fuel_mass_reserve_kg) * G0
-                        Wavg = 0.5*(Wi+Wf)
-                        L_Ds = lift_to_drag_ratio(Wavg, rho, V_ms_eff,
-                                                  ice_params["wing_area_m2"], CD0, E_OSW, ice_params["wingspan_m"])
-                        e_hr = breguet_prop_endurance_s(ETA_P, cp_val, L_Ds, Wi, Wf) / 3600.0
-                        e_hours_model.append(max(0.0, e_hr))
-
-                    # Plot
-                    fig, ax = plt.subplots(figsize=(6.0,3.6))
-                    ax.plot(payloads, e_hours_model, linewidth=2, label="Model Breguet Curve")
-
-                    rmse = None
-                    if pub_points:
-                        xs = [p[0] for p in pub_points]
-                        ys = [p[1] for p in pub_points]
-                        ax.scatter(xs, ys, c="red", marker="x", s=80, label="Published Specs")
-
-                        # Compute RMSE as validation metric
-                        diffs = []
-                        for px, py in zip(xs, ys):
-                            if payloads[0] <= px <= payloads[-1]:
-                                idx = int(np.searchsorted(payloads, px))
-                                idx = max(1, min(idx, len(payloads)-1))
-                                x0, x1 = payloads[idx-1], payloads[idx]
-                                y0, y1 = e_hours_model[idx-1], e_hours_model[idx]
-                                # linear interpolation
-                                y_pred = y0 + (y1-y0) * ((px-x0)/(x1-x0) if (x1-x0)!=0 else 0)
-                                diffs.append((y_pred - py)**2)
-                        if diffs:
-                            rmse = float(np.sqrt(sum(diffs)/len(diffs)))
-                            st.metric("RMSE vs Published (hours)", f"{rmse:.2f}")
-
-                    ax.set_xlabel("Payload (g)")
-                    ax.set_ylabel("Endurance (hours)")
-                    ax.set_title(f"Breguet Endurance vs Payload — {drone_model}")
-                    ax.legend()
-                    st.pyplot(fig); plt.close(fig)
-                except Exception:
-                    st.info("NumPy/Matplotlib not available for validation plot.")
-
-            # ─────────────────────────────────────────────────────────
-            # Validation Plot — Breguet Range vs Published Spec Points
-            # ─────────────────────────────────────────────────────────
-            with st.expander("Validation Plot (Payload Sweep — Range vs Published Data)"):
-                st.caption("Overlay your model’s Breguet range curve against published spec points. Format: g,km; g,km; ...")
-                pub_rng_points_str = st.text_area(
-                    "Published Payload-Range Data",
-                    "0,1850; 500,1700; 1000,1500" if "MQ-" in drone_model else "0,50; 300,40"
-                )
-                pub_rng_points = []
-                try:
-                    for pair in pub_rng_points_str.split(";"):
-                        if pair.strip()=="":
-                            continue
-                        g_str, km_str = pair.split(",")
-                        pub_rng_points.append((float(g_str.strip()), float(km_str.strip())))
-                except Exception:
-                    st.error("Invalid format. Use g,km; g,km; ...")
-
-                try:
-                    import numpy as np
-                    payloads = np.linspace(0, profile["max_payload_g"], 9)
-                    r_km_model = []
-                    for pg in payloads:
-                        m_struct = profile["base_weight_kg"] + pg/1000.0
-                        Wi = (m_struct + fuel_mass_initial_kg) * G0
-                        Wf = (m_struct + fuel_mass_reserve_kg) * G0
-                        Wavg = 0.5*(Wi+Wf)
-                        L_Ds = lift_to_drag_ratio(Wavg, rho, V_ms_eff,
-                                                  ice_params["wing_area_m2"], CD0, E_OSW, ice_params["wingspan_m"])
-                        rng_m = breguet_prop_range_m(ETA_P, cp_val, L_Ds, Wi, Wf)
-                        r_km_model.append(max(0.0, rng_m/1000.0))
-
-                    # Plot
-                    fig, ax = plt.subplots(figsize=(6.0,3.6))
-                    ax.plot(payloads, r_km_model, linewidth=2, label="Model Breguet Curve")
-
-                    rmse = None
-                    if pub_rng_points:
-                        xs = [p[0] for p in pub_rng_points]
-                        ys = [p[1] for p in pub_rng_points]
-                        ax.scatter(xs, ys, c="red", marker="x", s=80, label="Published Specs")
-
-                        diffs = []
-                        for px, py in zip(xs, ys):
-                            if payloads[0] <= px <= payloads[-1]:
-                                idx = int(np.searchsorted(payloads, px))
-                                idx = max(1, min(idx, len(payloads)-1))
-                                x0, x1 = payloads[idx-1], payloads[idx]
-                                y0, y1 = r_km_model[idx-1], r_km_model[idx]
-                                y_pred = y0 + (y1-y0) * ((px-x0)/(x1-x0) if (x1-x0)!=0 else 0)
-                                diffs.append((y_pred - py)**2)
-                        if diffs:
-                            rmse = float(np.sqrt(sum(diffs)/len(diffs)))
-                            st.metric("RMSE vs Published (km)", f"{rmse:.1f}")
-
-                    ax.set_xlabel("Payload (g)")
-                    ax.set_ylabel("Range (km)")
-                    ax.set_title(f"Breguet Range vs Payload — {drone_model}")
-                    ax.legend()
-                    st.pyplot(fig); plt.close(fig)
-                except Exception:
-                    st.info("NumPy/Matplotlib not available for validation plot.")
+            if sanity_warnings:
+                st.subheader("Sanity Check (Spec Book)")
+                for w in sanity_warnings:
+                    st.warning(w)
 
             # Simple live fuel sim (capped)
             st.subheader("Live Simulation (Fuel)")
@@ -1125,14 +993,14 @@ if submitted:
                 if fuel_rem<=0.0: break
                 time.sleep(0.02)
 
-        # ───────── Battery/Hybrid (global) ─────────
+        # ───────── Battery/Hybrid branch (global) ─────────
         else:
             if profile["type"] == "rotor":
                 # Rotorcraft: base draw scaled by mass & density + parasitic ~V^2
-                base_draw = profile.get("draw_watt", 180.0)
-                weight_factor = total_weight_kg / max(0.1, profile["base_weight_kg"])
+                base_draw = float(profile.get("draw_watt", 180.0))
+                weight_factor = total_weight_kg / max(0.1, float(profile["base_weight_kg"]))
                 density_factor = rotorcraft_density_scale(rho_ratio)  # √(ρ0/ρ)
-                V_term = 0.018 * (flight_speed_kmh ** 2)
+                V_term = 0.018 * (float(flight_speed_kmh) ** 2)
                 total_draw = (base_draw * weight_factor * density_factor) + V_term
                 # Gust penalty (rotor WL proxy)
                 WL_proxy = float(profile.get("rotor_WL_proxy", 45.0))
@@ -1266,9 +1134,21 @@ if submitted:
             # User-facing metrics (Battery)
             st.subheader("Thermal Signature & Battery")
             risk = 'Low' if delta_T < 10 else ('Moderate' if delta_T < 20 else 'High')
-            c1, c2 = st.columns(2)
-            with c1: st.metric("Thermal Signature Risk", f"{risk} (ΔT = {delta_T:.1f}°C)")
-            with c2: st.metric("Total Draw (incl. hotel/penalties)", f"{total_draw:.0f} W")
+            st.metric("Thermal Signature Risk", f"{risk} (ΔT = {delta_T:.1f}°C)")
+            st.metric("Total Draw (incl. hotel/penalties)", f"{total_draw:.0f} W")
+
+            # ── Universal sanity check for Battery models
+            sanity_params = {
+                "battery_wh": float(start_batt_wh_for_gauge),
+                "speed_kmh": float(flight_speed_kmh),
+                "endurance_min": float(flight_time_minutes),
+                "total_draw_W": float(total_draw)
+            }
+            sanity_warnings.extend(sanity_check_model(drone_model, sanity_params))
+            if sanity_warnings:
+                st.subheader("Sanity Check (Spec Book)")
+                for w in sanity_warnings:
+                    st.warning(w)
 
             # Simple live battery sim (capped) — percent uses starting Wh for correct gauge
             st.subheader("Live Simulation (Battery)")
@@ -1301,10 +1181,9 @@ if submitted:
         st.header("Selected UAV — Mission Performance")
         st.metric("Dispatchable Endurance", f"{flight_time_minutes:.1f} minutes")
         st.caption(f"Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)")
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")
-        with c2: st.metric("Best Heading Range", f"{best_km:.1f} km")
-        with c3: st.metric("Upwind Range", f"{worst_km:.1f} km")
+        st.metric("Total Distance (km)", f"{total_distance_km:.1f} km")
+        st.metric("Best Heading Range", f"{best_km:.1f} km")
+        st.metric("Upwind Range", f"{worst_km:.1f} km")
 
         # ───────── Individual UAV Detailed Calculations (selected model only) ─────────
         st.header("Individual UAV Detailed Results (Selected Model)")
@@ -1321,11 +1200,13 @@ if submitted:
             if elevation_gain_m != 0:
                 human.append(f"- **Climb/Descent net energy**: {detail.get('climb_energy_Wh',0):.2f} Wh (desc recov: {detail.get('descent_recovery_Wh','0.00')} Wh)")
         else:
-            human.append(f"- **Total shaft+hotel power**: {detail.get('P_total_W',0)/1000:.2f} kW")
+            human.append(f"- **Total shaft+hotel power**: {detail.get('P_total_W',0)/1000:.2f} kW (cont. cap ~{detail.get('engine_W_cont',0)/1000:.2f} kW)")
             human.append(f"- **Fuel burn**: {detail.get('fuel_burn_L_per_hr',0):.2f} L/h")
             human.append(f"- **Usable fuel after climb/assist**: {detail.get('usable_fuel_L_after_assist',0):.2f} L")
             if ice_params and ice_params.get("hybrid_assist", False):
                 human.append(f"- **Hybrid Assist**: {ice_params['assist_fraction']*100:.0f}% for {ice_params['assist_duration_min']:.0f} min (battery substitution)")
+            if detail.get("engine_cap_applied", False):
+                human.append(f"- **Engine cap applied:** Power capped to continuous rating.")
 
         human.append(f"- **Gust penalty**: {wind_penalty_pct:.1f}%")
         human.append(f"- **Terrain × Stealth factor**: {terrain_penalty*stealth_drag_penalty:.3f}")
@@ -1337,11 +1218,6 @@ if submitted:
         # Detectability in Detailed Panel
         human.append(f"- **Detectability (AI visual / IR thermal):** {ai_score:.0f}/100 / {ir_score:.0f}/100")
         human.append(f"- **Overall Detectability:** {'LOW' if overall_kind=='success' else 'MODERATE' if overall_kind=='warning' else 'HIGH'}")
-
-        # Breguet details (ICE only)
-        if E_breguet_min is not None and R_breguet_km is not None:
-            human.append(f"- **Breguet (Endurance / Range):** {E_breguet_min:.1f} min / {R_breguet_km:.1f} km")
-            human.append(f"- **Breguet L/D & ln(Wi/Wf):** {L_D_val:.1f}, {lnWiWf_val:.3f}")
 
         st.markdown("\n".join(human))
 
@@ -1359,8 +1235,7 @@ if submitted:
             "detectability_overall": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         })
         st.json(detail, expanded=False)
-
-        # Exports for the individual UAV
+                # Exports for the individual UAV
         indiv_df = pd.DataFrame([detail])
         st.download_button(
             "⬇️ Download Individual UAV Detailed Results (CSV)",
@@ -1535,14 +1410,6 @@ if submitted:
             "IR Thermal Detectability (0-100)": round(ir_score,1),
             "Overall Detectability": ("LOW" if overall_kind=="success" else "MODERATE" if overall_kind=="warning" else "HIGH")
         }
-        # Include Breguet fields if ICE branch ran
-        if E_breguet_min is not None and R_breguet_km is not None:
-            results.update({
-                "Breguet Endurance (min)": round(E_breguet_min,1),
-                "Breguet Range (km)": round(R_breguet_km,1),
-                "Breguet L/D": round(L_D_val,1) if L_D_val is not None else None,
-                "ln(Wi/Wf)": round(lnWiWf_val,3) if lnWiWf_val is not None else None
-            })
 
         df_res = pd.DataFrame([results])
         csv_buffer = io.BytesIO()
