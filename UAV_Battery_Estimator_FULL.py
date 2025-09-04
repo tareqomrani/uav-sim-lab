@@ -482,7 +482,99 @@ def envelope_msg(val: float, lo: float, hi: float, unit: str) -> Optional[str]:
     if val > hi:
         return f"Above conservative envelope (max {hi:g} {unit})."
     return None
+# ─────────────────────────────────────────────────────────
+# Swarm Advisor — Agents, State, and Helper Functions
+# ─────────────────────────────────────────────────────────
+@dataclass
+class AgentState:
+    id: str
+    role: str
+    platform: str
+    endurance_min: float
+    fuel_l: float
+    altitude_m: float
+    delta_T: float
+    x_km: float
+    y_km: float
+    hybrid_assist: bool = False
+    assist_fraction: float = 0.0
+    assist_time_min: float = 0.0
+    warning: str = ""
+    waypoints: List[Tuple[float,float]] = None
+    current_wp: int = 0
 
+def seed_swarm(n: int, base_endurance: float, base_batt_wh: float, delta_T: float,
+               altitude_m: float, platform: str = "Generic Quad") -> List[AgentState]:
+    """Seed a swarm with LEAD + SCOUT + TRACKER roles."""
+    swarm = []
+    roles = ["LEAD", "SCOUT", "TRACKER", "SUPPORT", "WING", "SPARE"]
+    for i in range(n):
+        role = roles[i % len(roles)]
+        swarm.append(AgentState(
+            id=f"UAV_{i+1}", role=role, platform=platform,
+            endurance_min=max(5.0, base_endurance + random.uniform(-0.1, 0.1) * base_endurance),
+            fuel_l=10.0 if "MQ-" in platform else base_batt_wh/100.0,
+            altitude_m=altitude_m,
+            delta_T=delta_T * random.uniform(0.95, 1.05),
+            x_km=random.uniform(-0.5, 0.5),
+            y_km=random.uniform(-0.5, 0.5)
+        ))
+    return swarm
+
+def agent_call(env: Dict[str,Any], agent: AgentState) -> Dict[str,Any]:
+    """Simulate a swarm agent making a tactical suggestion."""
+    suggestion = []
+    if agent.role == "SCOUT" and env["wind_kmh"] > 15:
+        suggestion.append("Recommend higher altitude for smoother air")
+    if agent.role == "TRACKER" and env["mission"] == "Waypoint Mission":
+        suggestion.append("Maintain spacing along ingress path")
+    if agent.role == "LEAD" and env.get("stealth_ingress", False):
+        suggestion.append("Reduce ΔT signature by hybrid assist if possible")
+    return {"from": agent.id, "msg": "; ".join(suggestion) if suggestion else "No changes", "actions": []}
+
+def lead_call(env: Dict[str,Any], swarm: List[AgentState], proposals: Dict[str,Dict[str,Any]]) -> Dict[str,Any]:
+    """Fuse proposals into a lead decision (mock LLM fusion)."""
+    conversation = []
+    for pid, prop in proposals.items():
+        conversation.append({"from": pid, "msg": prop["msg"]})
+    actions = []
+    if env.get("stealth_ingress", False):
+        for s in swarm:
+            if "MQ-" in s.platform and not s.hybrid_assist:
+                actions.append({"uav_id": s.id, "action": "HYBRID_ASSIST", "reason": "Stealth ingress thermal reduction",
+                                "fraction": 0.15, "duration_min": 10})
+                break
+    return {"conversation": conversation, "actions": actions}
+
+def apply_actions(swarm: List[AgentState], actions: List[Dict[str,Any]],
+                  stealth_ingress: bool, threat_zone_km: float) -> List[AgentState]:
+    """Apply leader actions back onto swarm agents."""
+    for a in actions:
+        for s in swarm:
+            if s.id == a["uav_id"] and a["action"] == "HYBRID_ASSIST":
+                s.hybrid_assist = True
+                s.assist_fraction = float(a.get("fraction", 0.1))
+                s.assist_time_min = int(a.get("duration_min", 5))
+                s.delta_T *= (1 - s.assist_fraction * 0.7)
+                s.warning = "Hybrid assist engaged"
+    return swarm
+
+def plot_swarm_map(swarm: List[AgentState], threat_zone_km: float,
+                   stealth_ingress: bool, waypoints: Optional[List[Tuple[float,float]]] = None):
+    """Quick matplotlib map of swarm state and threat zone."""
+    fig, ax = plt.subplots(figsize=(5,5))
+    for s in swarm:
+        ax.scatter(s.x_km, s.y_km, marker="o", label=f"{s.id} ({s.role})")
+        if s.waypoints and s.current_wp < len(s.waypoints):
+            tx, ty = s.waypoints[s.current_wp]
+            ax.plot([s.x_km, tx], [s.y_km, ty], "--", color="gray", linewidth=0.8)
+    if stealth_ingress:
+        circ = plt.Circle((0,0), threat_zone_km, color="red", fill=False, linestyle="--", alpha=0.5)
+        ax.add_patch(circ)
+    ax.set_xlabel("X (km)"); ax.set_ylabel("Y (km)")
+    ax.legend(fontsize=6)
+    ax.set_title("Swarm State Map")
+    return fig
 # ─────────────────────────────────────────────────────────
 # Debug toggles & platform selection
 # ─────────────────────────────────────────────────────────
