@@ -1301,14 +1301,14 @@ if submitted:
             st.stop()
 
         detail.update({
-            'phase_total_time_min': round(mission_profile['total_time_min'], 2),
-            'phase_count': len(mission_profile['phases']),
+            'phase_total_time_min': round(mission_profile.get('total_time_min', 0.0), 2),
+            'phase_count': len(mission_profile.get('phases', [])),
         })
         if profile['power_system'] == 'Battery':
-            detail['phase_total_energy_Wh'] = round(mission_profile['total_energy_Wh'], 2)
+            detail['phase_total_energy_Wh'] = round(mission_profile.get('total_energy_Wh', 0.0), 2)
             detail['phase_remaining_energy_Wh'] = round(float(mission_profile.get('remaining_energy_Wh') or 0.0), 2)
         else:
-            detail['phase_total_fuel_L'] = round(mission_profile['total_fuel_L'], 3)
+            detail['phase_total_fuel_L'] = round(mission_profile.get('total_fuel_L', 0.0), 3)
             detail['phase_remaining_fuel_L'] = round(float(mission_profile.get('remaining_fuel_L') or 0.0), 3)
 
         if profile['power_system'] == 'Battery':
@@ -1474,23 +1474,37 @@ if submitted:
         with m4:
             st.metric('Upwind Range', f'{worst_km:.1f} km')
         st.caption(f'Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)')
-        mission_profile = simulate_mission_phases(
-            profile=profile,
-            payload_weight_g=payload_weight_g,
-            cruise_speed_kmh=flight_speed_kmh,
-            wind_speed_kmh=wind_speed_kmh,
-            temperature_c=temperature_c,
-            cruise_altitude_m=altitude_m,
-            elevation_gain_m=elevation_gain_m,
-            gustiness=gustiness,
-            terrain_penalty=terrain_penalty,
-            stealth_drag_penalty=stealth_drag_penalty,
-            battery_capacity_wh=(result.get('battery_derated_Wh') if profile['power_system'] == 'Battery' else None),
-            fuel_tank_l=(result.get('usable_fuel_L') if profile['power_system'] == 'ICE' else None),
-            loiter_minutes=float(loiter_minutes),
-            include_rtb=include_rtb,
-        )
-        render_mission_phase_panel(mission_profile, profile['power_system'])
+        mission_profile = {
+            'phases': [],
+            'total_time_min': 0.0,
+            'total_energy_Wh': 0.0,
+            'total_fuel_L': 0.0,
+            'remaining_energy_Wh': None,
+            'remaining_fuel_L': None,
+        }
+
+        try:
+            mission_profile = simulate_mission_phases(
+                profile=profile,
+                payload_weight_g=payload_weight_g,
+                cruise_speed_kmh=flight_speed_kmh,
+                wind_speed_kmh=wind_speed_kmh,
+                temperature_c=temperature_c,
+                cruise_altitude_m=altitude_m,
+                elevation_gain_m=elevation_gain_m,
+                gustiness=gustiness,
+                terrain_penalty=terrain_penalty,
+                stealth_drag_penalty=stealth_drag_penalty,
+                battery_capacity_wh=(result.get('battery_derated_Wh') if profile['power_system'] == 'Battery' else None),
+                fuel_tank_l=(result.get('usable_fuel_L') if profile['power_system'] == 'ICE' else None),
+                loiter_minutes=float(loiter_minutes),
+                include_rtb=include_rtb,
+            )
+            render_mission_phase_panel(mission_profile, profile['power_system'])
+        except Exception as phase_err:
+            st.warning('Mission Phase Simulation could not be generated for this run.')
+            if debug_mode:
+                st.exception(phase_err)
 
 
         detail = {'drone_model': drone_model, 'type': profile['type'], 'power_system': profile['power_system'], 'payload_g': payload_weight_g, 'total_mass_kg': round(total_weight_kg, 3), 'weight_N': round(weight_N, 2), 'flight_speed_kmh': round(flight_speed_kmh, 2), 'effective_speed_ms': round(result.get('V_effective_ms', V_ms), 3), 'wind_speed_kmh': round(wind_speed_kmh, 2), 'wind_speed_ms': round(W_ms, 3), 'altitude_m': altitude_m, 'temperature_C': temperature_c, 'flight_mode': flight_mode, 'rho': round(rho, 4), 'rho_ratio': round(rho_ratio, 4), 'gustiness': gustiness, 'terrain_factor': round(terrain_penalty, 3), 'stealth_drag_factor': round(stealth_drag_penalty, 3), 'wind_penalty_pct': round(wind_penalty_pct, 2), 'thermal_load_deltaT_estimate_C': round(delta_T, 2), 'dispatch_endurance_min': round(flight_time_minutes, 2), 'total_distance_km': round(total_distance_km, 2), 'best_heading_range_km': round(best_km, 2), 'upwind_range_km': round(worst_km, 2), 'visual_heuristic_score_0_100': round(visual_score, 1), 'thermal_heuristic_score_0_100': round(thermal_score, 1), 'blended_detectability_score_0_100': round(overall_score, 1), 'heuristic_confidence_0_100': round(detect_confidence, 1), 'detectability_overall': 'LOW' if overall_kind == 'success' else 'MODERATE' if overall_kind == 'warning' else 'HIGH'}
@@ -1517,7 +1531,7 @@ if submitted:
             f"- **Terrain × stealth factor**: {(terrain_penalty * stealth_drag_penalty):.3f}",
             f"- **Thermal Signature Risk**: {'Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'} (ΔT = {delta_T:.1f} °C)",
             f"- **Dispatchable endurance**: {flight_time_minutes:.1f} min",
-            f"- **Mission phase total time**: {mission_profile['total_time_min']:.1f} min across {len(mission_profile['phases'])} phases",
+            f"- **Mission phase total time**: {mission_profile.get('total_time_min', 0.0):.1f} min across {len(mission_profile.get('phases', []))} phases",
             f"- **Total distance**: {total_distance_km:.2f} km",
             f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km",
             f"- **Detectability heuristic (Visual / Thermal / Blended)**: {visual_score:.0f}/100 / {thermal_score:.0f}/100 / {overall_score:.0f}/100",
@@ -1546,7 +1560,7 @@ if submitted:
 
         st.subheader('Export Scenario Summary')
         results_summary = {'Drone Model': drone_model, 'Power System': profile['power_system'], 'Type': profile['type'], 'Flight Mode': flight_mode, 'Payload (g)': int(payload_weight_g), 'Speed (km/h)': float(flight_speed_kmh), 'Wind (km/h)': float(wind_speed_kmh), 'Gustiness (0-10)': int(gustiness), 'Altitude (m)': int(altitude_m), 'Temperature (C)': float(temperature_c), 'Air Density (kg/m^3)': round(rho, 3), 'Density Ratio (rho/rho0)': round(rho_ratio, 3), 'Wind Penalty (%)': round(wind_penalty_pct, 2), 'Dispatchable Endurance (min)': round(flight_time_minutes, 2), 'Total Distance (km)': round(total_distance_km, 2), 'Best Heading Range (km)': round(best_km, 2), 'Upwind Range (km)': round(worst_km, 2), 'Thermal Signature Risk': ('Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'),
-            'ΔT (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall'], 'Mission Phase Total Time (min)': round(mission_profile['total_time_min'], 2), 'Mission Phase Count': len(mission_profile['phases'])}
+            'ΔT (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall'], 'Mission Phase Total Time (min)': round(mission_profile.get('total_time_min', 0.0), 2), 'Mission Phase Count': len(mission_profile.get('phases', []))}
         if profile['power_system'] == 'Battery':
             results_summary['Battery Capacity (Wh)'] = round(result['battery_derated_Wh'], 2)
             results_summary['Total Draw (W)'] = round(result['total_draw_W'], 2)
