@@ -938,6 +938,7 @@ def simulate_swarm_step(swarm: List[VehicleState], dt_s: float, threat_zone_km: 
     return updated
 
 
+
 def simulate_mission_phases(
     profile: Dict[str, Any],
     payload_weight_g: int,
@@ -957,10 +958,14 @@ def simulate_mission_phases(
     """
     Fleet-wide educational mission timeline:
     climb -> cruise -> optional loiter -> descent -> optional RTB
-    Uses existing aircraft solvers for each platform class.
+
+    Reserve phases are budgeted first so cruise does not consume the
+    entire mission energy/fuel budget.
     """
 
     phases: List[MissionPhase] = []
+    warnings: List[str] = []
+
     total_mass_kg = profile["base_weight_kg"] + (payload_weight_g / 1000.0)
     weight_N = total_mass_kg * G0
 
@@ -1015,18 +1020,25 @@ def simulate_mission_phases(
             fuel_tank_l=tank_l,
         )
 
-    remaining_energy_Wh = float(battery_capacity_wh or 0.0) if profile["power_system"] == "Battery" else None
-    remaining_fuel_L = float(fuel_tank_l or 0.0) if profile["power_system"] == "ICE" else None
+    # Starting available resources
+    if profile["power_system"] == "Battery":
+        total_available = float(battery_capacity_wh if battery_capacity_wh is not None else profile.get("battery_wh", 0.0))
+    else:
+        total_available = float(fuel_tank_l if fuel_tank_l is not None else profile.get("fuel_tank_l", 0.0))
 
-    # Climb
+    # -------------------------
+    # CLIMB (committed first)
+    # -------------------------
     climb_speed_kmh = max(20.0, 0.85 * cruise_speed_kmh)
-    climb_res = get_phase_result(climb_mode, climb_speed_kmh, int(max(0, cruise_altitude_m)), remaining_energy_Wh, remaining_fuel_L)
+    climb_res = get_phase_result(climb_mode, climb_speed_kmh, int(max(0, cruise_altitude_m)), total_available if profile["power_system"] == "Battery" else None, total_available if profile["power_system"] == "ICE" else None)
+
     if profile["power_system"] == "Battery":
         climb_power_W = float(climb_res["total_draw_W"])
         climb_extra_W = weight_N * climb_rate_mps
         climb_total_W = climb_power_W + climb_extra_W
         climb_energy_Wh = climb_total_W * climb_time_min / 60.0
-        remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - climb_energy_Wh)
+        climb_energy_Wh = min(climb_energy_Wh, max(0.0, total_available))
+        total_available = max(0.0, total_available - climb_energy_Wh)
         phases.append(MissionPhase("Climb", climb_time_min, climb_total_W, climb_energy_Wh, 0.0, "Steady-state power plus climb work"))
     else:
         climb_power_W = float(climb_res["total_power_W"])
@@ -1034,92 +1046,153 @@ def simulate_mission_phases(
         climb_total_W = climb_power_W + climb_extra_W
         climb_fuel_lph = bsfc_fuel_burn_lph(climb_total_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
         climb_fuel_L = climb_fuel_lph * climb_time_min / 60.0
-        remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - climb_fuel_L)
+        climb_fuel_L = min(climb_fuel_L, max(0.0, total_available))
+        total_available = max(0.0, total_available - climb_fuel_L)
         phases.append(MissionPhase("Climb", climb_time_min, climb_total_W, 0.0, climb_fuel_L, "Steady-state power plus climb work"))
 
-    # Cruise
-    cruise_res = get_phase_result(cruise_mode, cruise_speed_kmh, int(max(0, cruise_altitude_m)), remaining_energy_Wh, remaining_fuel_L)
-    if profile["power_system"] == "Battery":
-        cruise_power_W = float(cruise_res["total_draw_W"])
-        cruise_time_min = (max(0.0, float(remaining_energy_Wh or 0.0)) / max(1.0, cruise_power_W)) * 60.0
-        cruise_energy_Wh = cruise_power_W * cruise_time_min / 60.0
-        remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - cruise_energy_Wh)
-        phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, cruise_energy_Wh, 0.0, "Steady-state cruise estimate"))
-    else:
-        cruise_power_W = float(cruise_res["total_power_W"])
-        cruise_fuel_lph = float(cruise_res["fuel_burn_L_per_hr"])
-        cruise_time_min = (max(0.0, float(remaining_fuel_L or 0.0)) / max(1e-6, cruise_fuel_lph)) * 60.0
-        cruise_fuel_L = cruise_fuel_lph * cruise_time_min / 60.0
-        remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - cruise_fuel_L)
-        phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, 0.0, cruise_fuel_L, "Steady-state cruise estimate"))
-
-    # Optional loiter
-    if loiter_minutes > 0:
-        loiter_speed_kmh = max(20.0, 0.70 * cruise_speed_kmh)
-        loiter_res = get_phase_result("Loiter", loiter_speed_kmh, int(max(0, cruise_altitude_m)), remaining_energy_Wh, remaining_fuel_L)
-        if profile["power_system"] == "Battery":
-            loiter_power_W = float(loiter_res["total_draw_W"])
-            loiter_energy_Wh = loiter_power_W * loiter_minutes / 60.0
-            loiter_minutes_eff = min(loiter_minutes, (max(0.0, float(remaining_energy_Wh or 0.0)) / max(1.0, loiter_power_W)) * 60.0 if loiter_power_W > 0 else 0.0)
-            loiter_energy_Wh = loiter_power_W * loiter_minutes_eff / 60.0
-            remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - loiter_energy_Wh)
-            phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, loiter_energy_Wh, 0.0, "Optional loiter phase"))
-        else:
-            loiter_power_W = float(loiter_res["total_power_W"])
-            loiter_fuel_lph = float(loiter_res["fuel_burn_L_per_hr"])
-            loiter_minutes_eff = min(loiter_minutes, (max(0.0, float(remaining_fuel_L or 0.0)) / max(1e-6, loiter_fuel_lph)) * 60.0 if loiter_fuel_lph > 0 else 0.0)
-            loiter_fuel_L = loiter_fuel_lph * loiter_minutes_eff / 60.0
-            remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - loiter_fuel_L)
-            phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, 0.0, loiter_fuel_L, "Optional loiter phase"))
-
-    # Descent
+    # -------------------------
+    # Reserve phases BEFORE cruise
+    # -------------------------
     descent_speed_kmh = max(20.0, 0.75 * cruise_speed_kmh)
-    descent_res = get_phase_result(descent_mode, descent_speed_kmh, int(max(0, cruise_altitude_m // 2)), remaining_energy_Wh, remaining_fuel_L)
+    descent_res = get_phase_result(descent_mode, descent_speed_kmh, int(max(0, cruise_altitude_m // 2)), total_available if profile["power_system"] == "Battery" else None, total_available if profile["power_system"] == "ICE" else None)
+
+    loiter_minutes_requested = max(0.0, float(loiter_minutes))
+    rtb_minutes_est = 20.0 if include_rtb else 0.0
+
     if profile["power_system"] == "Battery":
         descent_power_W = 0.60 * float(descent_res["total_draw_W"])
-        descent_energy_Wh = descent_power_W * descent_time_min / 60.0
-        descent_energy_Wh = min(descent_energy_Wh, max(0.0, float(remaining_energy_Wh or 0.0)))
-        remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - descent_energy_Wh)
-        phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, descent_energy_Wh, 0.0, "Reduced thrust descent approximation"))
-    else:
-        descent_power_W = 0.60 * float(descent_res["total_power_W"])
-        descent_fuel_lph = bsfc_fuel_burn_lph(descent_power_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
-        descent_fuel_L = descent_fuel_lph * descent_time_min / 60.0
-        descent_fuel_L = min(descent_fuel_L, max(0.0, float(remaining_fuel_L or 0.0)))
-        remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - descent_fuel_L)
-        phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, 0.0, descent_fuel_L, "Reduced thrust descent approximation"))
+        descent_reserve = descent_power_W * descent_time_min / 60.0
 
-    # Optional RTB (simple symmetric return estimate)
-    if include_rtb:
-        rtb_speed_kmh = cruise_speed_kmh
-        rtb_mode = "Forward Flight"
-        rtb_duration_min = max(0.0, phases[1].duration_min * 0.50) if len(phases) >= 2 else 0.0
-        rtb_res = get_phase_result(rtb_mode, rtb_speed_kmh, int(max(0, cruise_altitude_m // 2)), remaining_energy_Wh, remaining_fuel_L)
-        if profile["power_system"] == "Battery":
+        loiter_power_W = 0.0
+        loiter_reserve = 0.0
+        if loiter_minutes_requested > 0:
+            loiter_res = get_phase_result("Loiter", max(20.0, 0.70 * cruise_speed_kmh), int(max(0, cruise_altitude_m)), total_available, None)
+            loiter_power_W = float(loiter_res["total_draw_W"])
+            loiter_reserve = loiter_power_W * loiter_minutes_requested / 60.0
+
+        rtb_power_W = 0.0
+        rtb_reserve = 0.0
+        if include_rtb:
+            rtb_res = get_phase_result("Forward Flight", cruise_speed_kmh, int(max(0, cruise_altitude_m // 2)), total_available, None)
             rtb_power_W = float(rtb_res["total_draw_W"])
-            feasible_rtb_min = min(rtb_duration_min, (max(0.0, float(remaining_energy_Wh or 0.0)) / max(1.0, rtb_power_W)) * 60.0 if rtb_power_W > 0 else 0.0)
-            rtb_energy_Wh = rtb_power_W * feasible_rtb_min / 60.0
-            remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - rtb_energy_Wh)
-            phases.append(MissionPhase("RTB", feasible_rtb_min, rtb_power_W, rtb_energy_Wh, 0.0, "Return-to-base estimate"))
-        else:
-            rtb_power_W = float(rtb_res["total_power_W"])
-            rtb_fuel_lph = float(rtb_res["fuel_burn_L_per_hr"])
-            feasible_rtb_min = min(rtb_duration_min, (max(0.0, float(remaining_fuel_L or 0.0)) / max(1e-6, rtb_fuel_lph)) * 60.0 if rtb_fuel_lph > 0 else 0.0)
-            rtb_fuel_L = rtb_fuel_lph * feasible_rtb_min / 60.0
-            remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - rtb_fuel_L)
-            phases.append(MissionPhase("RTB", feasible_rtb_min, rtb_power_W, 0.0, rtb_fuel_L, "Return-to-base estimate"))
+            rtb_reserve = rtb_power_W * rtb_minutes_est / 60.0
 
-    total_time_min = sum(p.duration_min for p in phases)
-    total_energy_Wh = sum(p.energy_Wh for p in phases)
-    total_fuel_L = sum(p.fuel_L for p in phases)
+        mandatory_reserve = descent_reserve + rtb_reserve
+        if mandatory_reserve > total_available:
+            warnings.append("Insufficient energy for full descent + RTB reserve. Mission is not fully recoverable.")
+            if mandatory_reserve > 0:
+                scale = total_available / mandatory_reserve
+                descent_reserve *= scale
+                rtb_reserve *= scale
+                rtb_minutes_est *= scale
+
+        remaining_after_mandatory = max(0.0, total_available - (descent_reserve + rtb_reserve))
+
+        loiter_minutes_eff = loiter_minutes_requested
+        if loiter_reserve > remaining_after_mandatory:
+            if loiter_minutes_requested > 0:
+                loiter_minutes_eff = (remaining_after_mandatory / max(1.0, loiter_power_W)) * 60.0
+                warnings.append("Requested loiter time is not fully achievable. Loiter was reduced to fit reserve constraints.")
+                loiter_reserve = loiter_power_W * loiter_minutes_eff / 60.0
+            else:
+                loiter_reserve = 0.0
+
+        cruise_budget = max(0.0, total_available - descent_reserve - rtb_reserve - loiter_reserve)
+        cruise_res = get_phase_result(cruise_mode, cruise_speed_kmh, int(max(0, cruise_altitude_m)), cruise_budget, None)
+        cruise_power_W = float(cruise_res["total_draw_W"])
+        cruise_time_min = (cruise_budget / max(1.0, cruise_power_W)) * 60.0 if cruise_power_W > 0 else 0.0
+
+        phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, cruise_budget, 0.0, "Cruise budgeted after descent / loiter / RTB reserve"))
+
+        if loiter_minutes_eff > 0:
+            phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, loiter_reserve, 0.0, "Optional loiter phase"))
+
+        phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, descent_reserve, 0.0, "Reduced thrust descent approximation"))
+
+        if include_rtb:
+            phases.append(MissionPhase("RTB", rtb_minutes_est, rtb_power_W, rtb_reserve, 0.0, "Return-to-base reserve estimate"))
+
+        remaining_energy_Wh = max(0.0, total_available - (cruise_budget + loiter_reserve + descent_reserve + rtb_reserve))
+
+        return {
+            "phases": phases,
+            "total_time_min": sum(p.duration_min for p in phases),
+            "total_energy_Wh": sum(p.energy_Wh for p in phases),
+            "total_fuel_L": 0.0,
+            "remaining_energy_Wh": remaining_energy_Wh,
+            "remaining_fuel_L": None,
+            "warnings": warnings,
+            "mission_feasible": len([w for w in warnings if "not fully recoverable" in w]) == 0,
+        }
+
+    # ICE branch
+    descent_power_W = 0.60 * float(descent_res["total_power_W"])
+    descent_fuel_lph = bsfc_fuel_burn_lph(descent_power_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
+    descent_reserve = descent_fuel_lph * descent_time_min / 60.0
+
+    loiter_power_W = 0.0
+    loiter_reserve = 0.0
+    if loiter_minutes_requested > 0:
+        loiter_res = get_phase_result("Loiter", max(20.0, 0.70 * cruise_speed_kmh), int(max(0, cruise_altitude_m)), None, total_available)
+        loiter_power_W = float(loiter_res["total_power_W"])
+        loiter_fuel_lph = float(loiter_res["fuel_burn_L_per_hr"])
+        loiter_reserve = loiter_fuel_lph * loiter_minutes_requested / 60.0
+
+    rtb_power_W = 0.0
+    rtb_reserve = 0.0
+    if include_rtb:
+        rtb_res = get_phase_result("Forward Flight", cruise_speed_kmh, int(max(0, cruise_altitude_m // 2)), None, total_available)
+        rtb_power_W = float(rtb_res["total_power_W"])
+        rtb_fuel_lph = float(rtb_res["fuel_burn_L_per_hr"])
+        rtb_reserve = rtb_fuel_lph * rtb_minutes_est / 60.0
+
+    mandatory_reserve = descent_reserve + rtb_reserve
+    if mandatory_reserve > total_available:
+        warnings.append("Insufficient fuel for full descent + RTB reserve. Mission is not fully recoverable.")
+        if mandatory_reserve > 0:
+            scale = total_available / mandatory_reserve
+            descent_reserve *= scale
+            rtb_reserve *= scale
+            rtb_minutes_est *= scale
+
+    remaining_after_mandatory = max(0.0, total_available - (descent_reserve + rtb_reserve))
+
+    loiter_minutes_eff = loiter_minutes_requested
+    if loiter_reserve > remaining_after_mandatory:
+        if loiter_minutes_requested > 0:
+            loiter_minutes_eff = (remaining_after_mandatory / max(1e-6, loiter_fuel_lph)) * 60.0 if loiter_power_W > 0 else 0.0
+            warnings.append("Requested loiter time is not fully achievable. Loiter was reduced to fit reserve constraints.")
+            loiter_reserve = loiter_fuel_lph * loiter_minutes_eff / 60.0
+        else:
+            loiter_reserve = 0.0
+
+    cruise_budget = max(0.0, total_available - descent_reserve - rtb_reserve - loiter_reserve)
+    cruise_res = get_phase_result(cruise_mode, cruise_speed_kmh, int(max(0, cruise_altitude_m)), None, cruise_budget)
+    cruise_power_W = float(cruise_res["total_power_W"])
+    cruise_fuel_lph = float(cruise_res["fuel_burn_L_per_hr"])
+    cruise_time_min = (cruise_budget / max(1e-6, cruise_fuel_lph)) * 60.0 if cruise_fuel_lph > 0 else 0.0
+
+    phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, 0.0, cruise_budget, "Cruise budgeted after descent / loiter / RTB reserve"))
+
+    if loiter_minutes_eff > 0:
+        phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, 0.0, loiter_reserve, "Optional loiter phase"))
+
+    phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, 0.0, descent_reserve, "Reduced thrust descent approximation"))
+
+    if include_rtb:
+        phases.append(MissionPhase("RTB", rtb_minutes_est, rtb_power_W, 0.0, rtb_reserve, "Return-to-base reserve estimate"))
+
+    remaining_fuel_L = max(0.0, total_available - (cruise_budget + loiter_reserve + descent_reserve + rtb_reserve))
 
     return {
         "phases": phases,
-        "total_time_min": total_time_min,
-        "total_energy_Wh": total_energy_Wh,
-        "total_fuel_L": total_fuel_L,
-        "remaining_energy_Wh": remaining_energy_Wh if profile["power_system"] == "Battery" else None,
-        "remaining_fuel_L": remaining_fuel_L if profile["power_system"] == "ICE" else None,
+        "total_time_min": sum(p.duration_min for p in phases),
+        "total_energy_Wh": 0.0,
+        "total_fuel_L": sum(p.fuel_L for p in phases),
+        "remaining_energy_Wh": None,
+        "remaining_fuel_L": remaining_fuel_L,
+        "warnings": warnings,
+        "mission_feasible": len([w for w in warnings if "not fully recoverable" in w]) == 0,
     }
 
 
@@ -1129,6 +1202,14 @@ def render_mission_phase_panel(mission_profile: Dict[str, Any], power_system: st
         "<div class='section-note'>Climb, cruise, loiter, descent, and optional return-to-base timeline.</div></div>",
         unsafe_allow_html=True,
     )
+
+    if mission_profile.get('mission_feasible', True):
+        st.success('Mission reserve check: PASS')
+    else:
+        st.error('Mission reserve check: FAIL')
+
+    for warning in mission_profile.get('warnings', []):
+        st.warning(warning)
 
     rows = []
     for p in mission_profile["phases"]:
