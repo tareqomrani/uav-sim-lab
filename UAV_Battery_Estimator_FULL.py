@@ -28,6 +28,50 @@ st.caption('Production build — first-order aerospace performance modeling, swa
 
 st.markdown("""
 <style>
+.mission-hero {
+  background: linear-gradient(135deg, rgba(17,24,39,0.96), rgba(11,18,32,0.96));
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px 18px;
+  margin: 10px 0 14px 0;
+  box-shadow: 0 14px 34px rgba(0,0,0,0.18);
+}
+.mission-hero-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.mission-kicker {
+  color: var(--accent-2);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+}
+.mission-label {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.mission-value {
+  color: var(--text);
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+@media (max-width: 900px) {
+  .mission-hero-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
 :root {
   --bg: #0b1220;
   --panel: #121a2b;
@@ -190,6 +234,37 @@ def render_status_strip(platform_type: str, power_system: str, theme_name: str, 
         </div>
     </div>
     """
+
+def render_mission_hero(endurance_min: float, total_distance_km: float, best_range_km: float, detectability_label: str, detectability_color: str, power_system: str):
+    return f"""
+    <div class='mission-hero'>
+        <div class='mission-kicker'>Mission Summary</div>
+        <div class='mission-hero-grid'>
+            <div>
+                <div class='mission-label'>Endurance</div>
+                <div class='mission-value'>{endurance_min:.1f} min</div>
+            </div>
+            <div>
+                <div class='mission-label'>Total Distance</div>
+                <div class='mission-value'>{total_distance_km:.1f} km</div>
+            </div>
+            <div>
+                <div class='mission-label'>Best Heading Range</div>
+                <div class='mission-value'>{best_range_km:.1f} km</div>
+            </div>
+            <div>
+                <div class='mission-label'>Detectability</div>
+                <div class='mission-value' style='color:{detectability_color};'>{detectability_label}</div>
+            </div>
+            <div>
+                <div class='mission-label'>Power System</div>
+                <div class='mission-value'>{power_system}</div>
+            </div>
+        </div>
+    </div>
+    """
+
+
 st.info(
     'This tool uses first-order physics and bounded heuristics. '
     'It is not a validated flight-performance or EO/IR sensor model.'
@@ -657,6 +732,17 @@ class VehicleState:
     inside_threat_zone: bool = False
     valid_trim: bool = True
 
+
+@dataclass
+class MissionPhase:
+    name: str
+    duration_min: float
+    power_W: float = 0.0
+    energy_Wh: float = 0.0
+    fuel_L: float = 0.0
+    notes: str = ""
+
+
 def summarize_vehicle_state(s: VehicleState) -> Dict[str, Any]:
     return {'id': s.id, 'role': s.role, 'platform': s.platform, 'power_system': s.power_system, 'x_km': round(s.x_km, 3), 'y_km': round(s.y_km, 3), 'altitude_m': s.altitude_m, 'speed_kmh': round(s.speed_kmh, 2), 'endurance_min': round(s.endurance_min, 2), 'battery_wh': round(s.battery_wh, 2), 'fuel_l': round(s.fuel_l, 3), 'draw_W': round(s.draw_W, 2), 'fuel_burn_lph': round(s.fuel_burn_lph, 3), 'delta_T': round(s.delta_T, 2), 'current_wp': s.current_wp, 'inside_threat_zone': s.inside_threat_zone, 'status_note': s.status_note, 'valid_trim': s.valid_trim}
 
@@ -851,6 +937,226 @@ def simulate_swarm_step(swarm: List[VehicleState], dt_s: float, threat_zone_km: 
         updated.append(s)
     return updated
 
+
+def simulate_mission_phases(
+    profile: Dict[str, Any],
+    payload_weight_g: int,
+    cruise_speed_kmh: float,
+    wind_speed_kmh: float,
+    temperature_c: float,
+    cruise_altitude_m: int,
+    elevation_gain_m: int,
+    gustiness: int,
+    terrain_penalty: float,
+    stealth_drag_penalty: float,
+    battery_capacity_wh: Optional[float] = None,
+    fuel_tank_l: Optional[float] = None,
+    loiter_minutes: float = 0.0,
+    include_rtb: bool = False,
+) -> Dict[str, Any]:
+    """
+    Fleet-wide educational mission timeline:
+    climb -> cruise -> optional loiter -> descent -> optional RTB
+    Uses existing aircraft solvers for each platform class.
+    """
+
+    phases: List[MissionPhase] = []
+    total_mass_kg = profile["base_weight_kg"] + (payload_weight_g / 1000.0)
+    weight_N = total_mass_kg * G0
+
+    if profile["type"] == "rotor":
+        climb_rate_mps = 2.0
+        descent_rate_mps = 2.0
+        climb_mode = "Hover"
+        cruise_mode = "Forward Flight"
+        descent_mode = "Forward Flight"
+    else:
+        climb_rate_mps = 3.0
+        descent_rate_mps = 2.5
+        climb_mode = "Forward Flight"
+        cruise_mode = "Forward Flight"
+        descent_mode = "Loiter"
+
+    climb_altitude_m = max(0.0, float(cruise_altitude_m + max(0.0, elevation_gain_m)))
+    descent_altitude_m = climb_altitude_m
+    climb_time_min = 0.0 if climb_altitude_m <= 0 else climb_altitude_m / max(0.1, climb_rate_mps) / 60.0
+    descent_time_min = 0.0 if descent_altitude_m <= 0 else descent_altitude_m / max(0.1, descent_rate_mps) / 60.0
+
+    def get_phase_result(flight_mode: str, speed_kmh: float, altitude_m: int, energy_wh: Optional[float], fuel_l: Optional[float]):
+        if profile["power_system"] == "Battery":
+            batt_wh = float(energy_wh if energy_wh is not None else battery_capacity_wh or profile.get("battery_wh", 0.0))
+            return simulate_battery_aircraft(
+                profile=profile,
+                payload_weight_g=payload_weight_g,
+                flight_speed_kmh=speed_kmh,
+                wind_speed_kmh=wind_speed_kmh,
+                temperature_c=temperature_c,
+                altitude_m=altitude_m,
+                elevation_gain_m=0,
+                flight_mode=flight_mode,
+                gustiness=gustiness,
+                terrain_penalty=terrain_penalty,
+                stealth_drag_penalty=stealth_drag_penalty,
+                battery_capacity_wh=batt_wh,
+            )
+        tank_l = float(fuel_l if fuel_l is not None else fuel_tank_l or profile.get("fuel_tank_l", 0.0))
+        return simulate_ice_aircraft(
+            profile=profile,
+            payload_weight_g=payload_weight_g,
+            flight_speed_kmh=speed_kmh,
+            wind_speed_kmh=wind_speed_kmh,
+            temperature_c=temperature_c,
+            altitude_m=altitude_m,
+            elevation_gain_m=0,
+            flight_mode=flight_mode,
+            gustiness=gustiness,
+            terrain_penalty=terrain_penalty,
+            stealth_drag_penalty=stealth_drag_penalty,
+            fuel_tank_l=tank_l,
+        )
+
+    remaining_energy_Wh = float(battery_capacity_wh or 0.0) if profile["power_system"] == "Battery" else None
+    remaining_fuel_L = float(fuel_tank_l or 0.0) if profile["power_system"] == "ICE" else None
+
+    # Climb
+    climb_speed_kmh = max(20.0, 0.85 * cruise_speed_kmh)
+    climb_res = get_phase_result(climb_mode, climb_speed_kmh, int(max(0, cruise_altitude_m)), remaining_energy_Wh, remaining_fuel_L)
+    if profile["power_system"] == "Battery":
+        climb_power_W = float(climb_res["total_draw_W"])
+        climb_extra_W = weight_N * climb_rate_mps
+        climb_total_W = climb_power_W + climb_extra_W
+        climb_energy_Wh = climb_total_W * climb_time_min / 60.0
+        remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - climb_energy_Wh)
+        phases.append(MissionPhase("Climb", climb_time_min, climb_total_W, climb_energy_Wh, 0.0, "Steady-state power plus climb work"))
+    else:
+        climb_power_W = float(climb_res["total_power_W"])
+        climb_extra_W = weight_N * climb_rate_mps
+        climb_total_W = climb_power_W + climb_extra_W
+        climb_fuel_lph = bsfc_fuel_burn_lph(climb_total_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
+        climb_fuel_L = climb_fuel_lph * climb_time_min / 60.0
+        remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - climb_fuel_L)
+        phases.append(MissionPhase("Climb", climb_time_min, climb_total_W, 0.0, climb_fuel_L, "Steady-state power plus climb work"))
+
+    # Cruise
+    cruise_res = get_phase_result(cruise_mode, cruise_speed_kmh, int(max(0, cruise_altitude_m)), remaining_energy_Wh, remaining_fuel_L)
+    if profile["power_system"] == "Battery":
+        cruise_power_W = float(cruise_res["total_draw_W"])
+        cruise_time_min = (max(0.0, float(remaining_energy_Wh or 0.0)) / max(1.0, cruise_power_W)) * 60.0
+        cruise_energy_Wh = cruise_power_W * cruise_time_min / 60.0
+        remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - cruise_energy_Wh)
+        phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, cruise_energy_Wh, 0.0, "Steady-state cruise estimate"))
+    else:
+        cruise_power_W = float(cruise_res["total_power_W"])
+        cruise_fuel_lph = float(cruise_res["fuel_burn_L_per_hr"])
+        cruise_time_min = (max(0.0, float(remaining_fuel_L or 0.0)) / max(1e-6, cruise_fuel_lph)) * 60.0
+        cruise_fuel_L = cruise_fuel_lph * cruise_time_min / 60.0
+        remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - cruise_fuel_L)
+        phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, 0.0, cruise_fuel_L, "Steady-state cruise estimate"))
+
+    # Optional loiter
+    if loiter_minutes > 0:
+        loiter_speed_kmh = max(20.0, 0.70 * cruise_speed_kmh)
+        loiter_res = get_phase_result("Loiter", loiter_speed_kmh, int(max(0, cruise_altitude_m)), remaining_energy_Wh, remaining_fuel_L)
+        if profile["power_system"] == "Battery":
+            loiter_power_W = float(loiter_res["total_draw_W"])
+            loiter_energy_Wh = loiter_power_W * loiter_minutes / 60.0
+            loiter_minutes_eff = min(loiter_minutes, (max(0.0, float(remaining_energy_Wh or 0.0)) / max(1.0, loiter_power_W)) * 60.0 if loiter_power_W > 0 else 0.0)
+            loiter_energy_Wh = loiter_power_W * loiter_minutes_eff / 60.0
+            remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - loiter_energy_Wh)
+            phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, loiter_energy_Wh, 0.0, "Optional loiter phase"))
+        else:
+            loiter_power_W = float(loiter_res["total_power_W"])
+            loiter_fuel_lph = float(loiter_res["fuel_burn_L_per_hr"])
+            loiter_minutes_eff = min(loiter_minutes, (max(0.0, float(remaining_fuel_L or 0.0)) / max(1e-6, loiter_fuel_lph)) * 60.0 if loiter_fuel_lph > 0 else 0.0)
+            loiter_fuel_L = loiter_fuel_lph * loiter_minutes_eff / 60.0
+            remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - loiter_fuel_L)
+            phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, 0.0, loiter_fuel_L, "Optional loiter phase"))
+
+    # Descent
+    descent_speed_kmh = max(20.0, 0.75 * cruise_speed_kmh)
+    descent_res = get_phase_result(descent_mode, descent_speed_kmh, int(max(0, cruise_altitude_m // 2)), remaining_energy_Wh, remaining_fuel_L)
+    if profile["power_system"] == "Battery":
+        descent_power_W = 0.60 * float(descent_res["total_draw_W"])
+        descent_energy_Wh = descent_power_W * descent_time_min / 60.0
+        descent_energy_Wh = min(descent_energy_Wh, max(0.0, float(remaining_energy_Wh or 0.0)))
+        remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - descent_energy_Wh)
+        phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, descent_energy_Wh, 0.0, "Reduced thrust descent approximation"))
+    else:
+        descent_power_W = 0.60 * float(descent_res["total_power_W"])
+        descent_fuel_lph = bsfc_fuel_burn_lph(descent_power_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
+        descent_fuel_L = descent_fuel_lph * descent_time_min / 60.0
+        descent_fuel_L = min(descent_fuel_L, max(0.0, float(remaining_fuel_L or 0.0)))
+        remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - descent_fuel_L)
+        phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, 0.0, descent_fuel_L, "Reduced thrust descent approximation"))
+
+    # Optional RTB (simple symmetric return estimate)
+    if include_rtb:
+        rtb_speed_kmh = cruise_speed_kmh
+        rtb_mode = "Forward Flight"
+        rtb_duration_min = max(0.0, phases[1].duration_min * 0.50) if len(phases) >= 2 else 0.0
+        rtb_res = get_phase_result(rtb_mode, rtb_speed_kmh, int(max(0, cruise_altitude_m // 2)), remaining_energy_Wh, remaining_fuel_L)
+        if profile["power_system"] == "Battery":
+            rtb_power_W = float(rtb_res["total_draw_W"])
+            feasible_rtb_min = min(rtb_duration_min, (max(0.0, float(remaining_energy_Wh or 0.0)) / max(1.0, rtb_power_W)) * 60.0 if rtb_power_W > 0 else 0.0)
+            rtb_energy_Wh = rtb_power_W * feasible_rtb_min / 60.0
+            remaining_energy_Wh = max(0.0, float(remaining_energy_Wh or 0.0) - rtb_energy_Wh)
+            phases.append(MissionPhase("RTB", feasible_rtb_min, rtb_power_W, rtb_energy_Wh, 0.0, "Return-to-base estimate"))
+        else:
+            rtb_power_W = float(rtb_res["total_power_W"])
+            rtb_fuel_lph = float(rtb_res["fuel_burn_L_per_hr"])
+            feasible_rtb_min = min(rtb_duration_min, (max(0.0, float(remaining_fuel_L or 0.0)) / max(1e-6, rtb_fuel_lph)) * 60.0 if rtb_fuel_lph > 0 else 0.0)
+            rtb_fuel_L = rtb_fuel_lph * feasible_rtb_min / 60.0
+            remaining_fuel_L = max(0.0, float(remaining_fuel_L or 0.0) - rtb_fuel_L)
+            phases.append(MissionPhase("RTB", feasible_rtb_min, rtb_power_W, 0.0, rtb_fuel_L, "Return-to-base estimate"))
+
+    total_time_min = sum(p.duration_min for p in phases)
+    total_energy_Wh = sum(p.energy_Wh for p in phases)
+    total_fuel_L = sum(p.fuel_L for p in phases)
+
+    return {
+        "phases": phases,
+        "total_time_min": total_time_min,
+        "total_energy_Wh": total_energy_Wh,
+        "total_fuel_L": total_fuel_L,
+        "remaining_energy_Wh": remaining_energy_Wh if profile["power_system"] == "Battery" else None,
+        "remaining_fuel_L": remaining_fuel_L if profile["power_system"] == "ICE" else None,
+    }
+
+
+def render_mission_phase_panel(mission_profile: Dict[str, Any], power_system: str):
+    st.markdown(
+        "<div class='section-card'><div class='section-title'>Mission Phase Simulation</div>"
+        "<div class='section-note'>Climb, cruise, loiter, descent, and optional return-to-base timeline.</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    rows = []
+    for p in mission_profile["phases"]:
+        row = {
+            "Phase": p.name,
+            "Time (min)": round(p.duration_min, 2),
+            "Power (W)": round(p.power_W, 1),
+            "Notes": p.notes,
+        }
+        if power_system == "Battery":
+            row["Energy (Wh)"] = round(p.energy_Wh, 2)
+        else:
+            row["Fuel (L)"] = round(p.fuel_L, 3)
+        rows.append(row)
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Total Mission Time", f"{mission_profile['total_time_min']:.1f} min")
+    with c2:
+        if power_system == "Battery":
+            st.metric("Total Mission Energy", f"{mission_profile['total_energy_Wh']:.1f} Wh")
+        else:
+            st.metric("Total Mission Fuel", f"{mission_profile['total_fuel_L']:.2f} L")
+    with c3:
+        st.metric("Phase Count", f"{len(mission_profile['phases'])}")
+
 def plot_swarm_map(swarm: List[VehicleState], threat_zone_km: float, show_threat_zone: bool, waypoints: Optional[List[tuple]] = None):
     fig, ax = make_themed_figure(figsize=(5, 5))
 
@@ -969,6 +1275,8 @@ with st.form('uav_form'):
         effective_size_m = st.slider('Effective Visual Size (m)', 0.2, 20.0, min(20.0, effective_size_default))
         background_complexity = st.slider('Background Complexity', 0.0, 1.0, 0.5)
         humidity_factor = st.slider('Humidity / Haze Factor', 0.0, 1.0, 0.5)
+        loiter_minutes = st.slider('Loiter Duration (min)', 0, 60, 0)
+        include_rtb = st.checkbox('Include RTB Phase', value=False)
         fuel_tank_l = None
         if profile['power_system'] == 'ICE':
             st.markdown('### ICE Configuration')
@@ -991,6 +1299,17 @@ if submitted:
         if payload_weight_g > profile['max_payload_g']:
             st.error('Payload exceeds lift capacity.')
             st.stop()
+
+        detail.update({
+            'phase_total_time_min': round(mission_profile['total_time_min'], 2),
+            'phase_count': len(mission_profile['phases']),
+        })
+        if profile['power_system'] == 'Battery':
+            detail['phase_total_energy_Wh'] = round(mission_profile['total_energy_Wh'], 2)
+            detail['phase_remaining_energy_Wh'] = round(float(mission_profile.get('remaining_energy_Wh') or 0.0), 2)
+        else:
+            detail['phase_total_fuel_L'] = round(mission_profile['total_fuel_L'], 3)
+            detail['phase_remaining_fuel_L'] = round(float(mission_profile.get('remaining_fuel_L') or 0.0), 3)
 
         if profile['power_system'] == 'Battery':
             battery_capacity_wh = clamp_battery(profile, battery_capacity_wh, allow_pack_override)
@@ -1073,6 +1392,19 @@ if submitted:
             unsafe_allow_html=True,
         )
 
+        detectability_color = '#22c55e' if overall_score < 33 else '#f59e0b' if overall_score < 67 else '#ef4444'
+        st.markdown(
+            render_mission_hero(
+                endurance_min=flight_time_minutes,
+                total_distance_km=total_distance_km,
+                best_range_km=best_km,
+                detectability_label=('LOW' if overall_score < 33 else 'MODERATE' if overall_score < 67 else 'HIGH'),
+                detectability_color=detectability_color,
+                power_system=profile['power_system'],
+            ),
+            unsafe_allow_html=True,
+        )
+
         if profile['type'] == 'fixed' and not result.get('stall_margin_ok', True):
             st.error('Selected speed / weight / altitude combination exceeds configured CL_max. Result is outside valid fixed-wing trim assumptions.')
 
@@ -1142,6 +1474,24 @@ if submitted:
         with m4:
             st.metric('Upwind Range', f'{worst_km:.1f} km')
         st.caption(f'Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)')
+        mission_profile = simulate_mission_phases(
+            profile=profile,
+            payload_weight_g=payload_weight_g,
+            cruise_speed_kmh=flight_speed_kmh,
+            wind_speed_kmh=wind_speed_kmh,
+            temperature_c=temperature_c,
+            cruise_altitude_m=altitude_m,
+            elevation_gain_m=elevation_gain_m,
+            gustiness=gustiness,
+            terrain_penalty=terrain_penalty,
+            stealth_drag_penalty=stealth_drag_penalty,
+            battery_capacity_wh=(result.get('battery_derated_Wh') if profile['power_system'] == 'Battery' else None),
+            fuel_tank_l=(result.get('usable_fuel_L') if profile['power_system'] == 'ICE' else None),
+            loiter_minutes=float(loiter_minutes),
+            include_rtb=include_rtb,
+        )
+        render_mission_phase_panel(mission_profile, profile['power_system'])
+
 
         detail = {'drone_model': drone_model, 'type': profile['type'], 'power_system': profile['power_system'], 'payload_g': payload_weight_g, 'total_mass_kg': round(total_weight_kg, 3), 'weight_N': round(weight_N, 2), 'flight_speed_kmh': round(flight_speed_kmh, 2), 'effective_speed_ms': round(result.get('V_effective_ms', V_ms), 3), 'wind_speed_kmh': round(wind_speed_kmh, 2), 'wind_speed_ms': round(W_ms, 3), 'altitude_m': altitude_m, 'temperature_C': temperature_c, 'flight_mode': flight_mode, 'rho': round(rho, 4), 'rho_ratio': round(rho_ratio, 4), 'gustiness': gustiness, 'terrain_factor': round(terrain_penalty, 3), 'stealth_drag_factor': round(stealth_drag_penalty, 3), 'wind_penalty_pct': round(wind_penalty_pct, 2), 'thermal_load_deltaT_estimate_C': round(delta_T, 2), 'dispatch_endurance_min': round(flight_time_minutes, 2), 'total_distance_km': round(total_distance_km, 2), 'best_heading_range_km': round(best_km, 2), 'upwind_range_km': round(worst_km, 2), 'visual_heuristic_score_0_100': round(visual_score, 1), 'thermal_heuristic_score_0_100': round(thermal_score, 1), 'blended_detectability_score_0_100': round(overall_score, 1), 'heuristic_confidence_0_100': round(detect_confidence, 1), 'detectability_overall': 'LOW' if overall_kind == 'success' else 'MODERATE' if overall_kind == 'warning' else 'HIGH'}
 
@@ -1167,6 +1517,7 @@ if submitted:
             f"- **Terrain × stealth factor**: {(terrain_penalty * stealth_drag_penalty):.3f}",
             f"- **Thermal Signature Risk**: {'Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'} (ΔT = {delta_T:.1f} °C)",
             f"- **Dispatchable endurance**: {flight_time_minutes:.1f} min",
+            f"- **Mission phase total time**: {mission_profile['total_time_min']:.1f} min across {len(mission_profile['phases'])} phases",
             f"- **Total distance**: {total_distance_km:.2f} km",
             f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km",
             f"- **Detectability heuristic (Visual / Thermal / Blended)**: {visual_score:.0f}/100 / {thermal_score:.0f}/100 / {overall_score:.0f}/100",
@@ -1195,7 +1546,7 @@ if submitted:
 
         st.subheader('Export Scenario Summary')
         results_summary = {'Drone Model': drone_model, 'Power System': profile['power_system'], 'Type': profile['type'], 'Flight Mode': flight_mode, 'Payload (g)': int(payload_weight_g), 'Speed (km/h)': float(flight_speed_kmh), 'Wind (km/h)': float(wind_speed_kmh), 'Gustiness (0-10)': int(gustiness), 'Altitude (m)': int(altitude_m), 'Temperature (C)': float(temperature_c), 'Air Density (kg/m^3)': round(rho, 3), 'Density Ratio (rho/rho0)': round(rho_ratio, 3), 'Wind Penalty (%)': round(wind_penalty_pct, 2), 'Dispatchable Endurance (min)': round(flight_time_minutes, 2), 'Total Distance (km)': round(total_distance_km, 2), 'Best Heading Range (km)': round(best_km, 2), 'Upwind Range (km)': round(worst_km, 2), 'Thermal Signature Risk': ('Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'),
-            'ΔT (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall']}
+            'ΔT (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall'], 'Mission Phase Total Time (min)': round(mission_profile['total_time_min'], 2), 'Mission Phase Count': len(mission_profile['phases'])}
         if profile['power_system'] == 'Battery':
             results_summary['Battery Capacity (Wh)'] = round(result['battery_derated_Wh'], 2)
             results_summary['Total Draw (W)'] = round(result['total_draw_W'], 2)
