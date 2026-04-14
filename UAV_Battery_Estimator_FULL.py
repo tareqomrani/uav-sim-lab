@@ -211,6 +211,10 @@ HOTEL_W_DEFAULT = 15.0
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
+
+def clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
 def numeric_input(label: str, default: float) -> float:
     val_str = st.text_input(label, value=str(default))
     if val_str.strip() == '':
@@ -359,36 +363,96 @@ def _risk_bucket(score: float) -> Tuple[str, str, str]:
 def _badge(label: str, score: float, bg: str) -> str:
     return f"<span style='display:inline-block;padding:6px 10px;margin-right:8px;border-radius:8px;background:{bg};color:#fff;font-weight:600;font-size:13px;white-space:nowrap;'>{label}: {score:.0f}/100</span>"
 
-def compute_detectability_scores_v2(delta_T: float, altitude_m: float, speed_kmh: float, cloud_cover: int, gustiness: int, stealth_factor: float, drone_type: str, power_system: str, effective_size_m: float, background_complexity: float, humidity_factor: float = 0.5) -> dict:
-    size_term = min(1.0, effective_size_m / 3.0)
-    range_term = 1.0 - min(0.80, altitude_m / 1200.0)
-    speed_term = min(1.0, speed_kmh / 80.0)
-    motion_term = 0.20 if drone_type == 'rotor' else 0.08
-    clutter_term = 1.0 - 0.35 * max(0.0, min(1.0, background_complexity))
-    cloud_term = 1.0 - 0.20 * (cloud_cover / 100.0)
-    stealth_term = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.18)
-    visual_raw = 0.38 * size_term + 0.30 * range_term + 0.16 * speed_term + 0.10 * motion_term
-    visual_score = 100.0 * clamp(visual_raw * clutter_term * cloud_term * stealth_term, 0.0, 1.0)
+def compute_detectability_scores_v3(
+    delta_T: float,
+    altitude_m: float,
+    speed_kmh: float,
+    cloud_cover: int,
+    gustiness: int,
+    stealth_factor: float,
+    drone_type: str,
+    power_system: str,
+    effective_size_m: float,
+    background_complexity: float,
+    humidity_factor: float = 0.5,
+) -> dict:
+    """
+    Heuristic mission-awareness model only.
+    Not a validated EO/IR sensor model.
+    """
 
-    thermal_contrast = clamp(delta_T / 25.0, 0.0, 1.0)
-    exposed_area_term = min(1.0, effective_size_m / 2.5)
-    atm_term = 1.0 - 0.22 * (cloud_cover / 100.0) - 0.18 * max(0.0, min(1.0, humidity_factor))
-    atm_term = max(0.45, atm_term)
-    altitude_term = 1.0 - min(0.50, altitude_m / 2000.0)
-    propulsion_bias = 0.12 if power_system == 'ICE' else 0.03
-    gust_term = 1.0 - 0.04 * (gustiness / 10.0)
-    thermal_raw = 0.58 * thermal_contrast + 0.18 * exposed_area_term + propulsion_bias
-    thermal_score = 100.0 * clamp(thermal_raw * atm_term * altitude_term * gust_term * stealth_term, 0.0, 1.0)
+    size_term = clamp01(effective_size_m / 3.0)
+    altitude_term = 1.0 - min(0.80, altitude_m / 1200.0)
+    speed_term = clamp01(speed_kmh / 90.0)
+    motion_bonus = 0.18 if drone_type == "rotor" else 0.08
 
-    confidence = 1.0 - (0.20 * (cloud_cover / 100.0) + 0.18 * max(0.0, min(1.0, background_complexity)) + 0.10 * (gustiness / 10.0))
-    confidence = clamp(confidence, 0.45, 0.95)
-    if power_system == 'ICE':
-        blended = 0.40 * visual_score + 0.60 * thermal_score
-    elif drone_type == 'rotor':
-        blended = 0.55 * visual_score + 0.45 * thermal_score
+    clutter_reduction = 1.0 - 0.35 * clamp01(background_complexity)
+    cloud_reduction = 1.0 - 0.18 * (cloud_cover / 100.0)
+    humidity_reduction = 1.0 - 0.10 * clamp01(humidity_factor)
+    stealth_reduction = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.18)
+
+    visual_raw = (
+        0.36 * size_term +
+        0.30 * altitude_term +
+        0.16 * speed_term +
+        0.10 * motion_bonus
+    )
+
+    visual_score = 100.0 * clamp01(
+        visual_raw *
+        clutter_reduction *
+        cloud_reduction *
+        humidity_reduction *
+        stealth_reduction
+    )
+
+    thermal_contrast = clamp01(delta_T / 25.0)
+    exposed_size = clamp01(effective_size_m / 2.5)
+
+    altitude_reduction = 1.0 - min(0.50, altitude_m / 2000.0)
+    cloud_ir_reduction = 1.0 - 0.22 * (cloud_cover / 100.0)
+    humidity_ir_reduction = 1.0 - 0.18 * clamp01(humidity_factor)
+    atmosphere_factor = max(0.45, cloud_ir_reduction * humidity_ir_reduction)
+
+    propulsion_bias = 0.12 if power_system == "ICE" else 0.03
+    thermal_speed_term = 0.06 * clamp01(speed_kmh / 120.0)
+    gust_uncertainty = 1.0 - 0.04 * (gustiness / 10.0)
+
+    thermal_raw = (
+        0.56 * thermal_contrast +
+        0.18 * exposed_size +
+        propulsion_bias +
+        thermal_speed_term
+    )
+
+    thermal_score = 100.0 * clamp01(
+        thermal_raw *
+        altitude_reduction *
+        atmosphere_factor *
+        gust_uncertainty *
+        stealth_reduction
+    )
+
+    confidence = 1.0 - (
+        0.20 * (cloud_cover / 100.0) +
+        0.18 * clamp01(background_complexity) +
+        0.10 * (gustiness / 10.0)
+    )
+    confidence = max(0.45, min(0.95, confidence))
+
+    if power_system == "ICE":
+        overall = 0.40 * visual_score + 0.60 * thermal_score
+    elif drone_type == "rotor":
+        overall = 0.55 * visual_score + 0.45 * thermal_score
     else:
-        blended = 0.50 * visual_score + 0.50 * thermal_score
-    return {'visual_score': round(visual_score, 1), 'thermal_score': round(thermal_score, 1), 'overall_score': round(blended, 1), 'confidence': round(confidence * 100.0, 1)}
+        overall = 0.50 * visual_score + 0.50 * thermal_score
+
+    return {
+        'visual_score': round(visual_score, 1),
+        'thermal_score': round(thermal_score, 1),
+        'overall_score': round(overall, 1),
+        'confidence': round(confidence * 100.0, 1),
+    }
 
 def render_detectability_alert(visual_score: float, thermal_score: float) -> Tuple[str, str]:
     visual_label, _, visual_bg = _risk_bucket(visual_score)
@@ -950,7 +1014,7 @@ if submitted:
         else:
             st.markdown(f"**Fixed-Wing Air Density Effect:** applied through dynamic pressure and required lift.  \nCurrent density ratio ρ/ρ₀ = `{rho_ratio:.3f}`")
 
-        detect = compute_detectability_scores_v2(delta_T, altitude_m, flight_speed_kmh, cloud_cover, gustiness, stealth_drag_penalty, profile['type'], profile['power_system'], effective_size_m, background_complexity, humidity_factor)
+        detect = compute_detectability_scores_v3(delta_T, altitude_m, flight_speed_kmh, cloud_cover, gustiness, stealth_drag_penalty, profile['type'], profile['power_system'], effective_size_m, background_complexity, humidity_factor)
         visual_score = detect['visual_score']
         thermal_score = detect['thermal_score']
         overall_score = detect['overall_score']
@@ -960,25 +1024,29 @@ if submitted:
         if show_detectability:
             st.subheader('AI/IR Detectability Alert')
             st.caption('AI visual and IR thermal detectability scores are heuristic mission-awareness estimates.')
-            if overall_kind == 'success':
+            if overall_score < 33:
                 st.success('Overall detectability: LOW')
-            elif overall_kind == 'warning':
+            elif overall_score < 67:
                 st.warning('Overall detectability: MODERATE')
             else:
                 st.error('Overall detectability: HIGH')
             st.markdown(badges_html, unsafe_allow_html=True)
-            d1, d2 = st.columns(2)
+            d1, d2, d3, d4 = st.columns(4)
             with d1:
-                st.metric('Blended Heuristic Score', f'{overall_score:.0f}/100')
+                st.metric('Visual Detectability', f'{visual_score:.0f}/100')
             with d2:
+                st.metric('IR Thermal Detectability', f'{thermal_score:.0f}/100')
+            with d3:
+                st.metric('Overall Detectability', f'{overall_score:.0f}/100')
+            with d4:
                 st.metric('Heuristic Confidence', f'{detect_confidence:.0f}/100')
 
         caution_label = 'Nominal Conditions'
         caution_class = 'status-ok'
-        if overall_kind == 'warning' or wind_penalty_pct >= 10 or gustiness >= 5:
+        if overall_score >= 33 or wind_penalty_pct >= 10 or gustiness >= 5:
             caution_label = 'Elevated Risk'
             caution_class = 'status-warn'
-        if overall_kind == 'error' or (profile['type'] == 'fixed' and not result.get('stall_margin_ok', True)):
+        if overall_score >= 67 or (profile['type'] == 'fixed' and not result.get('stall_margin_ok', True)):
             caution_label = 'High Risk'
             caution_class = 'status-danger'
 
