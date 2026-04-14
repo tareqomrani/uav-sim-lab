@@ -289,12 +289,21 @@ def drag_polar_cd(cd0: float, cl: float, e: float, aspect_ratio: float) -> float
     k = 1.0 / (math.pi * e_eff * ar_eff)
     return cd0 + k * cl * cl
 
-def prop_efficiency_map(advance_factor: float, eta_nominal: float) -> float:
+def prop_efficiency_map(advance_factor: float, eta_nominal: float, power_system: str = 'Battery') -> float:
+    """
+    First-order educational propulsor efficiency abstraction.
+    Less punitive at higher advance factors for larger ICE / turboprop aircraft.
+    """
     eta_peak = clamp(eta_nominal, 0.45, 0.90)
-    penalty = 0.10 * abs(advance_factor - 1.0)
-    return clamp(eta_peak - penalty, 0.40, eta_peak)
+    if power_system == 'ICE':
+        penalty = 0.04 * abs(advance_factor - 1.0)
+        eta_floor = 0.70
+    else:
+        penalty = 0.10 * abs(advance_factor - 1.0)
+        eta_floor = 0.40
+    return clamp(eta_peak - penalty, eta_floor, eta_peak)
 
-def fixedwing_power_required(weight_N: float, rho: float, V_ms: float, wing_area_m2: float, span_m: float, cd0: float, e: float, prop_eff: float, hotel_W: float = HOTEL_W_DEFAULT, install_frac: float = 0.10, cl_max: float = 1.4) -> Dict[str, float]:
+def fixedwing_power_required(weight_N: float, rho: float, V_ms: float, wing_area_m2: float, span_m: float, cd0: float, e: float, prop_eff: float, power_system: str, hotel_W: float = HOTEL_W_DEFAULT, install_frac: float = 0.10, cl_max: float = 1.4) -> Dict[str, float]:
     V = max(8.0, V_ms)
     S = max(1e-4, wing_area_m2)
     b = max(0.1, span_m)
@@ -305,7 +314,7 @@ def fixedwing_power_required(weight_N: float, rho: float, V_ms: float, wing_area
     cd = drag_polar_cd(cd0_eff, cl, e, AR)
     drag_N = q * S * cd
     V_ref = 25.0
-    eta_p = prop_efficiency_map(V / V_ref, prop_eff)
+    eta_p = prop_efficiency_map(V / V_ref, prop_eff, power_system=power_system)
     shaft_W = (drag_N * V) / eta_p
     total_W = hotel_W + shaft_W * (1.0 + max(0.0, install_frac))
     return {'q_Pa': q, 'AR': AR, 'CL': cl, 'CD': cd, 'drag_N': drag_N, 'eta_prop_eff': eta_p, 'shaft_W': shaft_W, 'total_W': total_W, 'stall_margin_ok': 1.0 if cl <= cl_max else 0.0}
@@ -471,8 +480,8 @@ UAV_PROFILES = {
     'RQ-20 Puma': {'type': 'fixed', 'power_system': 'Battery', 'base_weight_kg': 6.3, 'max_payload_g': 600, 'battery_wh': 700.0, 'wing_area_m2': 0.55, 'wingspan_m': 2.8, 'cd0': 0.038, 'oswald_e': 0.80, 'prop_eff': 0.75, 'hotel_W': 12.0, 'surface_area_m2': 0.45, 'cl_max': 1.4, 'ai_capabilities': 'AI-enhanced ISR mission planning, autonomous loitering'},
     'Vector AI (Fixed-Wing)': {'type': 'fixed', 'power_system': 'Battery', 'base_weight_kg': 8.0, 'max_payload_g': 1500, 'battery_wh': 1200.0, 'wing_area_m2': 0.90, 'wingspan_m': 2.8, 'cd0': 0.035, 'oswald_e': 0.82, 'prop_eff': 0.78, 'hotel_W': 20.0, 'surface_area_m2': 0.55, 'cl_max': 1.5, 'ai_capabilities': 'Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning'},
     'Vector AI (Multicopter)': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 8.0, 'max_payload_g': 1500, 'battery_wh': 1200.0, 'hover_power_W_ref': 1200.0, 'parasitic_area_m2': 0.10, 'cd_body': 1.1, 'surface_area_m2': 0.60, 'ai_capabilities': 'VTOL mode for launch/recovery and confined-area operations'},
-    'MQ-1 Predator': {'type': 'fixed', 'power_system': 'ICE', 'base_weight_kg': 512.0, 'max_payload_g': 204000, 'battery_wh': 150.0, 'wing_area_m2': 11.5, 'wingspan_m': 14.8, 'cd0': 0.030, 'oswald_e': 0.82, 'prop_eff': 0.80, 'hotel_W': 400.0, 'surface_area_m2': 5.0, 'cl_max': 1.5, 'bsfc_gpkwh': 285.0, 'fuel_density_kgpl': 0.72, 'fuel_tank_l': 380.0, 'ai_capabilities': 'Semi-autonomous surveillance, pattern-of-life analysis'},
-    'MQ-9 Reaper': {'type': 'fixed', 'power_system': 'ICE', 'base_weight_kg': 2223.0, 'max_payload_g': 1700000, 'battery_wh': 0.0, 'wing_area_m2': 24.0, 'wingspan_m': 20.0, 'cd0': 0.028, 'oswald_e': 0.85, 'prop_eff': 0.82, 'hotel_W': 1000.0, 'surface_area_m2': 8.0, 'cl_max': 1.6, 'bsfc_gpkwh': 300.0, 'fuel_density_kgpl': 0.80, 'fuel_tank_l': 1800.0, 'ai_capabilities': 'Real-time threat detection, sensor fusion, autonomous target tracking'},
+    'MQ-1 Predator': {'type': 'fixed', 'power_system': 'ICE', 'base_weight_kg': 512.0, 'max_payload_g': 204000, 'battery_wh': 150.0, 'wing_area_m2': 11.5, 'wingspan_m': 16.8, 'cd0': 0.030, 'oswald_e': 0.82, 'prop_eff': 0.80, 'hotel_W': 400.0, 'surface_area_m2': 5.0, 'cl_max': 1.5, 'bsfc_gpkwh': 285.0, 'fuel_density_kgpl': 0.72, 'fuel_tank_l': 379.0, 'ai_capabilities': 'Semi-autonomous surveillance, pattern-of-life analysis'},
+    'MQ-9 Reaper': {'type': 'fixed', 'power_system': 'ICE', 'base_weight_kg': 2223.0, 'max_payload_g': 1701000, 'battery_wh': 0.0, 'wing_area_m2': 24.0, 'wingspan_m': 20.1, 'cd0': 0.024, 'oswald_e': 0.88, 'prop_eff': 0.84, 'hotel_W': 700.0, 'surface_area_m2': 8.0, 'cl_max': 1.6, 'bsfc_gpkwh': 255.0, 'fuel_density_kgpl': 0.80, 'fuel_tank_l': 2279.0, 'ai_capabilities': 'Real-time threat detection, sensor fusion, autonomous target tracking'},
     'Custom Build': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 2.0, 'max_payload_g': 1500, 'battery_wh': 150.0, 'hover_power_W_ref': 220.0, 'parasitic_area_m2': 0.03, 'cd_body': 1.0, 'surface_area_m2': 0.25, 'ai_capabilities': 'User-defined platform with configurable components'},
 }
 
@@ -490,7 +499,7 @@ def simulate_battery_aircraft(profile: Dict[str, Any], payload_weight_g: int, fl
 
     if profile['type'] == 'fixed':
         V_eff = V_ms if flight_mode != 'Loiter' else max(8.0, 0.75 * V_ms)
-        perf = fixedwing_power_required(weight_N, rho, V_eff, profile['wing_area_m2'], profile['wingspan_m'], profile['cd0'], profile['oswald_e'], profile['prop_eff'], profile.get('hotel_W', HOTEL_W_DEFAULT), 0.10, profile.get('cl_max', 1.4))
+        perf = fixedwing_power_required(weight_N, rho, V_eff, profile['wing_area_m2'], profile['wingspan_m'], profile['cd0'], profile['oswald_e'], profile['prop_eff'], 'Battery', profile.get('hotel_W', HOTEL_W_DEFAULT), 0.10, profile.get('cl_max', 1.4))
         WL = weight_N / max(0.05, profile['wing_area_m2'])
         wind_penalty_frac = mission_gust_penalty_fraction(gustiness, wind_speed_kmh, V_eff, WL)
         total_draw_W = perf['total_W'] * (1.0 + wind_penalty_frac)
@@ -527,7 +536,7 @@ def simulate_ice_aircraft(profile: Dict[str, Any], payload_weight_g: int, flight
     W_ms = max(0.0, wind_speed_kmh / 3.6)
     rho, rho_ratio = density_ratio_from_ambient(altitude_m, temperature_c)
     V_eff = V_ms if flight_mode != 'Loiter' else max(18.0, 0.80 * V_ms)
-    perf = fixedwing_power_required(weight_N, rho, V_eff, profile['wing_area_m2'], profile['wingspan_m'], profile['cd0'], profile['oswald_e'], profile['prop_eff'], profile.get('hotel_W', 250.0), 0.08, profile.get('cl_max', 1.5))
+    perf = fixedwing_power_required(weight_N, rho, V_eff, profile['wing_area_m2'], profile['wingspan_m'], profile['cd0'], profile['oswald_e'], profile['prop_eff'], 'ICE', profile.get('hotel_W', 250.0), 0.08, profile.get('cl_max', 1.5))
     WL = weight_N / max(0.05, profile['wing_area_m2'])
     wind_penalty_frac = mission_gust_penalty_fraction(gustiness, wind_speed_kmh, V_eff, WL)
     total_power_W = perf['total_W'] * (1.0 + wind_penalty_frac)
@@ -553,6 +562,8 @@ REFERENCE_CASES = [
     {'name': 'Teal 2 / Golden Eagle', 'target_min': 30.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload'},
     {'name': 'Vector AI (Fixed-Wing)', 'target_min': 180.0, 'tolerance_pct': 20.0, 'note': 'Fixed-wing mode, nominal sea-level condition'},
     {'name': 'Vector AI (Multicopter)', 'target_min': 45.0, 'tolerance_pct': 20.0, 'note': 'Multicopter mode, nominal sea-level condition'},
+    {'name': 'MQ-1 Predator', 'target_min': 1440.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload, cruise near 70 kt'},
+    {'name': 'MQ-9 Reaper', 'target_min': 1620.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload, standard fuel'},
 ]
 
 def pct_error(pred: float, truth: float) -> float:
@@ -565,7 +576,8 @@ def simulate_nominal_endurance(name: str) -> float:
     if p['power_system'] == 'Battery':
         out = simulate_battery_aircraft(p, 0, 45.0 if p['type'] == 'fixed' else 20.0, 0.0, 15.0, 0, 0, 'Forward Flight' if p['type'] == 'fixed' else 'Hover', 0, 1.0, 1.0, p['battery_wh'])
         return out['dispatch_endurance_min']
-    out = simulate_ice_aircraft(p, 0, 140.0, 0.0, 15.0, 0, 0, 'Forward Flight', 0, 1.0, 1.0)
+    nominal_speed = 129.6 if name == 'MQ-1 Predator' else 370.0 if name == 'MQ-9 Reaper' else 140.0
+    out = simulate_ice_aircraft(p, 0, nominal_speed, 0.0, 15.0, 0, 0, 'Forward Flight', 0, 1.0, 1.0)
     return out['dispatch_endurance_min']
 
 def validation_report() -> List[Dict[str, Any]]:
