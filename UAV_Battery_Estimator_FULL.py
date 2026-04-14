@@ -26,6 +26,93 @@ st.set_page_config(page_title='UAV Battery Efficiency Estimator', page_icon='�
 st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
 st.caption('Production build — first-order aerospace performance modeling, swarm simulation, and mission planning dashboard')
 
+st.markdown("""
+<style>
+:root {
+  --bg: #0b1220;
+  --panel: #121a2b;
+  --panel-2: #172033;
+  --text: #e6edf7;
+  --muted: #9fb0c7;
+  --accent: #22c55e;
+  --accent-2: #38bdf8;
+  --border: #22304a;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+}
+.stApp {
+  background: linear-gradient(180deg, #0a0f1a 0%, var(--bg) 100%);
+  color: var(--text);
+}
+h1, h2, h3 {
+  color: var(--accent) !important;
+}
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #0f1727 0%, #0c1320 100%);
+  border-right: 1px solid var(--border);
+}
+section[data-testid="stSidebar"] * {
+  color: var(--text) !important;
+}
+div[data-testid="stMetric"] {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+.section-card {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 16px 10px 16px;
+  margin-bottom: 12px;
+}
+.section-title {
+  color: var(--accent);
+  font-size: 1.08rem;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+.section-note {
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 8px 0 14px 0;
+}
+.status-tile {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+.status-label {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.status-value {
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.status-ok { color: var(--accent); }
+.status-warn { color: var(--warning); }
+.status-danger { color: var(--danger); }
+@media (max-width: 900px) {
+  .status-strip { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 # =========================================================
 # Theme-aware chart helpers
@@ -86,11 +173,11 @@ def render_status_strip(platform_type: str, power_system: str, theme_name: str, 
     return f"""
     <div class='status-strip'>
         <div class='status-tile'>
-            <div class='status-label'>Platform</div>
+            <div class='status-label'>Platform Type</div>
             <div class='status-value'>{platform_type.title()}</div>
         </div>
         <div class='status-tile'>
-            <div class='status-label'>Power</div>
+            <div class='status-label'>Power System</div>
             <div class='status-value'>{power_system}</div>
         </div>
         <div class='status-tile'>
@@ -98,7 +185,7 @@ def render_status_strip(platform_type: str, power_system: str, theme_name: str, 
             <div class='status-value'>{theme_name}</div>
         </div>
         <div class='status-tile'>
-            <div class='status-label'>Mission Caution</div>
+            <div class='status-label'>Mission Status</div>
             <div class='status-value {caution_class}'>{caution_label}</div>
         </div>
     </div>
@@ -857,11 +944,11 @@ if submitted:
         with c2:
             st.metric('Density Ratio ρ/ρ₀', f'{rho_ratio:.3f}')
 
-        st.markdown("<div class='section-card'><div class='section-title'>Applied Environment Factors</div><div class='section-note'>How density, gusts, terrain, and drag penalties are influencing the estimate.</div></div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-card'><div class='section-title'>Applied Environment Factors</div><div class='section-note'>How air density, gust loading, terrain complexity, and drag penalties are influencing the estimate.</div></div>", unsafe_allow_html=True)
         if profile['type'] == 'rotor':
-            st.markdown(f"**Rotorcraft density effect:** `1/sqrt(ρ/ρ₀)` trend applied. Current ρ/ρ₀ = `{rho_ratio:.3f}`")
+            st.markdown(f"**Rotorcraft Air Density Scaling:** `1/sqrt(ρ/ρ₀)` applied to the rotor power estimate.  \nCurrent density ratio ρ/ρ₀ = `{rho_ratio:.3f}`")
         else:
-            st.markdown(f"**Fixed-wing density effect:** applied through dynamic pressure and required lift. Current ρ/ρ₀ = `{rho_ratio:.3f}`")
+            st.markdown(f"**Fixed-Wing Air Density Effect:** applied through dynamic pressure and required lift.  \nCurrent density ratio ρ/ρ₀ = `{rho_ratio:.3f}`")
 
         detect = compute_detectability_scores_v2(delta_T, altitude_m, flight_speed_kmh, cloud_cover, gustiness, stealth_drag_penalty, profile['type'], profile['power_system'], effective_size_m, background_complexity, humidity_factor)
         visual_score = detect['visual_score']
@@ -871,14 +958,14 @@ if submitted:
         overall_kind, badges_html = render_detectability_alert(visual_score, thermal_score)
 
         if show_detectability:
-            st.subheader('Detectability Heuristic Index')
-            st.caption('Mission-awareness heuristic only. Not a validated EO/IR sensor performance model.')
+            st.subheader('AI/IR Detectability Alert')
+            st.caption('AI visual and IR thermal detectability scores are heuristic mission-awareness estimates.')
             if overall_kind == 'success':
-                st.success('Overall detectability heuristic: LOW')
+                st.success('Overall detectability: LOW')
             elif overall_kind == 'warning':
-                st.warning('Overall detectability heuristic: MODERATE')
+                st.warning('Overall detectability: MODERATE')
             else:
-                st.error('Overall detectability heuristic: HIGH')
+                st.error('Overall detectability: HIGH')
             st.markdown(badges_html, unsafe_allow_html=True)
             d1, d2 = st.columns(2)
             with d1:
@@ -886,13 +973,13 @@ if submitted:
             with d2:
                 st.metric('Heuristic Confidence', f'{detect_confidence:.0f}/100')
 
-        caution_label = 'Nominal'
+        caution_label = 'Nominal Conditions'
         caution_class = 'status-ok'
         if overall_kind == 'warning' or wind_penalty_pct >= 10 or gustiness >= 5:
-            caution_label = 'Elevated'
+            caution_label = 'Elevated Risk'
             caution_class = 'status-warn'
         if overall_kind == 'error' or (profile['type'] == 'fixed' and not result.get('stall_margin_ok', True)):
-            caution_label = 'High'
+            caution_label = 'High Risk'
             caution_class = 'status-danger'
 
         st.markdown(
@@ -910,14 +997,15 @@ if submitted:
             st.error('Selected speed / weight / altitude combination exceeds configured CL_max. Result is outside valid fixed-wing trim assumptions.')
 
         if profile['power_system'] == 'Battery':
-            st.subheader('Battery / Thermal')
+            st.markdown("<div class='section-card'><div class='section-title'>Thermal Signature Risk & Battery</div><div class='section-note'>Thermal burden and electrical power demand for the current mission estimate.</div></div>", unsafe_allow_html=True)
+            risk = 'Low' if delta_T < 10 else ('Moderate' if delta_T < 20 else 'High')
             b1, b2, b3 = st.columns(3)
             with b1:
-                st.metric('Total Draw', f"{result['total_draw_W']:.0f} W")
+                st.metric('Thermal Signature Risk', f"{risk} (ΔT = {delta_T:.1f}°C)")
             with b2:
-                st.metric('Battery (derated)', f"{result['battery_derated_Wh']:.1f} Wh")
+                st.metric('Total Draw (incl. hotel/penalties)', f"{result['total_draw_W']:.0f} W")
             with b3:
-                st.metric('Thermal Load ΔT Estimate', f'{delta_T:.1f} °C')
+                st.metric('Battery Capacity (derated)', f"{result['battery_derated_Wh']:.1f} Wh")
             if show_advanced:
                 if profile['type'] == 'fixed':
                     d1, d2, d3, d4 = st.columns(4)
@@ -940,14 +1028,14 @@ if submitted:
                     with d4:
                         st.metric('Hover Ref Power', f"{result['hover_W']:.0f} W")
         else:
-            st.subheader('Fuel / Thermal')
+            st.markdown("<div class='section-card'><div class='section-title'>Fuel, Power & Thermal</div><div class='section-note'>Fuel consumption, power demand, and thermal burden for the current mission estimate.</div></div>", unsafe_allow_html=True)
             f1, f2, f3, f4 = st.columns(4)
             with f1:
-                st.metric('Total Power', f"{result['total_power_W'] / 1000.0:.2f} kW")
+                st.metric('Total Shaft+Hotel Power', f"{result['total_power_W'] / 1000.0:.2f} kW")
             with f2:
                 st.metric('Fuel Burn', f"{result['fuel_burn_L_per_hr']:.2f} L/hr")
             with f3:
-                st.metric('Usable Fuel', f"{result['usable_fuel_L']:.2f} L")
+                st.metric('Usable Fuel After Reserve', f"{result['usable_fuel_L']:.2f} L")
             with f4:
                 st.metric('Thermal Load ΔT Estimate', f'{delta_T:.1f} °C')
             if show_advanced:
@@ -997,7 +1085,7 @@ if submitted:
             f"- **Wind**: {wind_speed_kmh:.1f} km/h ({W_ms:.2f} m/s)",
             f"- **Wind penalty**: {wind_penalty_pct:.1f}%",
             f"- **Terrain × stealth factor**: {(terrain_penalty * stealth_drag_penalty):.3f}",
-            f"- **Thermal Load ΔT Estimate**: {delta_T:.1f} °C",
+            f"- **Thermal Signature Risk**: {'Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'} (ΔT = {delta_T:.1f} °C)",
             f"- **Dispatchable endurance**: {flight_time_minutes:.1f} min",
             f"- **Total distance**: {total_distance_km:.2f} km",
             f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km",
@@ -1026,7 +1114,8 @@ if submitted:
             st.dataframe(pd.DataFrame(validation_report()), use_container_width=True)
 
         st.subheader('Export Scenario Summary')
-        results_summary = {'Drone Model': drone_model, 'Power System': profile['power_system'], 'Type': profile['type'], 'Flight Mode': flight_mode, 'Payload (g)': int(payload_weight_g), 'Speed (km/h)': float(flight_speed_kmh), 'Wind (km/h)': float(wind_speed_kmh), 'Gustiness (0-10)': int(gustiness), 'Altitude (m)': int(altitude_m), 'Temperature (C)': float(temperature_c), 'Air Density (kg/m^3)': round(rho, 3), 'Density Ratio (rho/rho0)': round(rho_ratio, 3), 'Wind Penalty (%)': round(wind_penalty_pct, 2), 'Dispatchable Endurance (min)': round(flight_time_minutes, 2), 'Total Distance (km)': round(total_distance_km, 2), 'Best Heading Range (km)': round(best_km, 2), 'Upwind Range (km)': round(worst_km, 2), 'Thermal Load ΔT Estimate (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall']}
+        results_summary = {'Drone Model': drone_model, 'Power System': profile['power_system'], 'Type': profile['type'], 'Flight Mode': flight_mode, 'Payload (g)': int(payload_weight_g), 'Speed (km/h)': float(flight_speed_kmh), 'Wind (km/h)': float(wind_speed_kmh), 'Gustiness (0-10)': int(gustiness), 'Altitude (m)': int(altitude_m), 'Temperature (C)': float(temperature_c), 'Air Density (kg/m^3)': round(rho, 3), 'Density Ratio (rho/rho0)': round(rho_ratio, 3), 'Wind Penalty (%)': round(wind_penalty_pct, 2), 'Dispatchable Endurance (min)': round(flight_time_minutes, 2), 'Total Distance (km)': round(total_distance_km, 2), 'Best Heading Range (km)': round(best_km, 2), 'Upwind Range (km)': round(worst_km, 2), 'Thermal Signature Risk': ('Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'),
+            'ΔT (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall']}
         if profile['power_system'] == 'Battery':
             results_summary['Battery Capacity (Wh)'] = round(result['battery_derated_Wh'], 2)
             results_summary['Total Draw (W)'] = round(result['total_draw_W'], 2)
