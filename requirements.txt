@@ -1,12 +1,10 @@
-# Core app framework
-streamlit>=1.35.0
+streamlit>=1.32
+matplotlib>=3.8
+pandas>=2.2
+numpy>=1.26
 
-# Math & Data handling
-pandas>=2.2.2
-numpy>=1.26.4
+openai>=1.30
 
-# Plotting & visualization
-matplotlib>=3.9.0
+python-dotenv>=1.0
 
-# OpenAI client (for mission advisor + swarm LLM)
-openai>=1.30.0
+typing-extensions>=4.9
