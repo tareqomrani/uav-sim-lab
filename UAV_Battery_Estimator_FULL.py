@@ -1300,17 +1300,6 @@ if submitted:
             st.error('Payload exceeds lift capacity.')
             st.stop()
 
-        detail.update({
-            'phase_total_time_min': round(mission_profile.get('total_time_min', 0.0), 2),
-            'phase_count': len(mission_profile.get('phases', [])),
-        })
-        if profile['power_system'] == 'Battery':
-            detail['phase_total_energy_Wh'] = round(mission_profile.get('total_energy_Wh', 0.0), 2)
-            detail['phase_remaining_energy_Wh'] = round(float(mission_profile.get('remaining_energy_Wh') or 0.0), 2)
-        else:
-            detail['phase_total_fuel_L'] = round(mission_profile.get('total_fuel_L', 0.0), 3)
-            detail['phase_remaining_fuel_L'] = round(float(mission_profile.get('remaining_fuel_L') or 0.0), 3)
-
         if profile['power_system'] == 'Battery':
             battery_capacity_wh = clamp_battery(profile, battery_capacity_wh, allow_pack_override)
             result = simulate_battery_aircraft(profile, payload_weight_g, flight_speed_kmh, wind_speed_kmh, temperature_c, altitude_m, elevation_gain_m, flight_mode, gustiness, terrain_penalty, stealth_drag_penalty, battery_capacity_wh)
@@ -1508,6 +1497,19 @@ if submitted:
 
 
         detail = {'drone_model': drone_model, 'type': profile['type'], 'power_system': profile['power_system'], 'payload_g': payload_weight_g, 'total_mass_kg': round(total_weight_kg, 3), 'weight_N': round(weight_N, 2), 'flight_speed_kmh': round(flight_speed_kmh, 2), 'effective_speed_ms': round(result.get('V_effective_ms', V_ms), 3), 'wind_speed_kmh': round(wind_speed_kmh, 2), 'wind_speed_ms': round(W_ms, 3), 'altitude_m': altitude_m, 'temperature_C': temperature_c, 'flight_mode': flight_mode, 'rho': round(rho, 4), 'rho_ratio': round(rho_ratio, 4), 'gustiness': gustiness, 'terrain_factor': round(terrain_penalty, 3), 'stealth_drag_factor': round(stealth_drag_penalty, 3), 'wind_penalty_pct': round(wind_penalty_pct, 2), 'thermal_load_deltaT_estimate_C': round(delta_T, 2), 'dispatch_endurance_min': round(flight_time_minutes, 2), 'total_distance_km': round(total_distance_km, 2), 'best_heading_range_km': round(best_km, 2), 'upwind_range_km': round(worst_km, 2), 'visual_heuristic_score_0_100': round(visual_score, 1), 'thermal_heuristic_score_0_100': round(thermal_score, 1), 'blended_detectability_score_0_100': round(overall_score, 1), 'heuristic_confidence_0_100': round(detect_confidence, 1), 'detectability_overall': 'LOW' if overall_kind == 'success' else 'MODERATE' if overall_kind == 'warning' else 'HIGH'}
+
+        # Mission Phase Summary (safe ordering)
+        if 'mission_profile' in locals():
+            detail.update({
+                'phase_total_time_min': round(mission_profile.get('total_time_min', 0.0), 2),
+                'phase_count': len(mission_profile.get('phases', [])),
+            })
+            if profile['power_system'] == 'Battery':
+                detail['phase_total_energy_Wh'] = round(mission_profile.get('total_energy_Wh', 0.0), 2)
+                detail['phase_remaining_energy_Wh'] = round(float(mission_profile.get('remaining_energy_Wh') or 0.0), 2)
+            else:
+                detail['phase_total_fuel_L'] = round(mission_profile.get('total_fuel_L', 0.0), 3)
+                detail['phase_remaining_fuel_L'] = round(float(mission_profile.get('remaining_fuel_L') or 0.0), 3)
 
         if profile['power_system'] == 'Battery':
             detail.update({'battery_derated_Wh': round(result['battery_derated_Wh'], 2), 'climb_energy_Wh': round(result['climb_energy_Wh'], 2), 'total_draw_W': round(result['total_draw_W'], 2)})
