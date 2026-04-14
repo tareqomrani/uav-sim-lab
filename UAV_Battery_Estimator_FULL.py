@@ -22,9 +22,9 @@ except Exception:
     OPENAI_AVAILABLE = False
     _client = None
 
-st.set_page_config(page_title='GPT-UAV Planner', layout='wide')
-st.markdown("<h1 style='color:#00FF00;'>GPT-UAV Planner</h1>", unsafe_allow_html=True)
-st.caption('GitHub-ready production build — educational first-order engineering model + swarm mission-ops mode')
+st.set_page_config(page_title='UAV Battery Efficiency Estimator', page_icon='🛰️', layout='wide')
+st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
+st.caption('Production build — first-order aerospace performance modeling, swarm simulation, and mission planning dashboard')
 
 
 # =========================================================
@@ -56,6 +56,13 @@ THEME = {
         "path": "#64748b",
     },
 }
+# Global UI theme selector must be defined before ACTIVE_THEME
+theme_mode = st.sidebar.radio(
+    'UI Theme',
+    ['Aerospace Dark', 'Engineering Light'],
+    index=0,
+)
+
 ACTIVE_THEME = THEME["dark"] if theme_mode == "Aerospace Dark" else THEME["light"]
 
 def style_axes(ax):
@@ -113,37 +120,6 @@ USABLE_BATT_FRAC = 0.85
 USABLE_FUEL_FRAC = 0.90
 DISPATCH_RESERVE = 0.30
 HOTEL_W_DEFAULT = 15.0
-
-
-def render_mission_hero(endurance_min: float, total_distance_km: float, best_range_km: float, detectability_label: str, detectability_color: str, power_system: str):
-    return f"""
-    <div class='mission-hero'>
-        <div class='mission-kicker'>Mission Summary</div>
-        <div class='mission-hero-grid'>
-            <div>
-                <div class='mission-label'>Endurance</div>
-                <div class='mission-value'>{endurance_min:.1f} min</div>
-            </div>
-            <div>
-                <div class='mission-label'>Total Distance</div>
-                <div class='mission-value'>{total_distance_km:.1f} km</div>
-            </div>
-            <div>
-                <div class='mission-label'>Best Range</div>
-                <div class='mission-value'>{best_range_km:.1f} km</div>
-            </div>
-            <div>
-                <div class='mission-label'>Detectability</div>
-                <div class='mission-value' style='color:{detectability_color};'>{detectability_label}</div>
-            </div>
-            <div>
-                <div class='mission-label'>Power</div>
-                <div class='mission-value'>{power_system}</div>
-            </div>
-        </div>
-    </div>
-    """
-
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -761,6 +737,7 @@ def plot_swarm_map(swarm: List[VehicleState], threat_zone_km: float, show_threat
 
 
 st.sidebar.header('Control Panel')
+st.sidebar.caption('Global settings for UI, panels, simulation, and layout.')
 
 debug_mode = st.sidebar.toggle('Enable Debug Mode', value=False)
 allow_pack_override = st.sidebar.toggle('Allow Battery Override (debug)', value=False) if debug_mode else False
@@ -925,19 +902,6 @@ if submitted:
                 theme_name=theme_mode,
                 caution_label=caution_label,
                 caution_class=caution_class,
-            ),
-            unsafe_allow_html=True,
-        )
-
-        detectability_color = '#22c55e' if overall_kind == 'success' else '#f59e0b' if overall_kind == 'warning' else '#ef4444'
-        st.markdown(
-            render_mission_hero(
-                endurance_min=flight_time_minutes,
-                total_distance_km=total_distance_km,
-                best_range_km=best_km,
-                detectability_label=('LOW' if overall_kind == 'success' else 'MODERATE' if overall_kind == 'warning' else 'HIGH'),
-                detectability_color=detectability_color,
-                power_system=profile['power_system'],
             ),
             unsafe_allow_html=True,
         )
