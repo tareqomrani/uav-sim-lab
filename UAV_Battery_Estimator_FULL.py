@@ -3705,7 +3705,7 @@ def render_mission_visualization(
 
 
 st.sidebar.header('Operator Control Panel')
-st.sidebar.caption('Grouped mission controls for platform setup, autonomy, sensing, threats, navigation, performance, and outputs.')
+st.sidebar.caption('Grouped mission controls for platform setup, autonomy, sensing, threats, navigation, performance, and outputs. System Mode now changes workflow emphasis, not whether preserved production modules are available.')
 
 with st.sidebar.expander('Platform & Mission Mode', expanded=True):
     drone_model = st.selectbox('Drone Model', list(UAV_PROFILES.keys()))
@@ -3734,7 +3734,7 @@ with st.sidebar.expander('Autonomy & Tactical Logic', expanded=False):
 with st.sidebar.expander('Swarm / Mission Ops Visibility', expanded=False):
     show_swarm_ops_module = st.toggle(
         'Show Swarm / Mission Ops Module',
-        value=(system_mode == 'Swarm / Mission Ops Mode')
+        value=True
     )
 
 with st.sidebar.expander('Sensing, Detectability & Threats', expanded=False):
@@ -4041,6 +4041,91 @@ if submitted:
             unsafe_allow_html=True,
         )
 
+        # Main-flow advanced subsystem computations
+        autopilot_profile = run_detectability_autopilot(
+            enabled=detectability_autopilot if 'detectability_autopilot' in locals() else True,
+            overall_score=overall_score,
+            visual_score=visual_score,
+            thermal_score=thermal_score,
+            confidence=detect_confidence,
+            altitude_m=altitude_m,
+            speed_kmh=flight_speed_kmh,
+            power_system=profile['power_system'],
+            hybrid_assist_enabled=(profile['power_system'] == 'ICE'),
+            stealth_drag_penalty=stealth_drag_penalty,
+        )
+
+        route_optimization_profile = optimize_route_profile(
+            enabled=route_optimization if 'route_optimization' in locals() else True,
+            waypoints=waypoints,
+            speed_kmh=float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)),
+            altitude_m=int(autopilot_profile.get('target_altitude_m', altitude_m)),
+            overall_detectability=overall_score,
+            visual_detectability=visual_score,
+            thermal_detectability=thermal_score,
+            terrain_penalty=terrain_penalty,
+            stealth_drag_penalty=stealth_drag_penalty,
+            threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
+            radar_threat_penalty=0.0,
+        )
+
+        terrain_masking_profile = estimate_terrain_masking(
+            enabled=(terrain_masking_v2 if 'terrain_masking_v2' in locals() else True),
+            waypoints=waypoints,
+            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
+            terrain_penalty=terrain_penalty,
+            cloud_cover=cloud_cover,
+            overall_detectability=overall_score,
+            visual_detectability=visual_score,
+            thermal_detectability=thermal_score,
+            threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
+            terrain_ridge_amplitude_m=terrain_ridge_amplitude_m if 'terrain_ridge_amplitude_m' in locals() else 80.0,
+        )
+
+        sensor_model_profile = compute_sensor_model(
+            enabled=sensor_modeling if 'sensor_modeling' in locals() else True,
+            sensor_band=sensor_band if 'sensor_band' in locals() else 'EO',
+            sensor_quality=sensor_quality if 'sensor_quality' in locals() else 0.75,
+            humidity_factor=humidity_factor,
+            cloud_cover=cloud_cover,
+            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
+            effective_size_m=effective_size_m,
+            background_complexity=background_complexity,
+            visual_score=float(terrain_masking_profile.get('adjusted_visual_score', visual_score)),
+            thermal_score=thermal_score,
+        )
+
+        env_profile = compute_flight_envelope_enforcement(
+            enabled=flight_envelope_enforcement if 'flight_envelope_enforcement' in locals() else True,
+            profile=profile,
+            total_mass_kg=total_weight_kg,
+            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
+            flight_speed_kmh=float(route_optimization_profile.get('recommended_speed_kmh', flight_speed_kmh)),
+            elevation_gain_m=elevation_gain_m,
+            rho=rho,
+        )
+
+        deg_profile = compute_degradation_model(
+            enabled=degradation_modeling if 'degradation_modeling' in locals() else True,
+            profile=profile,
+            battery_cycle_count=battery_cycle_count if 'battery_cycle_count' in locals() else 120,
+            temperature_c=temperature_c,
+            battery_capacity_wh=battery_capacity_wh if 'battery_capacity_wh' in locals() else 0.0,
+            battery_nominal_voltage_v=battery_nominal_voltage_v if 'battery_nominal_voltage_v' in locals() else 22.2,
+            battery_internal_resistance_mohm=battery_internal_resistance_mohm if 'battery_internal_resistance_mohm' in locals() else 28.0,
+            total_draw_W=float(result.get('total_draw_W', 0.0)),
+            total_power_W=float(result.get('total_power_W', 0.0)),
+            engine_wear_factor=engine_wear_factor if 'engine_wear_factor' in locals() else 1.0,
+        )
+
+        if show_advanced and 'render_flight_envelope_panel' in globals():
+            render_flight_envelope_panel(env_profile, profile['type'])
+        if 'render_degradation_panel' in globals():
+            render_degradation_panel(deg_profile, profile['power_system'])
+        if 'render_terrain_masking_panel' in globals():
+            render_terrain_masking_panel(terrain_masking_profile)
+        if 'render_sensor_model_panel' in globals():
+            render_sensor_model_panel(sensor_model_profile)
         if profile['type'] == 'fixed' and not result.get('stall_margin_ok', True):
             st.error('Selected speed / weight / altitude combination exceeds configured CL_max. Result is outside valid fixed-wing trim assumptions.')
 
@@ -4141,18 +4226,6 @@ if submitted:
             st.warning('Mission Phase Simulation could not be generated for this run.')
             if debug_mode:
                 st.exception(phase_err)
-
-        if 'mission_visualization' not in locals() or mission_visualization:
-            nav_estimated_path = None
-            if 'nav_profile_v2' in locals() and isinstance(nav_profile_v2, dict):
-                nav_estimated_path = nav_profile_v2.get('estimated_path', None)
-            render_mission_visualization(
-                waypoints=waypoints,
-                threat_zone_km=5.0,
-                show_threat_zone=True,
-                nav_estimated_path=nav_estimated_path,
-            )
-
 
         scenario_base_inputs = {
             'payload_weight_g': payload_weight_g,
@@ -4364,6 +4437,14 @@ if submitted:
         )
         render_gnss_denied_navigation_v2_panel(nav_profile_v2)
 
+        if 'mission_visualization' not in locals() or mission_visualization:
+            render_mission_visualization(
+                waypoints=waypoints,
+                threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
+                show_threat_zone=True,
+                nav_estimated_path=nav_profile_v2.get('estimated_path', None) if isinstance(nav_profile_v2, dict) else None,
+            )
+
         if show_validation:
             st.subheader('Model Validation')
             st.caption('Nominal-condition comparison against reference endurance targets.')
@@ -4435,6 +4516,7 @@ if submitted:
             st.write('**Tip:** Increase speed, reduce payload, or descend to restore valid lift margin.')
 
         if show_live_simulation:
+            st.caption('Live simulation HUD gauge preserved from the production workflow.')
             st.subheader('Live Simulation')
             time_step = 10
             total_steps = min(max(1, int(flight_time_minutes * 60 / time_step)), 240)
@@ -4500,8 +4582,9 @@ if submitted:
                         break
                     time.sleep(0.02)
 
-        if (system_mode == 'Swarm / Mission Ops Mode') or ('show_swarm_ops_module' in locals() and show_swarm_ops_module):
+        if ('show_swarm_ops_module' not in locals()) or show_swarm_ops_module:
             st.header('Swarm / Mission Ops Module')
+            st.info('This preserved production module is now directly available in the live run flow.')
             st.caption('Preserved production feature set: swarm map, playback, threat-zone overlay, and CSV exports.')
             st.caption('Conceptual coordination layer for mission logic, delegation, and playback. This module is not part of the validated aircraft performance model.')
             swarm_enable = st.checkbox('Enable Swarm Module', value=True)
