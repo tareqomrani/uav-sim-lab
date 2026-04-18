@@ -2544,6 +2544,36 @@ def render_mission_hero(endurance_min: float, total_distance_km: float, best_ran
     </div>
     """
 
+def render_hud_gauge(label: str, pct: float, remaining_text: str, draw_text: str, accent_color: str) -> str:
+    pct_clamped = max(0.0, min(100.0, float(pct)))
+    fill = pct_clamped
+    if pct_clamped >= 60:
+        status_color = "#22c55e"
+    elif pct_clamped >= 30:
+        status_color = "#f59e0b"
+    else:
+        status_color = "#ef4444"
+    return f"""
+    <div style='background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--border);border-radius:16px;padding:14px 16px;margin:8px 0 12px 0;box-shadow:0 8px 24px rgba(0,0,0,0.18);'>
+        <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;'>
+            <div style='color:var(--accent);font-weight:800;letter-spacing:0.06em;text-transform:uppercase;font-size:0.82rem;'>{label}</div>
+            <div style='color:{status_color};font-weight:800;font-size:1.05rem;'>{pct_clamped:.0f}%</div>
+        </div>
+        <div style='position:relative;height:22px;border-radius:999px;background:#0a0f1a;border:1px solid var(--border);overflow:hidden;'>
+            <div style='position:absolute;left:0;top:0;height:100%;width:{fill:.1f}%;background:linear-gradient(90deg,{accent_color},{status_color});box-shadow:0 0 14px {status_color};'></div>
+            <div style='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e6edf7;font-weight:800;font-size:0.86rem;text-shadow:0 1px 2px rgba(0,0,0,0.65);'>
+                {remaining_text}
+            </div>
+        </div>
+        <div style='display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--muted);font-size:0.90rem;'>
+            <div>{draw_text}</div>
+            <div style='color:{status_color};font-weight:700;'>HUD Live Gauge</div>
+        </div>
+    </div>
+    """
+
+
+
 
 st.info(
     'This tool uses first-order physics and bounded heuristics. '
@@ -3626,6 +3656,54 @@ def plot_swarm_map(swarm: List[VehicleState], threat_zone_km: float, show_threat
     return fig
 
 
+def render_mission_visualization(
+    waypoints: List[tuple],
+    threat_zone_km: float,
+    show_threat_zone: bool,
+    nav_estimated_path: Optional[List[tuple]] = None,
+):
+    st.markdown(
+        "<div class='section-card'><div class='section-title'>Mission Visualization</div>"
+        "<div class='section-note'>2D route view with waypoints, threat-zone overlay, and optional GNSS-estimated path.</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    fig, ax = make_themed_figure(figsize=(6, 5))
+
+    if show_threat_zone:
+        circle = plt.Circle((0, 0), threat_zone_km, color=ACTIVE_THEME["danger"], alpha=0.14, label="Threat Zone")
+        ax.add_patch(circle)
+
+    if waypoints:
+        xs, ys = zip(*waypoints)
+        ax.plot(xs, ys, linestyle="--", linewidth=1.8, color=ACTIVE_THEME["path"], label="Mission Route")
+        ax.scatter(xs, ys, color=ACTIVE_THEME["warning"], marker="x", s=90, label="Waypoints")
+
+    ax.scatter([0], [0], color=ACTIVE_THEME["accent"], s=90, marker="o", label="Launch / Origin")
+
+    if nav_estimated_path:
+        nx, ny = zip(*nav_estimated_path)
+        ax.plot(nx, ny, linewidth=2.0, color=ACTIVE_THEME["accent2"], alpha=0.95, label="GNSS-Denied Estimated Path")
+
+    ax.set_title("Mission Route Overview")
+    ax.set_xlabel("X (km)")
+    ax.set_ylabel("Y (km)")
+    ax.axhline(0, color=ACTIVE_THEME["grid"], linewidth=0.8)
+    ax.axvline(0, color=ACTIVE_THEME["grid"], linewidth=0.8)
+    ax.set_aspect("equal", adjustable="datalim")
+    style_axes(ax)
+
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        legend = ax.legend(handles, labels, facecolor=ACTIVE_THEME["panel"], edgecolor=ACTIVE_THEME["grid"], fontsize=8, loc="upper right")
+        for txt in legend.get_texts():
+            txt.set_color(ACTIVE_THEME["text"])
+
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+
 st.sidebar.header('Operator Control Panel')
 st.sidebar.caption('Grouped mission controls for platform setup, autonomy, sensing, threats, navigation, performance, and outputs.')
 
@@ -3652,6 +3730,12 @@ with st.sidebar.expander('Autonomy & Tactical Logic', expanded=False):
     route_optimization = st.toggle('Enable Route Optimization', value=True)
     llm_tactical_mode = st.toggle('Enable LLM Tactical Mode', value=True)
     swarm_intelligence_upgrade = st.toggle('Enable Swarm Intelligence Upgrade', value=True)
+
+with st.sidebar.expander('Swarm / Mission Ops Visibility', expanded=False):
+    show_swarm_ops_module = st.toggle(
+        'Show Swarm / Mission Ops Module',
+        value=(system_mode == 'Swarm / Mission Ops Mode')
+    )
 
 with st.sidebar.expander('Sensing, Detectability & Threats', expanded=False):
     sensor_modeling = st.toggle('Enable Sensor Modeling', value=True)
@@ -4058,6 +4142,17 @@ if submitted:
             if debug_mode:
                 st.exception(phase_err)
 
+        if 'mission_visualization' not in locals() or mission_visualization:
+            nav_estimated_path = None
+            if 'nav_profile_v2' in locals() and isinstance(nav_profile_v2, dict):
+                nav_estimated_path = nav_profile_v2.get('estimated_path', None)
+            render_mission_visualization(
+                waypoints=waypoints,
+                threat_zone_km=5.0,
+                show_threat_zone=True,
+                nav_estimated_path=nav_estimated_path,
+            )
+
 
         scenario_base_inputs = {
             'payload_weight_g': payload_weight_g,
@@ -4355,9 +4450,17 @@ if submitted:
                     elapsed = step * time_step
                     rem_wh = max(0.0, start_wh - step * burn_per_step)
                     pct = 0.0 if start_wh <= 0 else 100.0 * rem_wh / start_wh
-                    bars = int(pct // 10)
-                    gauge.markdown(f"**Battery Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {pct:.0f}%`")
                     remain = max(0, int(flight_time_minutes * 60 - elapsed))
+                    gauge.markdown(
+                        render_hud_gauge(
+                            label="Battery Simulation",
+                            pct=pct,
+                            remaining_text=f"{rem_wh:.2f} Wh remaining",
+                            draw_text=f"Draw {result['total_draw_W']:.0f} W | V {effective_speed_kmh:.0f} km/h",
+                            accent_color=ACTIVE_THEME['accent'],
+                        ),
+                        unsafe_allow_html=True,
+                    )
                     timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {remain} sec")
                     status.markdown(
                         f"**Battery Remaining:** {rem_wh:.2f} Wh  "
@@ -4375,9 +4478,17 @@ if submitted:
                     elapsed = step * time_step
                     rem_L = max(0.0, start_fuel - fuel_per_sec * elapsed)
                     pct = 0.0 if start_fuel <= 0 else 100.0 * rem_L / start_fuel
-                    bars = int(pct // 10)
-                    gauge.markdown(f"**Fuel Gauge:** `[{'|' * bars}{' ' * (10 - bars)}] {pct:.0f}%`")
                     remain = max(0, int(flight_time_minutes * 60 - elapsed))
+                    gauge.markdown(
+                        render_hud_gauge(
+                            label="Fuel Simulation",
+                            pct=pct,
+                            remaining_text=f"{rem_L:.2f} L remaining",
+                            draw_text=f"Burn {result['fuel_burn_L_per_hr']:.2f} L/hr | V {effective_speed_kmh:.0f} km/h",
+                            accent_color=ACTIVE_THEME['accent2'],
+                        ),
+                        unsafe_allow_html=True,
+                    )
                     timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {remain} sec")
                     status.markdown(
                         f"**Fuel Remaining:** {rem_L:.2f} L  "
@@ -4389,8 +4500,9 @@ if submitted:
                         break
                     time.sleep(0.02)
 
-        if system_mode == 'Swarm / Mission Ops Mode':
+        if (system_mode == 'Swarm / Mission Ops Mode') or ('show_swarm_ops_module' in locals() and show_swarm_ops_module):
             st.header('Swarm / Mission Ops Module')
+            st.caption('Preserved production feature set: swarm map, playback, threat-zone overlay, and CSV exports.')
             st.caption('Conceptual coordination layer for mission logic, delegation, and playback. This module is not part of the validated aircraft performance model.')
             swarm_enable = st.checkbox('Enable Swarm Module', value=True)
             swarm_size = st.slider('Swarm Size', 2, 8, 3)
