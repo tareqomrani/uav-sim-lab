@@ -1,4715 +1,2558 @@
-# Baseline-first preserved master merge
-# Preserves production features including:
-# - Mission Phase Simulation
-# - Swarm / Mission Ops Module
-# - Swarm Mission Map
-# - Mission Playback
-# - Live Simulation
-# - Scenario / detailed exports
-# while retaining newer realism upgrades:
-# - grouped operator control panel
-# - GNSS-denied v2
-# - terrain masking v2
-# - adversary RF / radar coupling
-# - power-available climb / service ceiling
-# - ECM + BSFC degradation
+# UAV Battery Efficiency Estimator | v0.8.4 aircraft chase camera + battery Plotly twins
+# Standalone Streamlit application | Built by Tareq Omrani
+# requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
+# plotly>=5.20,<8; pyarrow<25
 #
-# app_production.py
+# Engineering research simulator. Not an aircraft-qualified flight model,
+# battery management system, autopilot, or safety-critical control system.
+# GPT mission interpretation and PX4/ArduPilot control are NOT implemented.
 from __future__ import annotations
 
 import io
 import json
 import math
-import time
-from dataclasses import asdict, dataclass, field
+import zipfile
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-OPENAI_AVAILABLE = False
-_client = None
-try:
-    from openai import OpenAI
-    _client = OpenAI()
-    OPENAI_AVAILABLE = True
-except Exception:
-    OPENAI_AVAILABLE = False
-    _client = None
-
-st.set_page_config(page_title='UAV Battery Efficiency Estimator', page_icon='🛰️', layout='wide')
-st.markdown("<h1 style='color:#00FF00;'>UAV Battery Efficiency Estimator</h1>", unsafe_allow_html=True)
-st.caption('Production build — first-order aerospace performance modeling, swarm simulation, and mission planning dashboard')
-
-st.markdown("""
-<style>
-.mission-hero {
-  background: linear-gradient(135deg, rgba(17,24,39,0.96), rgba(11,18,32,0.96));
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  padding: 16px 18px;
-  margin: 10px 0 14px 0;
-  box-shadow: 0 14px 34px rgba(0,0,0,0.18);
-}
-.mission-hero-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
-  gap: 12px;
-  margin-top: 10px;
-}
-.mission-kicker {
-  color: var(--accent-2);
-  font-size: 0.78rem;
-  font-weight: 800;
-  letter-spacing: 0.10em;
-  text-transform: uppercase;
-}
-.mission-label {
-  color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  margin-bottom: 4px;
-}
-.mission-value {
-  color: var(--text);
-  font-size: 1.15rem;
-  font-weight: 800;
-}
-@media (max-width: 900px) {
-  .mission-hero-grid {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-  }
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<style>
-:root {
-  --bg: #0b1220;
-  --panel: #121a2b;
-  --panel-2: #172033;
-  --text: #e6edf7;
-  --muted: #9fb0c7;
-  --accent: #22c55e;
-  --accent-2: #38bdf8;
-  --border: #22304a;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-}
-.stApp {
-  background: linear-gradient(180deg, #0a0f1a 0%, var(--bg) 100%);
-  color: var(--text);
-}
-h1, h2, h3 {
-  color: var(--accent) !important;
-}
-section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #0f1727 0%, #0c1320 100%);
-  border-right: 1px solid var(--border);
-}
-section[data-testid="stSidebar"] * {
-  color: var(--text) !important;
-}
-div[data-testid="stMetric"] {
-  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 10px 12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
-}
-.section-card {
-  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 14px 16px 10px 16px;
-  margin-bottom: 12px;
-}
-.section-title {
-  color: var(--accent);
-  font-size: 1.08rem;
-  font-weight: 800;
-  margin-bottom: 4px;
-}
-.section-note {
-  color: var(--muted);
-  font-size: 0.94rem;
-  line-height: 1.5;
-}
-.status-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  gap: 10px;
-  margin: 8px 0 14px 0;
-}
-.status-tile {
-  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 10px 12px;
-}
-.status-label {
-  color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin-bottom: 4px;
-}
-.status-value {
-  color: var(--text);
-  font-size: 0.95rem;
-  font-weight: 700;
-}
-.status-ok { color: var(--accent); }
-.status-warn { color: var(--warning); }
-.status-danger { color: var(--danger); }
-@media (max-width: 900px) {
-  .status-strip { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
-}
-</style>
-""", unsafe_allow_html=True)
-
-
-# =========================================================
-# Theme-aware chart helpers
-# =========================================================
-THEME = {
-    "dark": {
-        "bg": "#0b1220",
-        "panel": "#121a2b",
-        "grid": "#26354f",
-        "text": "#e6edf7",
-        "muted": "#9fb0c7",
-        "accent": "#22c55e",
-        "accent2": "#38bdf8",
-        "warning": "#f59e0b",
-        "danger": "#ef4444",
-        "path": "#94a3b8",
-    },
-    "light": {
-        "bg": "#f4f7fb",
-        "panel": "#ffffff",
-        "grid": "#d8e1ee",
-        "text": "#152033",
-        "muted": "#5f7188",
-        "accent": "#0f62fe",
-        "accent2": "#f97316",
-        "warning": "#d97706",
-        "danger": "#dc2626",
-        "path": "#64748b",
-    },
-}
-# Global UI theme selector must be defined before ACTIVE_THEME
-theme_mode = st.sidebar.radio(
-    'UI Theme',
-    ['Aerospace Dark', 'Engineering Light'],
-    index=0,
-)
-
-ACTIVE_THEME = THEME["dark"] if theme_mode == "Aerospace Dark" else THEME["light"]
-
-def style_axes(ax):
-    ax.set_facecolor(ACTIVE_THEME["panel"])
-    for spine in ax.spines.values():
-        spine.set_color(ACTIVE_THEME["grid"])
-    ax.tick_params(colors=ACTIVE_THEME["text"])
-    ax.xaxis.label.set_color(ACTIVE_THEME["text"])
-    ax.yaxis.label.set_color(ACTIVE_THEME["text"])
-    ax.title.set_color(ACTIVE_THEME["text"])
-    ax.grid(True, color=ACTIVE_THEME["grid"], alpha=0.35, linewidth=0.8)
-    return ax
-
-def make_themed_figure(figsize=(5, 5)):
-    fig, ax = plt.subplots(figsize=figsize)
-    fig.patch.set_facecolor(ACTIVE_THEME["bg"])
-    ax.set_facecolor(ACTIVE_THEME["panel"])
-    return fig, ax
-
-
-def run_detectability_autopilot(
-    enabled: bool,
-    overall_score: float,
-    visual_score: float,
-    thermal_score: float,
-    confidence: float,
-    altitude_m: int,
-    speed_kmh: float,
-    power_system: str,
-    hybrid_assist_enabled: bool = False,
-    stealth_drag_penalty: float = 1.0,
-) -> Dict[str, Any]:
-    """Heuristic detectability-aware autopilot recommendations."""
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "target_speed_kmh": float(speed_kmh),
-        "target_altitude_m": int(altitude_m),
-        "hybrid_assist_recommend": False,
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    if confidence < 55:
-        result["actions"].append("Low confidence in detectability estimate — autopilot changes held conservative.")
-
-    if visual_score >= 70:
-        result["active"] = True
-        result["target_altitude_m"] = int(altitude_m + 200)
-        result["target_speed_kmh"] = max(20.0, speed_kmh * 0.88)
-        result["actions"].append("Visual risk high — recommend +200 m altitude and ~12% speed reduction.")
-    elif visual_score >= 55:
-        result["active"] = True
-        result["target_altitude_m"] = int(altitude_m + 100)
-        result["target_speed_kmh"] = max(20.0, speed_kmh * 0.94)
-        result["actions"].append("Visual risk elevated — recommend +100 m altitude and mild speed reduction.")
-
-    if thermal_score >= 70:
-        result["active"] = True
-        result["target_speed_kmh"] = max(20.0, min(result["target_speed_kmh"], speed_kmh * 0.90))
-        result["actions"].append("Thermal risk high — recommend reduced sustained power / speed.")
-        if power_system == "ICE" and hybrid_assist_enabled:
-            result["hybrid_assist_recommend"] = True
-            result["actions"].append("Hybrid Assist recommended during ingress / threat exposure.")
-    elif thermal_score >= 55:
-        result["active"] = True
-        result["actions"].append("Thermal risk elevated — avoid prolonged climb or high-power segments.")
-
-    if overall_score >= 80 and not result["active"]:
-        result["active"] = True
-        result["target_speed_kmh"] = max(20.0, speed_kmh * 0.90)
-        result["target_altitude_m"] = int(altitude_m + 150)
-        result["actions"].append("Overall detectability very high — recommend conservative profile adjustment.")
-
-    if stealth_drag_penalty > 1.2:
-        result["actions"].append("Stealth drag penalty is high — monitor reserve margins after autopilot changes.")
-
-    return result
-
-
-def render_detectability_autopilot_panel(ap: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Detectability-Aware Autopilot</div>"
-        "<div class='section-note'>Automatic mission-profile recommendations that bias speed, altitude, and hybrid usage under high exposure.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not ap.get("enabled", False):
-        st.info("Detectability Autopilot is disabled.")
-        return
-
-    if ap.get("active", False):
-        st.success("Autopilot advisory: ACTIVE")
-    else:
-        st.info("Autopilot advisory: NOMINAL")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Target Speed", f"{ap.get('target_speed_kmh', 0.0):.1f} km/h")
-    with c2:
-        st.metric("Target Altitude", f"{int(ap.get('target_altitude_m', 0))} m")
-    with c3:
-        st.metric("Hybrid Assist", "RECOMMEND" if ap.get("hybrid_assist_recommend", False) else "NO CHANGE")
-
-    for action in ap.get("actions", []):
-        if "high" in action.lower() or "recommended" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-def compute_route_metrics(waypoints: List[Tuple[float, float]]) -> Dict[str, float]:
-    if not waypoints:
-        return {"total_distance_km": 0.0, "segment_count": 0, "max_leg_km": 0.0}
-    pts = [(0.0, 0.0)] + list(waypoints)
-    dists = []
-    for i in range(1, len(pts)):
-        dx = pts[i][0] - pts[i-1][0]
-        dy = pts[i][1] - pts[i-1][1]
-        d = (dx**2 + dy**2) ** 0.5
-        dists.append(d)
-    return {
-        "total_distance_km": float(sum(dists)),
-        "segment_count": len(dists),
-        "max_leg_km": float(max(dists) if dists else 0.0),
-    }
-
-
-def score_route_candidate(
-    distance_km: float,
-    speed_kmh: float,
-    overall_detectability: float,
-    visual_detectability: float,
-    thermal_detectability: float,
-    terrain_penalty: float,
-    stealth_drag_penalty: float,
-    threat_zone_km: float,
-    waypoints: List[Tuple[float, float]],
-) -> Dict[str, float]:
-    # Fraction of waypoints inside threat radius
-    if waypoints:
-        inside = sum(1 for x, y in waypoints if (x*x + y*y) ** 0.5 <= threat_zone_km)
-        threat_fraction = inside / max(1, len(waypoints))
-    else:
-        threat_fraction = 0.0
-
-    time_min = (distance_km / max(1.0, speed_kmh)) * 60.0
-    exposure_cost = 0.55 * overall_detectability + 0.25 * visual_detectability + 20.0 * threat_fraction
-    energy_cost = 12.0 * (terrain_penalty - 1.0) + 12.0 * (stealth_drag_penalty - 1.0) + 0.08 * distance_km
-    time_cost = 0.25 * time_min + 0.02 * max(0.0, speed_kmh - 60.0)
-
-    total_score = exposure_cost + energy_cost + time_cost
-    return {
-        "route_score": round(total_score, 2),
-        "time_cost_min": round(time_min, 2),
-        "threat_fraction": round(threat_fraction, 3),
-        "exposure_cost": round(exposure_cost, 2),
-        "energy_cost": round(energy_cost, 2),
-        "time_cost": round(time_cost, 2),
-    }
-
-
-def optimize_route_profile(
-    enabled: bool,
-    waypoints: List[Tuple[float, float]],
-    speed_kmh: float,
-    altitude_m: int,
-    overall_detectability: float,
-    visual_detectability: float,
-    thermal_detectability: float,
-    terrain_penalty: float,
-    stealth_drag_penalty: float,
-    threat_zone_km: float,
-    radar_threat_penalty: float = 0.0,
-) -> Dict[str, Any]:
-    route_metrics = compute_route_metrics(waypoints)
-    base = score_route_candidate(
-        distance_km=route_metrics["total_distance_km"],
-        speed_kmh=speed_kmh,
-        overall_detectability=overall_detectability,
-        visual_detectability=visual_detectability,
-        thermal_detectability=thermal_detectability,
-        terrain_penalty=terrain_penalty,
-        stealth_drag_penalty=stealth_drag_penalty,
-        threat_zone_km=threat_zone_km,
-        waypoints=waypoints,
-    )
-
-    base["route_score"] = round(base["route_score"] + float(radar_threat_penalty), 2)
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "recommended_speed_kmh": float(speed_kmh),
-        "recommended_altitude_m": int(altitude_m),
-        "recommended_route_mode": "Direct",
-        "base_score": base["route_score"],
-        "optimized_score": base["route_score"],
-        "route_metrics": route_metrics,
-        "details": base,
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    # Candidate: stealth-biased route profile (slower, slightly higher)
-    cand_speed = max(20.0, speed_kmh * 0.90)
-    cand_alt = int(altitude_m + 150)
-    cand = score_route_candidate(
-        distance_km=route_metrics["total_distance_km"] * (1.05 if route_metrics["segment_count"] > 0 else 1.0),
-        speed_kmh=cand_speed,
-        overall_detectability=max(0.0, overall_detectability * 0.88),
-        visual_detectability=max(0.0, visual_detectability * 0.86),
-        thermal_detectability=max(0.0, thermal_detectability * 0.93),
-        terrain_penalty=terrain_penalty,
-        stealth_drag_penalty=stealth_drag_penalty,
-        threat_zone_km=threat_zone_km,
-        waypoints=waypoints,
-    )
-
-    if cand["route_score"] + 1.0 < base["route_score"]:
-        result["active"] = True
-        result["recommended_speed_kmh"] = round(cand_speed, 2)
-        result["recommended_altitude_m"] = cand_alt
-        result["recommended_route_mode"] = "Stealth-Biased"
-        result["optimized_score"] = cand["route_score"]
-        result["details"] = cand
-        result["actions"].append("Optimized route profile favors lower exposure over raw transit speed.")
-        if radar_threat_penalty > 0:
-            result["actions"].append("Radar threat is elevating route cost — stealth-biased routing is weighted more heavily.")
-        if cand["threat_fraction"] > 0:
-            result["actions"].append("Threat-zone exposure remains nonzero; prefer terrain masking or revised waypoints where possible.")
-    else:
-        result["actions"].append("Current route profile is already near-optimal under the present weighting.")
-
-    return result
-
-
-def render_route_optimization_panel(route_opt: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Route Optimization</div>"
-        "<div class='section-note'>Weighted route scoring using exposure, energy, and time costs. This is a planning heuristic, not a full pathfinding engine.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not route_opt.get("enabled", False):
-        st.info("Route Optimization is disabled.")
-        return
-
-    if route_opt.get("active", False):
-        st.success("Route optimization advisory: ACTIVE")
-    else:
-        st.info("Route optimization advisory: NOMINAL")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Base Route Score", f"{route_opt.get('base_score', 0.0):.1f}")
-    with c2:
-        st.metric("Optimized Score", f"{route_opt.get('optimized_score', 0.0):.1f}")
-    with c3:
-        st.metric("Route Mode", route_opt.get("recommended_route_mode", "Direct"))
-
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        st.metric("Recommended Speed", f"{route_opt.get('recommended_speed_kmh', 0.0):.1f} km/h")
-    with c5:
-        st.metric("Recommended Altitude", f"{int(route_opt.get('recommended_altitude_m', 0))} m")
-    with c6:
-        st.metric("Route Distance", f"{route_opt.get('route_metrics', {}).get('total_distance_km', 0.0):.1f} km")
-
-    d = route_opt.get("details", {})
-    st.caption(
-        f"Exposure cost: {d.get('exposure_cost', 0.0):.1f} | "
-        f"Energy cost: {d.get('energy_cost', 0.0):.1f} | "
-        f"Time cost: {d.get('time_cost', 0.0):.1f} | "
-        f"Threat-zone fraction: {100*d.get('threat_fraction', 0.0):.0f}%"
-    )
-
-    for action in route_opt.get("actions", []):
-        if "threat-zone" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-def upgrade_swarm_intelligence(enabled: bool, swarm: List[VehicleState], threat_zone_km: float) -> Dict[str, Any]:
-    """Role-aware swarm upgrade with reassignment, resilience, and operator guidance."""
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "swarm_score": 0.0,
-        "resilience_score": 0.0,
-        "actions": [],
-        "reassignments": [],
-        "team_summary": [],
-    }
-    if not enabled or not swarm:
-        return result
-
-    roles_present = set()
-    low_endurance = []
-    inside_zone = []
-    relay_candidates = []
-    scout_candidates = []
-    tracker_candidates = []
-
-    for s in swarm:
-        role = getattr(s, "role", "UNKNOWN")
-        roles_present.add(role)
-        if float(getattr(s, "endurance_min", 0.0)) < 12.0:
-            low_endurance.append(s.id)
-        if (float(getattr(s, "x_km", 0.0))**2 + float(getattr(s, "y_km", 0.0))**2) ** 0.5 <= threat_zone_km:
-            inside_zone.append(s.id)
-
-        alt = int(getattr(s, "altitude_m", 0))
-        endu = float(getattr(s, "endurance_min", 0.0))
-        if alt >= 120 and endu >= 15:
-            relay_candidates.append(s)
-        if endu >= 14 and alt <= 120:
-            scout_candidates.append(s)
-        if endu >= 16:
-            tracker_candidates.append(s)
-
-    # Role coverage scoring
-    desired_roles = {"LEAD", "SCOUT", "TRACKER", "RELAY"}
-    coverage = len(desired_roles.intersection(roles_present)) / len(desired_roles)
-    endurance_penalty = min(0.4, 0.05 * len(low_endurance))
-    zone_penalty = min(0.3, 0.04 * len(inside_zone))
-    resilience = max(0.0, 1.0 - endurance_penalty - zone_penalty)
-    swarm_score = max(0.0, min(100.0, 100.0 * (0.55 * coverage + 0.45 * resilience)))
-
-    result["active"] = True
-    result["swarm_score"] = round(swarm_score, 1)
-    result["resilience_score"] = round(100.0 * resilience, 1)
-
-    # Dynamic reassignment recommendations
-    if "RELAY" not in roles_present and relay_candidates:
-        cand = sorted(relay_candidates, key=lambda s: (-float(getattr(s, "endurance_min", 0.0)), -int(getattr(s, "altitude_m", 0))))[0]
-        result["reassignments"].append(f"{cand.id} → RELAY")
-        result["actions"].append("Relay coverage missing — assign highest-altitude endurance UAV to RELAY.")
-    if "SCOUT" not in roles_present and scout_candidates:
-        cand = sorted(scout_candidates, key=lambda s: (-float(getattr(s, "endurance_min", 0.0)), int(getattr(s, "altitude_m", 0))))[0]
-        result["reassignments"].append(f"{cand.id} → SCOUT")
-        result["actions"].append("Scout coverage missing — assign low-altitude, high-endurance UAV to SCOUT.")
-    if "TRACKER" not in roles_present and tracker_candidates:
-        cand = sorted(tracker_candidates, key=lambda s: -float(getattr(s, "endurance_min", 0.0)))[0]
-        result["reassignments"].append(f"{cand.id} → TRACKER")
-        result["actions"].append("Tracking redundancy missing — assign highest-endurance UAV to TRACKER.")
-
-    # Loss compensation / RTB logic
-    if low_endurance:
-        result["actions"].append("Low-endurance agents detected — prioritize RTB or comms relay handoff.")
-        for uid in low_endurance[:2]:
-            result["reassignments"].append(f"{uid} → STANDBY/RTB")
-
-    if inside_zone:
-        result["actions"].append("Threat-zone penetration detected — distribute roles to avoid single-point mission failure.")
-
-    # Team summary
-    result["team_summary"] = [
-        f"Role coverage: {len(desired_roles.intersection(roles_present))}/{len(desired_roles)} critical roles",
-        f"Low-endurance agents: {len(low_endurance)}",
-        f"Threat-zone agents: {len(inside_zone)}",
-    ]
-
-    if result["swarm_score"] >= 75:
-        result["actions"].append("Swarm posture is strong — maintain distributed coverage.")
-    elif result["swarm_score"] >= 50:
-        result["actions"].append("Swarm posture is moderate — improve role distribution and reserve margins.")
-    else:
-        result["actions"].append("Swarm posture is weak — mission resilience degraded; reduce exposure and consolidate tasks.")
-
-    return result
-
-
-def render_swarm_intelligence_panel(sw_intel: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Swarm Intelligence Upgrade</div>"
-        "<div class='section-note'>Role-aware swarm analysis with reassignment guidance, resilience scoring, and loss-compensation recommendations.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not sw_intel.get("enabled", False):
-        st.info("Swarm Intelligence Upgrade is disabled.")
-        return
-
-    if sw_intel.get("swarm_score", 0.0) >= 75:
-        st.success("Swarm intelligence status: STRONG")
-    elif sw_intel.get("swarm_score", 0.0) >= 50:
-        st.warning("Swarm intelligence status: MODERATE")
-    else:
-        st.error("Swarm intelligence status: DEGRADED")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("Swarm Score", f"{sw_intel.get('swarm_score', 0.0):.1f}/100")
-    with c2:
-        st.metric("Resilience Score", f"{sw_intel.get('resilience_score', 0.0):.1f}/100")
-
-    for line in sw_intel.get("team_summary", []):
-        st.info(line)
-
-    if sw_intel.get("reassignments"):
-        st.markdown("**Recommended Reassignments**")
-        for r in sw_intel["reassignments"]:
-            st.write(f"- {r}")
-
-    if sw_intel.get("actions"):
-        st.markdown("**Swarm Actions**")
-        for action in sw_intel["actions"]:
-            if "degraded" in action.lower() or "rtb" in action.lower():
-                st.warning(action)
-            else:
-                st.info(action)
-
-
-
-
-def estimate_terrain_masking(
-    enabled: bool,
-    waypoints: List[Tuple[float, float]],
-    altitude_m: int,
-    terrain_penalty: float,
-    cloud_cover: int,
-    overall_detectability: float,
-    visual_detectability: float,
-    thermal_detectability: float,
-    threat_zone_km: float,
-    terrain_ridge_amplitude_m: float = 80.0,
-) -> Dict[str, Any]:
-    # Terrain Masking v2: segment-based LOS blocking / shadowing surrogate
-    import math
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "masking_score": 0.0,
-        "concealment_fraction": 0.0,
-        "shielding_factor": 1.0,
-        "adjusted_visual_score": float(visual_detectability),
-        "adjusted_overall_score": float(overall_detectability),
-        "actions": [],
-        "segments_in_masking_window": 0,
-        "segment_summary": [],
-        "segment_visibility_labels": [],
-        "los_block_fraction": 0.0,
-        "shadowed_distance_km": 0.0,
-    }
-    if not enabled:
-        return result
-
-    pts = [(0.0, 0.0)] + list(waypoints)
-    segments = []
-    for i in range(1, len(pts)):
-        dx = pts[i][0] - pts[i-1][0]
-        dy = pts[i][1] - pts[i-1][1]
-        d = (dx**2 + dy**2) ** 0.5
-        segments.append((pts[i-1], pts[i], d))
-
-    if not segments:
-        return result
-
-    terrain_complexity = max(0.0, min(1.0, (float(terrain_penalty) - 1.0) / 0.5))
-    cloud_bonus = 0.12 * max(0.0, min(1.0, cloud_cover / 100.0))
-    altitude_factor = max(0.0, min(1.0, (350.0 - float(altitude_m)) / 350.0))
-    ridge_amp = max(0.0, float(terrain_ridge_amplitude_m))
-
-    labels = []
-    shadowed_distance = 0.0
-    blocked_segments = 0
-    masked_window = 0
-
-    for idx, (p0, p1, d) in enumerate(segments, start=1):
-        mx = 0.5 * (p0[0] + p1[0])
-        my = 0.5 * (p0[1] + p1[1])
-        mid_r = (mx*mx + my*my) ** 0.5
-
-        # Surrogate ridge height: strongest near threat-zone ring and with terrain complexity
-        ring_term = math.exp(-((mid_r - threat_zone_km) ** 2) / max(0.2, 0.35 * max(1.0, threat_zone_km)))
-        ridge_height_m = ridge_amp * (0.45 + 0.55 * terrain_complexity) * ring_term
-
-        # LOS clearance surrogate: lower altitude and higher ridges create blocking
-        clearance_m = float(altitude_m) - ridge_height_m
-
-        if mid_r <= threat_zone_km:
-            masked_window += 1
-
-        if clearance_m <= 0:
-            label = "Shielded"
-            blocked_segments += 1
-            shadowed_distance += d
-        elif clearance_m <= 0.35 * max(50.0, altitude_m):
-            label = "Partial"
-            shadowed_distance += 0.5 * d
-        else:
-            label = "Exposed"
-
-        labels.append(label)
-
-    segment_count = len(segments)
-    los_block_fraction = blocked_segments / max(1, segment_count)
-    partial_fraction = sum(1 for x in labels if x == "Partial") / max(1, segment_count)
-
-    concealment_fraction = max(0.0, min(1.0,
-        0.45 * los_block_fraction +
-        0.22 * partial_fraction +
-        0.18 * altitude_factor +
-        0.08 * terrain_complexity +
-        cloud_bonus
-    ))
-
-    shielding_factor = max(0.55, 1.0 - 0.42 * concealment_fraction - 0.10 * partial_fraction)
-    adjusted_visual = max(0.0, float(visual_detectability) * shielding_factor)
-    adjusted_overall = max(0.0, 0.60 * adjusted_visual + 0.40 * float(thermal_detectability))
-    masking_score = 100.0 * concealment_fraction
-
-    result.update({
-        "active": concealment_fraction >= 0.15,
-        "masking_score": round(masking_score, 1),
-        "concealment_fraction": round(concealment_fraction, 3),
-        "shielding_factor": round(shielding_factor, 3),
-        "adjusted_visual_score": round(adjusted_visual, 1),
-        "adjusted_overall_score": round(adjusted_overall, 1),
-        "segments_in_masking_window": int(masked_window),
-        "segment_visibility_labels": labels,
-        "los_block_fraction": round(los_block_fraction, 3),
-        "shadowed_distance_km": round(shadowed_distance, 3),
-        "segment_summary": [
-            f"Exposed: {sum(1 for x in labels if x == 'Exposed')}",
-            f"Partial: {sum(1 for x in labels if x == 'Partial')}",
-            f"Shielded: {sum(1 for x in labels if x == 'Shielded')}",
-        ],
-    })
-
-    if los_block_fraction >= 0.40:
-        result["actions"].append("Terrain LOS blocking is strong — multiple route legs are shielded from direct observation.")
-    elif concealment_fraction >= 0.20:
-        result["actions"].append("Terrain masking is moderate — some route legs gain partial or shadowed concealment.")
-    else:
-        result["actions"].append("Terrain masking is weak — most route legs remain exposed to line-of-sight observation.")
-
-    if altitude_m > 350:
-        result["actions"].append("Altitude is limiting terrain shielding — descend if mission allows for stronger LOS masking.")
-    if terrain_penalty <= 1.05:
-        result["actions"].append("Terrain complexity is low — limited ridge / valley shielding is available.")
-    if shadowed_distance > 0:
-        result["actions"].append(f"Approximate shadowed route distance: {shadowed_distance:.2f} km.")
-    if adjusted_overall + 5 < overall_detectability:
-        result["actions"].append("Terrain-shadowed routing lowers estimated exposure relative to the unmasked baseline.")
-
-    return result
-
-
-def render_terrain_masking_panel(tm: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Terrain Masking</div>"
-        "<div class='section-note'>Planning-grade line-of-sight concealment estimate based on low-altitude routing, terrain complexity, and threat-zone exposure.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not tm.get("enabled", False):
-        st.info("Terrain Masking is disabled.")
-        return
-
-    if tm.get("active", False):
-        st.success("Terrain masking status: ACTIVE")
-    else:
-        st.info("Terrain masking status: LIMITED")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Masking Score", f"{tm.get('masking_score', 0.0):.1f}/100")
-    with c2:
-        st.metric("Shielding Factor", f"{tm.get('shielding_factor', 1.0):.2f}")
-    with c3:
-        st.metric("LOS Block Fraction", f"{100*tm.get('los_block_fraction', 0.0):.0f}%")
-
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        st.metric("Adjusted Visual Score", f"{tm.get('adjusted_visual_score', 0.0):.1f}/100")
-    with c5:
-        st.metric("Adjusted Overall Score", f"{tm.get('adjusted_overall_score', 0.0):.1f}/100")
-    with c6:
-        st.metric("Shadowed Distance", f"{tm.get('shadowed_distance_km', 0.0):.2f} km")
-
-    if tm.get('segment_summary'):
-        st.markdown('**Segment LOS Summary**')
-        for s in tm.get('segment_summary', []):
-            st.write(f'- {s}')
-
-    for action in tm.get("actions", []):
-        if "weak" in action.lower() or "too high" in action.lower() or "limited" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-def compute_sensor_model(
-    enabled: bool,
-    sensor_band: str,
-    sensor_quality: float,
-    humidity_factor: float,
-    cloud_cover: int,
-    altitude_m: int,
-    visual_score: float,
-    thermal_score: float,
-    overall_score: float,
-    delta_t: float,
-) -> Dict[str, Any]:
-    """Planning-grade EO/IR sensor modeling."""
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "sensor_band": sensor_band,
-        "sensor_quality": float(sensor_quality),
-        "ranges_km": [],
-        "transmission": [],
-        "contrast_curve": [],
-        "probability_curve": [],
-        "max_likely_detection_km": 0.0,
-        "baseline_probability": 0.0,
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    import math
-
-    band_beta = {"EO": 0.18, "MWIR": 0.11, "LWIR": 0.09}.get(sensor_band, 0.12)
-    beta = band_beta * (1.0 + 0.9 * float(humidity_factor) + 0.5 * (cloud_cover / 100.0))
-
-    if sensor_band == "EO":
-        c0 = max(0.05, min(1.0, visual_score / 100.0))
-        alpha = 0.030
-        q_thresh = 0.26
-    elif sensor_band == "MWIR":
-        c0 = max(0.05, min(1.2, delta_t / 25.0))
-        alpha = 0.022
-        q_thresh = 0.22
-    else:
-        c0 = max(0.05, min(1.2, delta_t / 22.0))
-        alpha = 0.018
-        q_thresh = 0.20
-
-    altitude_bonus = min(0.15, max(0.0, altitude_m / 2000.0) * 0.10)
-    c0 *= (1.0 + altitude_bonus)
-
-    ranges = [round(x * 0.5, 2) for x in range(1, 31)]
-    transmission, contrast_curve, probability_curve = [], [], []
-
-    for r in ranges:
-        t_atm = math.exp(-beta * r)
-        c_app = c0 * t_atm * (1.0 / (1.0 + alpha * (r ** 2)))
-        logit = 8.0 * ((c_app * float(sensor_quality)) - q_thresh)
-        p_det = 1.0 / (1.0 + math.exp(-logit))
-        transmission.append(round(t_atm, 4))
-        contrast_curve.append(round(c_app, 4))
-        probability_curve.append(round(100.0 * p_det, 2))
-
-    max_det_km = 0.0
-    for r, p in zip(ranges, probability_curve):
-        if p >= 50.0:
-            max_det_km = r
-
-    baseline_probability = probability_curve[0] if probability_curve else 0.0
-
-    result.update({
-        "active": True,
-        "ranges_km": ranges,
-        "transmission": transmission,
-        "contrast_curve": contrast_curve,
-        "probability_curve": probability_curve,
-        "max_likely_detection_km": round(max_det_km, 2),
-        "baseline_probability": round(baseline_probability, 1),
-    })
-
-    if max_det_km >= 8.0:
-        result["actions"].append("Sensor threat is strong at long range — reduce exposure and favor masking.")
-    elif max_det_km >= 4.0:
-        result["actions"].append("Moderate detection range — use altitude, cloud cover, and route shaping to manage exposure.")
-    else:
-        result["actions"].append("Short likely detection range — present conditions are favorable for reduced observability.")
-
-    if humidity_factor > 0.7 or cloud_cover > 70:
-        result["actions"].append("Atmospheric attenuation is helping suppress long-range sensor performance.")
-    if sensor_band == "EO" and visual_score > 65:
-        result["actions"].append("EO exposure remains significant — avoid prolonged straight-line transit in clear conditions.")
-    if sensor_band in ["MWIR", "LWIR"] and thermal_score > 65:
-        result["actions"].append("IR contrast is strong — reduce sustained power or use Hybrid Assist during ingress.")
-    return result
-
-
-def render_sensor_modeling_panel(sensor_profile: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Sensor Modeling</div>"
-        "<div class='section-note'>Planning-grade EO/IR detection probability model using atmospheric attenuation, apparent contrast, and sensor quality.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not sensor_profile.get("enabled", False):
-        st.info("Sensor Modeling is disabled.")
-        return
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Sensor Band", sensor_profile.get("sensor_band", "EO"))
-    with c2:
-        st.metric("Sensor Quality", f"{sensor_profile.get('sensor_quality', 1.0):.2f}")
-    with c3:
-        st.metric("Likely Detection Range", f"{sensor_profile.get('max_likely_detection_km', 0.0):.1f} km")
-
-    c4, c5 = st.columns(2)
-    with c4:
-        st.metric("Near-Range Detection", f"{sensor_profile.get('baseline_probability', 0.0):.0f}%")
-    with c5:
-        st.metric("Curve Points", f"{len(sensor_profile.get('ranges_km', []))}")
-
-    if sensor_profile.get("ranges_km"):
-        fig_s1, ax_s1 = plt.subplots(figsize=(6.5, 3.2))
-        ax_s1.plot(sensor_profile["ranges_km"], sensor_profile["probability_curve"])
-        ax_s1.set_xlabel("Range (km)")
-        ax_s1.set_ylabel("Detection Probability (%)")
-        ax_s1.set_ylim(0, 100)
-        ax_s1.set_title("Detection Probability vs Range")
-        st.pyplot(fig_s1, clear_figure=True)
-        plt.close(fig_s1)
-
-        fig_s2, ax_s2 = plt.subplots(figsize=(6.5, 3.2))
-        ax_s2.plot(sensor_profile["ranges_km"], sensor_profile["contrast_curve"])
-        ax_s2.set_xlabel("Range (km)")
-        ax_s2.set_ylabel("Apparent Contrast")
-        ax_s2.set_title("Contrast vs Range")
-        st.pyplot(fig_s2, clear_figure=True)
-        plt.close(fig_s2)
-
-        fig_s3, ax_s3 = plt.subplots(figsize=(6.5, 3.2))
-        ax_s3.plot(sensor_profile["ranges_km"], sensor_profile["transmission"])
-        ax_s3.set_xlabel("Range (km)")
-        ax_s3.set_ylabel("Transmission")
-        ax_s3.set_ylim(0, 1.05)
-        ax_s3.set_title("Atmospheric Transmission vs Range")
-        st.pyplot(fig_s3, clear_figure=True)
-        plt.close(fig_s3)
-
-    for action in sensor_profile.get("actions", []):
-        if "strong" in action.lower() or "significant" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-def build_mission_path_frames(
-    waypoints: List[Tuple[float, float]],
-    altitude_m: int,
-    num_frames: int = 30,
-) -> List[Dict[str, float]]:
-    pts = [(0.0, 0.0)] + list(waypoints)
-    if len(pts) < 2:
-        return [{"x_km": 0.0, "y_km": 0.0, "altitude_m": float(altitude_m)}]
-
-    # Segment lengths
-    segs = []
-    total_dist = 0.0
-    for i in range(1, len(pts)):
-        dx = pts[i][0] - pts[i-1][0]
-        dy = pts[i][1] - pts[i-1][1]
-        d = (dx**2 + dy**2) ** 0.5
-        segs.append((pts[i-1], pts[i], d))
-        total_dist += d
-
-    if total_dist <= 1e-6:
-        return [{"x_km": 0.0, "y_km": 0.0, "altitude_m": float(altitude_m)}]
-
-    frames = []
-    for k in range(num_frames):
-        target_dist = total_dist * (k / max(1, num_frames - 1))
-        walked = 0.0
-        pos = (pts[0][0], pts[0][1])
-        for p0, p1, d in segs:
-            if walked + d >= target_dist and d > 0:
-                frac = (target_dist - walked) / d
-                x = p0[0] + frac * (p1[0] - p0[0])
-                y = p0[1] + frac * (p1[1] - p0[1])
-                pos = (x, y)
-                break
-            walked += d
-            pos = p1
-        frames.append({"x_km": float(pos[0]), "y_km": float(pos[1]), "altitude_m": float(altitude_m)})
-    return frames
-
-
-def compute_detectability_heatmap(
-    extent_km: float,
-    overall_score: float,
-    visual_score: float,
-    thermal_score: float,
-    threat_zone_km: float,
-    grid_n: int = 60,
-):
-    import numpy as np
-    xs = np.linspace(-extent_km, extent_km, grid_n)
-    ys = np.linspace(-extent_km, extent_km, grid_n)
-    X, Y = np.meshgrid(xs, ys)
-    R = np.sqrt(X**2 + Y**2)
-
-    # Threat-centered exposure field, bounded to 0..100
-    base = 0.50 * float(overall_score) + 0.30 * float(visual_score) + 0.20 * float(thermal_score)
-    threat_core = np.exp(-((R / max(0.5, threat_zone_km)) ** 2))
-    ring = np.exp(-((R - threat_zone_km) ** 2) / max(0.25, 0.35 * threat_zone_km))
-    Z = base * (0.55 * threat_core + 0.25 * ring + 0.20)
-    Z = np.clip(Z, 0.0, 100.0)
-    return xs, ys, Z
-
-
-def render_mission_visualization_panel(
-    enabled: bool,
-    waypoints: List[Tuple[float, float]],
-    altitude_m: int,
-    overall_score: float,
-    visual_score: float,
-    thermal_score: float,
-    threat_zone_km: float,
-    swarm_history: Optional[List[List[Dict[str, Any]]]] = None,
-    nav_estimated_path: Optional[List[Tuple[float, float]]] = None,
-):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>2D/3D Mission Visualization</div>"
-        "<div class='section-note'>Animated mission-path frame view, detectability heatmap, and swarm movement visualization.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not enabled:
-        st.info("2D/3D Mission Visualization is disabled.")
-        return
-
-    import numpy as np
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
-    path_frames = build_mission_path_frames(waypoints, altitude_m, num_frames=30)
-    max_frame = len(path_frames) - 1
-    frame_idx = st.slider("Mission Visualization Frame", 0, max_frame, 0)
-    frame = path_frames[frame_idx]
-
-    # 2D animated path view
-    fig1, ax1 = plt.subplots(figsize=(6.6, 4.0))
-    pts = [(0.0, 0.0)] + list(waypoints)
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    ax1.plot(xs, ys, linestyle='--', linewidth=1.5)
-    ax1.scatter(xs, ys, marker='x', s=70)
-    ax1.scatter([frame["x_km"]], [frame["y_km"]], s=100)
-    if nav_estimated_path:
-        ex = [p[0] for p in nav_estimated_path]
-        ey = [p[1] for p in nav_estimated_path]
-        ax1.plot(ex, ey, linewidth=1.0, alpha=0.8)
-    circle = plt.Circle((0, 0), threat_zone_km, fill=False, alpha=0.7)
-    ax1.add_patch(circle)
-    ax1.set_title("Animated Mission Path (Frame View)")
-    ax1.set_xlabel("X (km)")
-    ax1.set_ylabel("Y (km)")
-    ax1.set_aspect('equal', adjustable='box')
-    st.pyplot(fig1, clear_figure=True)
-    plt.close(fig1)
-
-    # Detectability heatmap
-    extent = max(5.0, threat_zone_km * 1.6, max([abs(p[0]) for p in pts] + [0]) + 2.0, max([abs(p[1]) for p in pts] + [0]) + 2.0)
-    xs_h, ys_h, Z = compute_detectability_heatmap(extent, overall_score, visual_score, thermal_score, threat_zone_km)
-    fig2, ax2 = plt.subplots(figsize=(6.6, 4.2))
-    im = ax2.imshow(Z, origin='lower', extent=[xs_h.min(), xs_h.max(), ys_h.min(), ys_h.max()], aspect='auto')
-    ax2.plot(xs, ys, linestyle='--', linewidth=1.0)
-    ax2.scatter([frame["x_km"]], [frame["y_km"]], s=80)
-    if nav_estimated_path:
-        ex = [p[0] for p in nav_estimated_path]
-        ey = [p[1] for p in nav_estimated_path]
-        ax2.plot(ex, ey, linewidth=1.0, alpha=0.8)
-    ax2.set_title("Detectability Heatmap")
-    ax2.set_xlabel("X (km)")
-    ax2.set_ylabel("Y (km)")
-    plt.colorbar(im, ax=ax2, fraction=0.046, pad=0.04)
-    st.pyplot(fig2, clear_figure=True)
-    plt.close(fig2)
-
-    # 3D path visualization
-    fig3 = plt.figure(figsize=(6.6, 4.4))
-    ax3 = fig3.add_subplot(111, projection='3d')
-    z = [0.0] + [float(altitude_m) for _ in waypoints]
-    ax3.plot(xs, ys, z, linewidth=1.4)
-    ax3.scatter([frame["x_km"]], [frame["y_km"]], [float(frame["altitude_m"])], s=60)
-    if nav_estimated_path:
-        ex = [p[0] for p in nav_estimated_path]
-        ey = [p[1] for p in nav_estimated_path]
-        ez = [float(altitude_m)] * len(nav_estimated_path)
-        ax3.plot(ex, ey, ez, linewidth=1.0, alpha=0.8)
-    ax3.set_title("3D Mission Path")
-    ax3.set_xlabel("X (km)")
-    ax3.set_ylabel("Y (km)")
-    ax3.set_zlabel("Altitude (m)")
-    st.pyplot(fig3, clear_figure=True)
-    plt.close(fig3)
-
-    # Swarm movement if available
-    if swarm_history:
-        max_swarm_frame = max(0, len(swarm_history) - 1)
-        swarm_frame_idx = min(frame_idx, max_swarm_frame)
-        snapshot = swarm_history[swarm_frame_idx]
-        fig4, ax4 = plt.subplots(figsize=(6.6, 4.0))
-        ax4.plot(xs, ys, linestyle='--', linewidth=1.0)
-        for s in snapshot:
-            ax4.scatter([s.get("x_km", 0.0)], [s.get("y_km", 0.0)], s=80)
-            ax4.text(s.get("x_km", 0.0) + 0.1, s.get("y_km", 0.0) + 0.1, s.get("id", "UAV"), fontsize=7)
-        circle2 = plt.Circle((0, 0), threat_zone_km, fill=False, alpha=0.7)
-        ax4.add_patch(circle2)
-        ax4.set_title("Swarm Movement")
-        ax4.set_xlabel("X (km)")
-        ax4.set_ylabel("Y (km)")
-        ax4.set_aspect('equal', adjustable='box')
-        st.pyplot(fig4, clear_figure=True)
-        plt.close(fig4)
-
-
-
-def generate_tactical_briefing(
-    llm_enabled: bool,
-    tactical_mode_enabled: bool,
-    params: Dict[str, Any],
-) -> str:
-    """Mission-aware briefing system. Uses LLM when available, heuristic fallback otherwise."""
-    if not tactical_mode_enabled:
-        return "Tactical Mode is disabled."
-
-    heuristic_lines = []
-
-    altitude = float(params.get("altitude_m", 0.0))
-    speed = float(params.get("speed_kmh", 0.0))
-    cloud = float(params.get("cloud_cover", 0.0))
-    thermal = float(params.get("thermal_score", 0.0))
-    visual = float(params.get("visual_score", 0.0))
-    overall = float(params.get("overall_score", 0.0))
-    endurance = float(params.get("endurance_min", 0.0))
-    loiter_minutes = float(params.get("loiter_minutes", 0.0))
-    rtb_required = bool(params.get("include_rtb", False))
-    hybrid_possible = bool(params.get("hybrid_possible", False))
-    autopilot_speed = float(params.get("autopilot_target_speed_kmh", speed))
-    autopilot_alt = float(params.get("autopilot_target_altitude_m", altitude))
-    detection_range = float(params.get("sensor_max_likely_detection_km", 0.0))
-    terrain_mask = float(params.get("terrain_masking_score", 0.0))
-    mission_feasible = bool(params.get("mission_feasible", True))
-    radar_detect_probability_pct = float(params.get("radar_detect_probability_pct", 0.0))
-    adversary_posture = str(params.get("adversary_posture", "Nominal"))
-    allowed_loiter_min = float(params.get("allowed_loiter_min", loiter_minutes))
-
-    if overall >= 70:
-        heuristic_lines.append(
-            f"Recommend ingress at approximately {int(max(100, autopilot_alt))} m AGL-equivalent with airspeed near {autopilot_speed:.0f} km/h to reduce exposure."
-        )
-    elif overall >= 50:
-        heuristic_lines.append(
-            f"Exposure is moderate. Hold a conservative ingress profile around {int(max(100, autopilot_alt))} m and avoid unnecessary speed spikes."
-        )
-    else:
-        heuristic_lines.append(
-            "Current exposure is relatively low. Mission profile is acceptable for controlled ingress under present conditions."
-        )
-
-    if hybrid_possible and thermal >= 60:
-        heuristic_lines.append("Activate Hybrid Assist during ingress or threat-zone transit, not during extended cruise.")
-    elif thermal >= 60:
-        heuristic_lines.append("Thermal risk is elevated. Reduce prolonged climb or sustained high-power segments before target-area entry.")
-
-    if loiter_minutes > 0:
-        if radar_detect_probability_pct >= 60 or adversary_posture in ["Contested", "High-Threat"]:
-            heuristic_lines.append(f"Radar threat penalizes loiter. Reduce on-station time to about {allowed_loiter_min:.0f} minutes or delay orbit entry.")
-        elif cloud < 60 and visual >= 55:
-            heuristic_lines.append("Delay loiter until cloud cover rises above roughly 60% or route masking improves.")
-        elif not mission_feasible:
-            heuristic_lines.append("Loiter request exceeds safe reserve margins. Reduce loiter duration before execution.")
-        else:
-            heuristic_lines.append(f"Loiter window appears supportable for about {loiter_minutes:.0f} minutes under current reserve constraints.")
-
-    if detection_range >= 8.0:
-        heuristic_lines.append(f"Likely sensor detection range is long ({detection_range:.1f} km). Favor terrain masking and non-linear routing on ingress.")
-    elif detection_range >= 4.0:
-        heuristic_lines.append(f"Likely sensor detection range is moderate ({detection_range:.1f} km). Use cloud cover and route shaping to manage exposure.")
-
-    if terrain_mask >= 45:
-        heuristic_lines.append("Terrain masking is strong enough to justify low-altitude shielded transit through exposed sectors.")
-    elif terrain_mask <= 20:
-        heuristic_lines.append("Terrain masking is weak. Do not assume terrain will break line-of-sight in the threat zone.")
-
-    if rtb_required and not mission_feasible:
-        heuristic_lines.append("Return-to-Base reserve is not secure. Reconfigure speed, loiter, or route before launch.")
-    elif rtb_required:
-        heuristic_lines.append("RTB reserve is protected. Maintain reserve discipline and avoid extending on-station time without reassessment.")
-
-    heuristic_lines = heuristic_lines[:5]
-
-    if not llm_enabled:
-        return "\n".join([f"- {line}" for line in heuristic_lines])
-
-    prompt = f"""
-You are writing a concise tactical mission briefing for a UAV operator.
-Return 4-6 short bullet points only.
-
-Mission context:
-- Platform: {params.get('drone', 'UAV')}
-- Power system: {params.get('power_system', 'Unknown')}
-- Flight mode: {params.get('flight_mode', 'Unknown')}
-- Altitude: {altitude:.0f} m
-- Speed: {speed:.1f} km/h
-- Cloud cover: {cloud:.0f}%
-- Detectability scores: visual {visual:.0f}/100, thermal {thermal:.0f}/100, overall {overall:.0f}/100
-- Endurance: {endurance:.1f} min
-- Loiter request: {loiter_minutes:.1f} min
-- RTB required: {rtb_required}
-- Hybrid possible: {hybrid_possible}
-- Sensor likely detection range: {detection_range:.1f} km
-- Terrain masking score: {terrain_mask:.1f}/100
-- Mission feasible: {mission_feasible}
-- Radar detection probability: {radar_detect_probability_pct:.1f}%
-- Adversary posture: {adversary_posture}
-- Allowed loiter after threat coupling: {allowed_loiter_min:.1f} min
-- Recommended ingress profile from onboard logic: {autopilot_alt:.0f} m and {autopilot_speed:.0f} km/h
-
-Write like an operator briefing, not generic advice.
-Prefer mission-aware lines such as ingress profile, loiter timing, RTB caution, threat exposure, terrain masking, and hybrid-assist timing.
-"""
-    try:
-        resp = _client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a concise UAV tactical briefer."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
-            max_tokens=220
-        )
-        content = resp.choices[0].message.content.strip()
-        return content
-    except Exception:
-        return "\n".join([f"- {line}" for line in heuristic_lines])
-
-
-def render_tactical_briefing_panel(briefing_text: str):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>LLM Tactical Mode</div>"
-        "<div class='section-note'>Mission-aware briefing system for ingress, loiter timing, reserve posture, and exposure management.</div></div>",
-        unsafe_allow_html=True,
-    )
-    st.write(briefing_text)
-
-
-
-
-
-def compute_adversary_simulation(
-    enabled: bool,
-    radar_density: float,
-    ir_density: float,
-    jammer_density: float,
-    altitude_m: int,
-    speed_kmh: float,
-    overall_detectability: float,
-    visual_score: float,
-    thermal_score: float,
-    sensor_detection_range_km: float,
-    terrain_masking_score: float,
-    route_score: float,
-    threat_zone_km: float,
-    power_system: str,
-    radar_frequency_ghz: float = 10.0,
-    radar_tx_power_kw: float = 40.0,
-    effective_size_m: float = 1.0,
-) -> Dict[str, Any]:
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "radar_risk": 0.0,
-        "ir_tracker_risk": 0.0,
-        "jammer_risk": 0.0,
-        "combined_threat_score": 0.0,
-        "survivability_score": 100.0,
-        "recommended_posture": "Nominal",
-        "radar_detection_probability_pct": 0.0,
-        "rf_received_power_norm_db": 0.0,
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    import math
-    c = 299792458.0
-    lam = c / max(1e9, float(radar_frequency_ghz) * 1e9)
-    range_m = max(500.0, float(threat_zone_km) * 1000.0)
-    pt_w = max(1000.0, float(radar_tx_power_kw) * 1000.0)
-
-    sigma_rcs = max(0.01, 0.08 * (max(0.2, float(effective_size_m)) ** 2) * (0.6 + 0.4 * overall_detectability / 100.0))
-    g_lin = 1000.0
-    pr_w = (pt_w * (g_lin ** 2) * (lam ** 2) * sigma_rcs) / max(1.0, ((4.0 * math.pi) ** 3) * (range_m ** 4))
-
-    radar_mask_relief = max(0.0, min(1.0, terrain_masking_score / 100.0))
-    radar_alt_factor = min(1.0, max(0.0, altitude_m / 1200.0))
-    pr_w *= (1.0 - 0.55 * radar_mask_relief) * (0.75 + 0.25 * radar_alt_factor)
-
-    jammer_factor = max(0.0, min(1.0, jammer_density))
-    snr_proxy = pr_w / max(1e-12, 1e-9 * (1.0 + 8.0 * jammer_factor))
-    rf_db = 10.0 * math.log10(max(1e-16, pr_w))
-
-    p_det_radar = 1.0 / (1.0 + math.exp(-3.2 * (math.log10(max(1e-12, snr_proxy)) + 8.5)))
-    p_det_radar *= (0.35 + 0.65 * radar_density)
-    p_det_radar = max(0.0, min(1.0, p_det_radar))
-
-    radar_risk = 100.0 * max(0.0, min(1.0,
-        0.55 * p_det_radar +
-        0.15 * radar_alt_factor +
-        0.15 * (overall_detectability / 100.0) +
-        0.10 * min(1.0, route_score / 100.0) -
-        0.18 * radar_mask_relief
-    ))
-
-    ir_risk = 100.0 * max(0.0, min(1.0,
-        0.40 * ir_density +
-        0.35 * (thermal_score / 100.0) +
-        0.15 * min(1.0, sensor_detection_range_km / max(1.0, threat_zone_km * 2.0)) +
-        0.10 * max(0.0, min(1.0, speed_kmh / 180.0))
-    ))
-    if power_system == "ICE":
-        ir_risk = min(100.0, ir_risk * 1.08)
-
-    jammer_risk = 100.0 * max(0.0, min(1.0,
-        0.55 * jammer_density +
-        0.20 * min(1.0, sensor_detection_range_km / 10.0) +
-        0.15 * min(1.0, route_score / 100.0) +
-        0.10 * max(0.0, min(1.0, altitude_m / 1500.0))
-    ))
-
-    combined = 0.40 * radar_risk + 0.35 * ir_risk + 0.25 * jammer_risk
-    survivability = max(0.0, 100.0 - combined)
-
-    posture = "Nominal"
-    if combined >= 75:
-        posture = "High-Threat"
-    elif combined >= 50:
-        posture = "Contested"
-    elif combined >= 30:
-        posture = "Caution"
-
-    actions = []
-    if radar_risk >= 60:
-        actions.append("Radar threat elevated — reduce altitude, exploit terrain masking, and avoid long exposed transits.")
-    if p_det_radar >= 0.60:
-        actions.append("Radar-equation estimate indicates high radar detection probability at the present threat range.")
-    if ir_risk >= 60:
-        actions.append("IR tracking threat elevated — cut sustained power, compress climb profile, and favor cloud or masking before loiter.")
-    if jammer_risk >= 60:
-        actions.append("Jammer threat elevated — shorten exposed control windows and prioritize relay / resilient swarm posture.")
-    if combined >= 70:
-        actions.append("Combined adversary threat is high — recommend delayed ingress or route revision before execution.")
-    elif combined >= 45:
-        actions.append("Mission area is contested — maintain reserve discipline and avoid unnecessary on-station time.")
-    else:
-        actions.append("Threat environment is manageable under current profile, but continue monitoring radar / IR / jammer overlap.")
-
-    result.update({
-        "active": True,
-        "radar_risk": round(radar_risk, 1),
-        "ir_tracker_risk": round(ir_risk, 1),
-        "jammer_risk": round(jammer_risk, 1),
-        "combined_threat_score": round(combined, 1),
-        "survivability_score": round(survivability, 1),
-        "recommended_posture": posture,
-        "radar_detection_probability_pct": round(100.0 * p_det_radar, 1),
-        "rf_received_power_norm_db": round(rf_db, 2),
-        "actions": actions,
-    })
-    return result
-
-
-def render_adversary_simulation_panel(adversary_profile: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Adversary Simulation</div>"
-        "<div class='section-note'>Planning-grade hostile-environment model for radar zones, IR tracking systems, and jammers.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not adversary_profile.get("enabled", False):
-        st.info("Adversary Simulation is disabled.")
-        return
-
-    posture = adversary_profile.get("recommended_posture", "Nominal")
-    if posture == "High-Threat":
-        st.error(f"Threat posture: {posture}")
-    elif posture in ["Contested", "Caution"]:
-        st.warning(f"Threat posture: {posture}")
-    else:
-        st.success(f"Threat posture: {posture}")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Radar Risk", f"{adversary_profile.get('radar_risk', 0.0):.1f}/100")
-    with c2:
-        st.metric("IR Tracker Risk", f"{adversary_profile.get('ir_tracker_risk', 0.0):.1f}/100")
-    with c3:
-        st.metric("Jammer Risk", f"{adversary_profile.get('jammer_risk', 0.0):.1f}/100")
-
-    c4, c5, c6, c7 = st.columns(4)
-    with c4:
-        st.metric("Combined Threat", f"{adversary_profile.get('combined_threat_score', 0.0):.1f}/100")
-    with c5:
-        st.metric("Survivability", f"{adversary_profile.get('survivability_score', 100.0):.1f}/100")
-    with c6:
-        st.metric("Radar Detect Prob", f"{adversary_profile.get('radar_detection_probability_pct', 0.0):.1f}%")
-    with c7:
-        st.metric("RF Rx Power", f"{adversary_profile.get('rf_received_power_norm_db', 0.0):.2f} dB")
-
-    for action in adversary_profile.get("actions", []):
-        if "high" in action.lower() or "elevated" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-def compute_gnss_denied_navigation(
-    enabled: bool,
-    fusion_quality: float,
-    drift_sensitivity: float,
-    map_uncertainty_factor: float,
-    flight_time_minutes: float,
-    total_distance_km: float,
-    speed_kmh: float,
-    terrain_masking_score: float,
-    jammer_risk: float,
-    route_score: float,
-) -> Dict[str, Any]:
-    """Planning-grade GNSS-denied navigation model.
-    Approximates fused-nav health, drift growth, and map uncertainty under degraded navigation.
-    """
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "fusion_health_score": 100.0,
-        "estimated_drift_km": 0.0,
-        "map_uncertainty_km": 0.0,
-        "navigation_confidence": 100.0,
-        "recommended_mode": "Nominal",
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    # More jamming and route complexity hurt dead-reckoning / fused-nav health.
-    jammer_factor = max(0.0, min(1.0, jammer_risk / 100.0))
-    route_factor = max(0.0, min(1.0, route_score / 100.0))
-    masking_bonus = max(0.0, min(1.0, terrain_masking_score / 100.0))
-
-    fusion_health = 100.0 * max(0.0, min(1.0,
-        0.75 * (fusion_quality / 1.5) +
-        0.10 * masking_bonus +
-        0.15 * (1.0 - jammer_factor)
-    ))
-
-    # Drift grows with time, speed, and degraded fusion.
-    drift_rate_km_per_hr = 0.08 * drift_sensitivity * (1.0 + 1.8 * jammer_factor + 0.6 * route_factor) * (1.15 - 0.4 * (fusion_quality / 1.5))
-    estimated_drift_km = max(0.0, drift_rate_km_per_hr * (flight_time_minutes / 60.0))
-
-    # Map uncertainty compounds route length and base uncertainty factor.
-    map_uncertainty_km = max(0.0, (0.03 * total_distance_km + 0.35 * map_uncertainty_factor) * (1.0 + 0.8 * jammer_factor))
-
-    nav_conf = max(0.0, 100.0 - (30.0 * estimated_drift_km + 40.0 * map_uncertainty_km))
-    nav_conf = min(nav_conf, fusion_health)
-
-    mode = "Nominal"
-    if nav_conf < 40:
-        mode = "Degraded"
-    elif nav_conf < 65:
-        mode = "Caution"
-
-    actions = []
-    if fusion_health < 60:
-        actions.append("Sensor-fusion health is degraded — shorten exposed legs and reduce dependence on precise waypoint timing.")
-    else:
-        actions.append("Sensor-fusion health is acceptable for planning-grade GNSS-denied navigation.")
-
-    if estimated_drift_km >= 1.0:
-        actions.append("Estimated drift is high — tighten waypoint spacing or reduce mission duration before GNSS-denied ingress.")
-    elif estimated_drift_km >= 0.4:
-        actions.append("Estimated drift is moderate — maintain conservative routing and avoid extended low-feature terrain.")
-
-    if map_uncertainty_km >= 0.8:
-        actions.append("Map uncertainty is significant — confirm terrain / landmark assumptions before relying on masked routing.")
-    elif map_uncertainty_km >= 0.3:
-        actions.append("Map uncertainty is present — use broader reserve margins for off-nominal navigation.")
-
-    if jammer_factor >= 0.6:
-        actions.append("Jammer pressure is high — prioritize resilient swarm relay or shorter GNSS-denied segments.")
-
-    if nav_conf < 40:
-        actions.append("Navigation confidence is low — recommend abort / simplify route under GNSS-denied conditions.")
-    elif nav_conf < 65:
-        actions.append("Navigation confidence is moderate — favor shorter legs and stronger sensor-fusion posture.")
-    else:
-        actions.append("Navigation confidence is strong enough for planning-grade degraded-navigation assessment.")
-
-    result.update({
-        "active": True,
-        "fusion_health_score": round(fusion_health, 1),
-        "estimated_drift_km": round(estimated_drift_km, 3),
-        "map_uncertainty_km": round(map_uncertainty_km, 3),
-        "navigation_confidence": round(nav_conf, 1),
-        "recommended_mode": mode,
-        "actions": actions[:5],
-    })
-    return result
-
-
-def render_gnss_denied_navigation_panel(nav_profile: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>GNSS-Denied Navigation</div>"
-        "<div class='section-note'>Planning-grade degraded-navigation estimate covering sensor fusion, drift growth, and map uncertainty.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not nav_profile.get("enabled", False):
-        st.info("GNSS-Denied Navigation is disabled.")
-        return
-
-    mode = nav_profile.get("recommended_mode", "Nominal")
-    if mode == "Degraded":
-        st.error(f"Navigation mode: {mode}")
-    elif mode == "Caution":
-        st.warning(f"Navigation mode: {mode}")
-    else:
-        st.success(f"Navigation mode: {mode}")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Fusion Health", f"{nav_profile.get('fusion_health_score', 100.0):.1f}/100")
-    with c2:
-        st.metric("Estimated Drift", f"{nav_profile.get('estimated_drift_km', 0.0):.3f} km")
-    with c3:
-        st.metric("Map Uncertainty", f"{nav_profile.get('map_uncertainty_km', 0.0):.3f} km")
-
-    c4 = st.columns(1)[0]
-    with c4:
-        st.metric("Navigation Confidence", f"{nav_profile.get('navigation_confidence', 100.0):.1f}/100")
-
-    for action in nav_profile.get("actions", []):
-        if "abort" in action.lower() or "degraded" in action.lower() or "high" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-
-def estimate_available_shaft_power_W(profile: Dict[str, Any], total_mass_kg: float, battery_capacity_wh: float = 0.0) -> float:
-    # Planning-grade available shaft-power estimate.
-    # Fixed-wing ICE uses nominal engine power; battery aircraft use a mass-scaled electric ceiling.
-    if profile.get("power_system") == "ICE":
-        return max(1500.0, 1000.0 * estimate_engine_nominal_power_kw(profile))
-    if profile.get("type") == "fixed":
-        profile_cap = float(profile.get("max_shaft_power_W", 0.0))
-        if profile_cap > 0:
-            return profile_cap
-        # conservative battery/electric estimate for small fixed-wing UAVs
-        return max(300.0, min(12000.0, 700.0 + 550.0 * total_mass_kg + 0.10 * float(profile.get("battery_wh", battery_capacity_wh or 0.0))))
-    # rotorcraft placeholder retained as proxy
-    return max(500.0, 800.0 * total_mass_kg)
-
-
-def compute_power_available_envelope(
-    profile: Dict[str, Any],
-    total_mass_kg: float,
-    altitude_m: int,
-    flight_speed_kmh: float,
-    rho: float,
-) -> Dict[str, float]:
-    # Power-available / excess-power climb and service-ceiling estimate for fixed-wing aircraft.
-    # Rotorcraft fall back to proxy values elsewhere.
-    if profile.get("type") != "fixed":
-        return {"power_available_W": 0.0, "power_required_W": 0.0, "excess_power_W": 0.0, "roc_mps": 0.0, "service_ceiling_m": 0.0}
-
-    weight_N = total_mass_kg * G0
-    V_ms = max(8.0, float(flight_speed_kmh) / 3.6)
-    perf = fixedwing_power_required(
-        weight_N=weight_N,
-        rho=rho,
-        V_ms=V_ms,
-        wing_area_m2=float(profile.get("wing_area_m2", 0.6)),
-        span_m=float(profile.get("wingspan_m", 2.0)),
-        cd0=float(profile.get("cd0", 0.05)),
-        e=float(profile.get("oswald_e", 0.75)),
-        prop_eff=float(profile.get("prop_eff", 0.70)),
-        power_system=profile.get("power_system", "Battery"),
-        hotel_W=float(profile.get("hotel_W", HOTEL_W_DEFAULT)),
-        install_frac=0.10,
-        cl_max=float(profile.get("cl_max", 1.4)),
-    )
-    p_req = float(perf["total_W"])
-
-    p_avail_sl = estimate_available_shaft_power_W(profile, total_mass_kg, float(profile.get("battery_wh", 0.0)))
-    # power available degrades with density; exponent softened to remain planning-grade
-    sigma = max(0.15, min(1.2, rho / RHO0))
-    if profile.get("power_system") == "ICE":
-        p_avail = p_avail_sl * sigma ** 0.85
-    else:
-        p_avail = p_avail_sl * sigma ** 0.65
-
-    excess_power_W = p_avail - p_req
-    roc_mps = max(0.0, excess_power_W / max(1.0, weight_N))
-
-    # Solve service ceiling where ROC falls to 0.5 m/s by scanning ISA density
-    service_ceiling_m = float(altitude_m)
-    target_roc = 0.5
-    for h in range(0, 18001, 250):
-        rho_h = isa_density(h, T0_STD + 15.0)  # standard-ish reference temperature
-        sigma_h = max(0.12, min(1.2, rho_h / RHO0))
-        if profile.get("power_system") == "ICE":
-            p_av_h = p_avail_sl * sigma_h ** 0.85
-        else:
-            p_av_h = p_avail_sl * sigma_h ** 0.65
-
-        perf_h = fixedwing_power_required(
-            weight_N=weight_N,
-            rho=rho_h,
-            V_ms=V_ms,
-            wing_area_m2=float(profile.get("wing_area_m2", 0.6)),
-            span_m=float(profile.get("wingspan_m", 2.0)),
-            cd0=float(profile.get("cd0", 0.05)),
-            e=float(profile.get("oswald_e", 0.75)),
-            prop_eff=float(profile.get("prop_eff", 0.70)),
-            power_system=profile.get("power_system", "Battery"),
-            hotel_W=float(profile.get("hotel_W", HOTEL_W_DEFAULT)),
-            install_frac=0.10,
-            cl_max=float(profile.get("cl_max", 1.4)),
-        )
-        roc_h = max(0.0, (p_av_h - float(perf_h["total_W"])) / max(1.0, weight_N))
-        if roc_h < target_roc:
-            service_ceiling_m = float(h)
-            break
-        service_ceiling_m = float(h)
-
-    return {
-        "power_available_W": round(p_avail, 2),
-        "power_required_W": round(p_req, 2),
-        "excess_power_W": round(excess_power_W, 2),
-        "roc_mps": round(roc_mps, 3),
-        "service_ceiling_m": round(service_ceiling_m, 1),
-    }
-
-
-def compute_flight_envelope_enforcement(
-    enabled: bool,
-    profile: Dict[str, Any],
-    total_mass_kg: float,
-    altitude_m: int,
-    flight_speed_kmh: float,
-    elevation_gain_m: int,
-    rho: float,
-) -> Dict[str, Any]:
-    # Flight envelope checks with power-available climb and service ceiling for fixed-wing aircraft.
-    g = G0
-    weight_N = total_mass_kg * g
-    platform_type = profile.get("type", "fixed")
-
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "stall_speed_kmh": 0.0,
-        "recommended_min_speed_kmh": 0.0,
-        "max_climb_rate_mps": 0.0,
-        "requested_climb_rate_mps": 0.0,
-        "service_ceiling_m": 0.0,
-        "power_available_W": 0.0,
-        "power_required_W": 0.0,
-        "excess_power_W": 0.0,
-        "speed_violation": False,
-        "climb_violation": False,
-        "ceiling_violation": False,
-        "adjusted_speed_kmh": float(flight_speed_kmh),
-        "adjusted_altitude_m": int(altitude_m),
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    if platform_type == "fixed":
-        wing_area = float(profile.get("wing_area_m2", 0.6))
-        cl_max = float(profile.get("cl_max", 1.4))
-        stall_speed_ms = ((2.0 * weight_N) / max(1e-6, rho * wing_area * cl_max)) ** 0.5
-        stall_speed_kmh = stall_speed_ms * 3.6
-        recommended_min_speed_kmh = 1.20 * stall_speed_kmh
-
-        power_env = compute_power_available_envelope(
-            profile=profile,
-            total_mass_kg=total_mass_kg,
-            altitude_m=altitude_m,
-            flight_speed_kmh=max(float(flight_speed_kmh), recommended_min_speed_kmh),
-            rho=rho,
-        )
-        max_climb_rate_mps = float(power_env["roc_mps"])
-        service_ceiling_m = float(power_env["service_ceiling_m"])
-        p_av = float(power_env["power_available_W"])
-        p_req = float(power_env["power_required_W"])
-        p_excess = float(power_env["excess_power_W"])
-    else:
-        stall_speed_kmh = 0.0
-        recommended_min_speed_kmh = 0.0
-        if total_mass_kg > 20:
-            max_climb_rate_mps = 5.0
-            service_ceiling_m = 5000.0
-        elif total_mass_kg > 5:
-            max_climb_rate_mps = 4.0
-            service_ceiling_m = 3500.0
-        else:
-            max_climb_rate_mps = 3.0
-            service_ceiling_m = 2500.0
-        p_av = 0.0
-        p_req = 0.0
-        p_excess = 0.0
-
-    requested_climb_rate_mps = max(0.0, float(elevation_gain_m) / 60.0)
-
-    speed_violation = False
-    adjusted_speed = float(flight_speed_kmh)
-    if platform_type == "fixed" and flight_speed_kmh < recommended_min_speed_kmh:
-        speed_violation = True
-        adjusted_speed = recommended_min_speed_kmh
-
-    climb_violation = requested_climb_rate_mps > max_climb_rate_mps
-    ceiling_violation = float(altitude_m) > service_ceiling_m
-    adjusted_altitude = int(min(float(altitude_m), service_ceiling_m))
-
-    actions = []
-    if speed_violation:
-        actions.append(f"Speed below recommended fixed-wing minimum; raise airspeed to at least {recommended_min_speed_kmh:.1f} km/h.")
-    if climb_violation:
-        actions.append(f"Requested climb rate exceeds power-available capability; limit climb to about {max_climb_rate_mps:.1f} m/s.")
-    if ceiling_violation:
-        actions.append(f"Requested altitude exceeds power-limited service ceiling; cap altitude near {service_ceiling_m:.0f} m.")
-    if platform_type == "fixed":
-        actions.append(f"Power available {p_av:.0f} W vs power required {p_req:.0f} W gives excess power {p_excess:.0f} W.")
-    if not (speed_violation or climb_violation or ceiling_violation):
-        actions.append("Requested mission profile remains inside the planning-grade flight envelope.")
-
-    result.update({
-        "active": True,
-        "stall_speed_kmh": round(stall_speed_kmh, 2),
-        "recommended_min_speed_kmh": round(recommended_min_speed_kmh, 2),
-        "max_climb_rate_mps": round(max_climb_rate_mps, 2),
-        "requested_climb_rate_mps": round(requested_climb_rate_mps, 2),
-        "service_ceiling_m": round(service_ceiling_m, 1),
-        "power_available_W": round(p_av, 2),
-        "power_required_W": round(p_req, 2),
-        "excess_power_W": round(p_excess, 2),
-        "speed_violation": bool(speed_violation),
-        "climb_violation": bool(climb_violation),
-        "ceiling_violation": bool(ceiling_violation),
-        "adjusted_speed_kmh": round(adjusted_speed, 2),
-        "adjusted_altitude_m": int(adjusted_altitude),
-        "actions": actions,
-    })
-    return result
-
-
-def render_flight_envelope_panel(env_profile: Dict[str, Any], platform_type: str):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Flight Envelope Enforcement</div>"
-        "<div class='section-note'>Planning-grade checks for stall speed, climb-rate limits, and service ceiling to prevent unrealistic mission configurations.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not env_profile.get("enabled", False):
-        st.info("Flight Envelope Enforcement is disabled.")
-        return
-
-    if env_profile.get("speed_violation", False) or env_profile.get("climb_violation", False) or env_profile.get("ceiling_violation", False):
-        st.warning("Envelope status: LIMIT EXCEEDED")
-    else:
-        st.success("Envelope status: WITHIN LIMITS")
-
-    cols = st.columns(3)
-    if platform_type == "fixed":
-        with cols[0]:
-            st.metric("Stall Speed", f"{env_profile.get('stall_speed_kmh', 0.0):.1f} km/h")
-        with cols[1]:
-            st.metric("Recommended Min Speed", f"{env_profile.get('recommended_min_speed_kmh', 0.0):.1f} km/h")
-        with cols[2]:
-            st.metric("Service Ceiling", f"{env_profile.get('service_ceiling_m', 0.0):.0f} m")
-    else:
-        with cols[0]:
-            st.metric("Max Climb Rate", f"{env_profile.get('max_climb_rate_mps', 0.0):.1f} m/s")
-        with cols[1]:
-            st.metric("Service Ceiling", f"{env_profile.get('service_ceiling_m', 0.0):.0f} m")
-        with cols[2]:
-            st.metric("Requested Climb Rate", f"{env_profile.get('requested_climb_rate_mps', 0.0):.1f} m/s")
-
-    if platform_type == "fixed":
-        cols2 = st.columns(4)
-        with cols2[0]:
-            st.metric("Requested Climb Rate", f"{env_profile.get('requested_climb_rate_mps', 0.0):.1f} m/s")
-        with cols2[1]:
-            st.metric("Max Climb Rate", f"{env_profile.get('max_climb_rate_mps', 0.0):.1f} m/s")
-        with cols2[2]:
-            st.metric("Power Available", f"{env_profile.get('power_available_W', 0.0):.0f} W")
-        with cols2[3]:
-            st.metric("Excess Power", f"{env_profile.get('excess_power_W', 0.0):.0f} W")
-
-    for action in env_profile.get("actions", []):
-        if "exceeds" in action.lower() or "below" in action.lower() or "cap altitude" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-
-def compute_battery_temp_discharge_factor(temp_c: float) -> float:
-    # Planning-grade temperature discharge multiplier / OCV availability proxy
-    t = float(temp_c)
-    if t <= -10:
-        return 0.58
-    if t <= 0:
-        return 0.68
-    if t <= 10:
-        return 0.80
-    if t <= 20:
-        return 0.92
-    if t <= 30:
-        return 1.00
-    if t <= 40:
-        return 0.96
-    if t <= 50:
-        return 0.90
-    return 0.82
-
-
-def estimate_engine_nominal_power_kw(profile: Dict[str, Any]) -> float:
-    name = str(profile.get('name', '')) or str(profile)
-    if 'MQ-9' in name:
-        return 670.0
-    if 'MQ-1' in name:
-        return 86.0
-    if profile.get('power_system') == 'ICE':
-        return 120.0
-    return 0.0
-
-
-def compute_bsfc_map_gpkwh(throttle_ratio: float, wear_factor: float) -> float:
-    # Planning-grade BSFC map with best efficiency near cruise-mid throttle
-    x = max(0.15, min(1.20, float(throttle_ratio)))
-    # U-shaped curve: lower BSFC is better
-    bsfc = 255.0 + 120.0 * ((x - 0.72) ** 2) / 0.25
-    bsfc *= (2.0 - max(0.80, min(1.20, float(wear_factor))))  # wear <1 raises BSFC
-    return max(240.0, min(420.0, bsfc))
-
-
-def compute_battery_ecm(
-    usable_capacity_wh: float,
-    nominal_voltage_v: float,
-    internal_resistance_ohm: float,
-    load_power_w: float,
-    temp_factor: float,
-) -> Dict[str, float]:
-    # 1-R equivalent-circuit surrogate
-    v_oc = max(8.0, float(nominal_voltage_v) * max(0.70, min(1.05, temp_factor)))
-    current_a = max(0.0, float(load_power_w) / max(1e-6, v_oc))
-    v_loaded = max(0.0, v_oc - current_a * float(internal_resistance_ohm))
-    i2r_loss_w = (current_a ** 2) * float(internal_resistance_ohm)
-    # Use loaded/OCV ratio as an availability reduction on remaining usable energy
-    voltage_eff = max(0.60, min(1.0, v_loaded / max(1e-6, v_oc)))
-    effective_capacity_wh = max(0.0, float(usable_capacity_wh) * voltage_eff)
-    return {
-        'ocv_v': round(v_oc, 3),
-        'loaded_v': round(v_loaded, 3),
-        'current_a': round(current_a, 3),
-        'internal_loss_w': round(i2r_loss_w, 3),
-        'voltage_efficiency': round(voltage_eff, 3),
-        'effective_capacity_wh': round(effective_capacity_wh, 3),
-    }
-
-
-def compute_degradation_model(
-    enabled: bool,
-    profile: Dict[str, Any],
-    battery_cycle_count: int,
-    temperature_c: float,
-    battery_capacity_wh: float,
-    battery_nominal_voltage_v: float,
-    battery_internal_resistance_mohm: float,
-    total_draw_W: float,
-    total_power_W: float,
-    engine_wear_factor: float,
-) -> Dict[str, Any]:
-    # Planning-grade degradation model upgraded toward MIT-style expectations:
-    # battery equivalent-circuit surrogate + BSFC-map-style ICE efficiency model
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "battery_cycle_factor": 1.0,
-        "battery_temp_factor": 1.0,
-        "battery_degraded_capacity_wh": float(battery_capacity_wh),
-        "battery_health_score": 100.0,
-        "battery_ocv_v": 0.0,
-        "battery_loaded_v": 0.0,
-        "battery_current_a": 0.0,
-        "battery_internal_loss_w": 0.0,
-        "battery_voltage_efficiency": 1.0,
-        "ice_throttle_ratio": 0.0,
-        "ice_efficiency_factor": 1.0,
-        "ice_effective_power_kw": 0.0,
-        "ice_bsfc_gpkwh": 0.0,
-        "recommended_posture": "Nominal",
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    power_system = profile.get("power_system", "Battery")
-    actions = []
-
-    cycle_count = max(0, int(battery_cycle_count))
-    cycle_factor = max(0.70, 1.0 - 0.00018 * cycle_count - 0.00000012 * (cycle_count ** 2))
-    temp_factor = compute_battery_temp_discharge_factor(temperature_c)
-    usable_capacity_wh = max(0.0, float(battery_capacity_wh) * cycle_factor * temp_factor)
-
-    battery_health_score = max(0.0, min(100.0, 100.0 * cycle_factor))
-    ecm = compute_battery_ecm(
-        usable_capacity_wh=usable_capacity_wh,
-        nominal_voltage_v=float(battery_nominal_voltage_v),
-        internal_resistance_ohm=max(0.001, float(battery_internal_resistance_mohm) / 1000.0),
-        load_power_w=float(total_draw_W),
-        temp_factor=temp_factor,
-    )
-
-    if power_system == "Battery":
-        if cycle_factor < 0.90:
-            actions.append("Battery aging is reducing usable pack energy; monitor reserve margins more aggressively.")
-        if temp_factor < 0.90:
-            actions.append("Temperature-dependent discharge losses are active; expect reduced effective endurance.")
-        if ecm["internal_loss_w"] > 0.05 * max(1.0, float(total_draw_W)):
-            actions.append("Internal resistance losses are significant under the current load; expect voltage sag and lower effective capacity.")
-        actions.append(f"Equivalent-circuit estimate: loaded voltage about {ecm['loaded_v']:.1f} V and internal loss about {ecm['internal_loss_w']:.1f} W.")
-
-    nominal_kw = estimate_engine_nominal_power_kw(profile)
-    ice_throttle_ratio = 0.0
-    ice_eff_factor = 1.0
-    ice_effective_power_kw = 0.0
-    ice_bsfc = 0.0
-    if power_system == "ICE":
-        demanded_kw = max(0.0, float(total_power_W) / 1000.0)
-        ice_throttle_ratio = demanded_kw / max(1.0, nominal_kw)
-        ice_bsfc = compute_bsfc_map_gpkwh(ice_throttle_ratio, engine_wear_factor)
-        # Convert lower BSFC to better efficiency factor around 255 g/kWh best case
-        ice_eff_factor = max(0.55, min(1.0, 255.0 / max(1e-6, ice_bsfc)))
-        ice_effective_power_kw = demanded_kw / max(0.55, ice_eff_factor)
-
-        if ice_throttle_ratio > 0.85:
-            actions.append("ICE throttle demand is high; BSFC is rising in the upper-throttle region.")
-        elif ice_throttle_ratio < 0.35:
-            actions.append("ICE is operating at low throttle where BSFC is typically weaker.")
-        else:
-            actions.append("ICE throttle setting is near the efficient cruise regime.")
-        if engine_wear_factor < 0.95:
-            actions.append("Engine wear factor indicates degraded propulsion efficiency; preserve extra fuel reserve.")
-        actions.append(f"BSFC-map estimate: about {ice_bsfc:.0f} g/kWh at the current throttle condition.")
-
-    posture = "Nominal"
-    if power_system == "Battery" and (cycle_factor < 0.85 or temp_factor < 0.80 or ecm["voltage_efficiency"] < 0.82):
-        posture = "Degraded"
-    elif power_system == "Battery" and (cycle_factor < 0.92 or temp_factor < 0.92 or ecm["voltage_efficiency"] < 0.92):
-        posture = "Caution"
-    elif power_system == "ICE" and (ice_throttle_ratio > 0.90 or engine_wear_factor < 0.90 or ice_bsfc > 340.0):
-        posture = "Degraded"
-    elif power_system == "ICE" and (ice_throttle_ratio > 0.75 or engine_wear_factor < 0.98 or ice_bsfc > 300.0):
-        posture = "Caution"
-
-    if posture == "Degraded":
-        actions.append("Degradation posture is degraded; shorten mission profile or increase reserve margin before execution.")
-    elif posture == "Caution":
-        actions.append("Degradation posture is cautionary; validate endurance and RTB margins against degraded performance.")
-    else:
-        actions.append("Degradation posture is nominal for planning purposes.")
-
-    result.update({
-        "active": True,
-        "battery_cycle_factor": round(cycle_factor, 3),
-        "battery_temp_factor": round(temp_factor, 3),
-        "battery_degraded_capacity_wh": round(ecm['effective_capacity_wh'], 2),
-        "battery_health_score": round(battery_health_score, 1),
-        "battery_ocv_v": round(ecm['ocv_v'], 3),
-        "battery_loaded_v": round(ecm['loaded_v'], 3),
-        "battery_current_a": round(ecm['current_a'], 3),
-        "battery_internal_loss_w": round(ecm['internal_loss_w'], 3),
-        "battery_voltage_efficiency": round(ecm['voltage_efficiency'], 3),
-        "ice_throttle_ratio": round(ice_throttle_ratio, 3),
-        "ice_efficiency_factor": round(ice_eff_factor, 3),
-        "ice_effective_power_kw": round(ice_effective_power_kw, 3),
-        "ice_bsfc_gpkwh": round(ice_bsfc, 2),
-        "recommended_posture": posture,
-        "actions": actions[:6],
-    })
-    return result
-
-
-def render_degradation_panel(deg_profile: Dict[str, Any], power_system: str):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Battery + Fuel Degradation Modeling</div>"
-        "<div class='section-note'>Planning-grade battery aging, temperature discharge behavior, and ICE efficiency vs throttle.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not deg_profile.get("enabled", False):
-        st.info("Battery + Fuel Degradation Modeling is disabled.")
-        return
-
-    posture = deg_profile.get("recommended_posture", "Nominal")
-    if posture == "Degraded":
-        st.error(f"Degradation posture: {posture}")
-    elif posture == "Caution":
-        st.warning(f"Degradation posture: {posture}")
-    else:
-        st.success(f"Degradation posture: {posture}")
-
-    if power_system == "Battery":
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("Battery Health", f"{deg_profile.get('battery_health_score', 100.0):.1f}/100")
-        with c2:
-            st.metric("Cycle Factor", f"{deg_profile.get('battery_cycle_factor', 1.0):.3f}")
-        with c3:
-            st.metric("Temp Factor", f"{deg_profile.get('battery_temp_factor', 1.0):.3f}")
-
-        c4, c5 = st.columns(2)
-        with c4:
-            st.metric("Loaded Voltage", f"{deg_profile.get('battery_loaded_v', 0.0):.2f} V")
-        with c5:
-            st.metric("Internal Loss", f"{deg_profile.get('battery_internal_loss_w', 0.0):.1f} W")
-        st.metric("Degraded Capacity", f"{deg_profile.get('battery_degraded_capacity_wh', 0.0):.1f} Wh")
-    else:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("Throttle Ratio", f"{deg_profile.get('ice_throttle_ratio', 0.0):.2f}")
-        with c2:
-            st.metric("ICE Efficiency Factor", f"{deg_profile.get('ice_efficiency_factor', 1.0):.3f}")
-        with c3:
-            st.metric("Effective Power", f"{deg_profile.get('ice_effective_power_kw', 0.0):.2f} kW")
-        st.metric("BSFC Map Value", f"{deg_profile.get('ice_bsfc_gpkwh', 0.0):.0f} g/kWh")
-
-    for action in deg_profile.get("actions", []):
-        if "degraded" in action.lower() or "high" in action.lower() or "reduced" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-
-
-def build_scenario_variants(
-    base_inputs: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    base = dict(base_inputs)
-    nominal = dict(base); nominal["label"] = "Scenario A — Nominal"
-    conservative = dict(base); conservative["label"] = "Scenario B — Conservative"; conservative["flight_speed_kmh"] = max(20.0, float(base["flight_speed_kmh"]) * 0.90); conservative["altitude_m"] = int(float(base["altitude_m"]) + 100); conservative["loiter_minutes"] = max(0.0, float(base["loiter_minutes"]) * 0.75)
-    aggressive = dict(base); aggressive["label"] = "Scenario C — Aggressive"; aggressive["flight_speed_kmh"] = float(base["flight_speed_kmh"]) * 1.10; aggressive["altitude_m"] = max(0, int(float(base["altitude_m"]) - 100)); aggressive["loiter_minutes"] = float(base["loiter_minutes"]) * 1.25
-    return [nominal, conservative, aggressive]
-
-
-def evaluate_full_stack_scenario(
-    profile: Dict[str, Any],
-    scenario: Dict[str, Any],
-) -> Dict[str, Any]:
-    # Full-stack planning rerun through the major mission-support modules
-    payload_weight_g = int(scenario["payload_weight_g"])
-    flight_speed_kmh = float(scenario["flight_speed_kmh"])
-    wind_speed_kmh = float(scenario["wind_speed_kmh"])
-    temperature_c = float(scenario["temperature_c"])
-    altitude_m = int(scenario["altitude_m"])
-    elevation_gain_m = int(scenario["elevation_gain_m"])
-    flight_mode = scenario["flight_mode"]
-    gustiness = int(scenario["gustiness"])
-    terrain_penalty = float(scenario["terrain_penalty"])
-    stealth_drag_penalty = float(scenario["stealth_drag_penalty"])
-    battery_capacity_wh = float(scenario.get("battery_capacity_wh", 0.0))
-    fuel_tank_l = float(scenario.get("fuel_tank_l", 0.0))
-    cloud_cover = int(scenario["cloud_cover"])
-    humidity_factor = float(scenario["humidity_factor"])
-    background_complexity = float(scenario["background_complexity"])
-    effective_size_m = float(scenario["effective_size_m"])
-    waypoints = list(scenario["waypoints"])
-    loiter_minutes = float(scenario["loiter_minutes"])
-    include_rtb = bool(scenario["include_rtb"])
-    threat_zone_km = float(scenario["threat_zone_km"])
-    sensor_band = scenario["sensor_band"]
-    sensor_quality = float(scenario["sensor_quality"])
-
-    if profile["power_system"] == "Battery":
-        result = simulate_battery_aircraft(profile, payload_weight_g, flight_speed_kmh, wind_speed_kmh, temperature_c, altitude_m, elevation_gain_m, flight_mode, gustiness, terrain_penalty, stealth_drag_penalty, battery_capacity_wh)
-    else:
-        result = simulate_ice_aircraft(profile, payload_weight_g, flight_speed_kmh, wind_speed_kmh, temperature_c, altitude_m, elevation_gain_m, flight_mode, gustiness, terrain_penalty, stealth_drag_penalty, fuel_tank_l)
-
-    rho = result["rho"]
-    total_weight_kg = result["total_mass_kg"]
-    flight_time_minutes = result["dispatch_endurance_min"]
-    delta_T = result["thermal_load_deltaT_estimate_C"]
-    detect = compute_detectability_scores_v3(delta_T, altitude_m, flight_speed_kmh, cloud_cover, gustiness, stealth_drag_penalty, profile["type"], profile["power_system"], effective_size_m, background_complexity, humidity_factor)
-    visual_score = detect["visual_score"]; thermal_score = detect["thermal_score"]; overall_score = detect["overall_score"]; detect_confidence = detect["confidence"]
-
-    autopilot_profile = run_detectability_autopilot(
-        enabled=True,
-        overall_score=overall_score, visual_score=visual_score, thermal_score=thermal_score,
-        confidence=detect_confidence, altitude_m=altitude_m, speed_kmh=flight_speed_kmh,
-        power_system=profile["power_system"], hybrid_assist_enabled=(profile["power_system"] == "ICE"),
-        stealth_drag_penalty=stealth_drag_penalty,
-    )
-    route_optimization_profile = optimize_route_profile(
-        enabled=True, waypoints=waypoints,
-        speed_kmh=float(autopilot_profile.get("target_speed_kmh", flight_speed_kmh)),
-        altitude_m=int(autopilot_profile.get("target_altitude_m", altitude_m)),
-        overall_detectability=overall_score, visual_detectability=visual_score, thermal_detectability=thermal_score,
-        terrain_penalty=terrain_penalty, stealth_drag_penalty=stealth_drag_penalty, threat_zone_km=threat_zone_km,
-        radar_threat_penalty=0.0,
-    )
-    terrain_masking_profile = estimate_terrain_masking(
-        enabled=True, waypoints=waypoints,
-        altitude_m=int(route_optimization_profile.get("recommended_altitude_m", altitude_m)),
-        terrain_penalty=terrain_penalty, cloud_cover=cloud_cover,
-        overall_detectability=overall_score, visual_detectability=visual_score, thermal_detectability=thermal_score,
-        threat_zone_km=threat_zone_km,
-        terrain_ridge_amplitude_m=float(scenario.get('terrain_ridge_amplitude_m', 80.0)),
-    )
-    sensor_model_profile = compute_sensor_model(
-        enabled=True, sensor_band=sensor_band, sensor_quality=sensor_quality,
-        humidity_factor=humidity_factor, cloud_cover=cloud_cover,
-        altitude_m=int(route_optimization_profile.get("recommended_altitude_m", altitude_m)),
-        visual_score=visual_score, thermal_score=thermal_score, overall_score=overall_score, delta_t=delta_T,
-    )
-    adversary_profile = compute_adversary_simulation(
-        enabled=True,
-        radar_density=float(scenario["adversary_radar_density"]),
-        ir_density=float(scenario["adversary_ir_density"]),
-        jammer_density=float(scenario["adversary_jammer_density"]),
-        altitude_m=int(route_optimization_profile.get("recommended_altitude_m", altitude_m)),
-        speed_kmh=float(autopilot_profile.get("target_speed_kmh", flight_speed_kmh)),
-        overall_detectability=float(terrain_masking_profile.get("adjusted_overall_score", overall_score)),
-        visual_score=float(terrain_masking_profile.get("adjusted_visual_score", visual_score)),
-        thermal_score=thermal_score,
-        sensor_detection_range_km=float(sensor_model_profile.get("max_likely_detection_km", 0.0)),
-        terrain_masking_score=float(terrain_masking_profile.get("masking_score", 0.0)),
-        route_score=float(route_optimization_profile.get("optimized_score", 0.0)),
-        threat_zone_km=threat_zone_km,
-        power_system=profile["power_system"],
-        radar_frequency_ghz=float(scenario["radar_frequency_ghz"]),
-        radar_tx_power_kw=float(scenario["radar_tx_power_kw"]),
-        effective_size_m=effective_size_m,
-    )
-    mission_profile = simulate_mission_phases(
-        profile=profile,
-        payload_weight_g=payload_weight_g,
-        cruise_speed_kmh=flight_speed_kmh,
-        wind_speed_kmh=wind_speed_kmh,
-        temperature_c=temperature_c,
-        cruise_altitude_m=altitude_m,
-        elevation_gain_m=elevation_gain_m,
-        gustiness=gustiness,
-        terrain_penalty=terrain_penalty,
-        stealth_drag_penalty=stealth_drag_penalty,
-        battery_capacity_wh=(result.get("battery_derated_Wh") if profile["power_system"] == "Battery" else None),
-        fuel_tank_l=(result.get("usable_fuel_L") if profile["power_system"] == "ICE" else None),
-        loiter_minutes=float(coupled_loiter_profile.get("allowed_loiter_min", loiter_minutes)) if "coupled_loiter_profile" in locals() else loiter_minutes,
-        include_rtb=include_rtb,
-    )
-    nav_profile_v2 = compute_gnss_denied_navigation_v2(
-        enabled=True,
-        fusion_quality=float(scenario.get("fusion_quality", 1.0)),
-        drift_sensitivity=float(scenario.get("drift_sensitivity", 1.0)),
-        map_uncertainty_factor=float(scenario.get("map_uncertainty_factor", 0.25)),
-        update_gain=float(scenario.get("gnss_update_gain", 0.55)),
-        flight_time_minutes=flight_time_minutes,
-        total_distance_km=(result.get("V_effective_ms", max(1.0, flight_speed_kmh / 3.6)) * 3.6 * flight_time_minutes) / 60.0,
-        speed_kmh=float(autopilot_profile.get("target_speed_kmh", flight_speed_kmh)),
-        terrain_masking_score=float(terrain_masking_profile.get("masking_score", 0.0)),
-        jammer_risk=float(adversary_profile.get("jammer_risk", 0.0)),
-        route_score=float(route_optimization_profile.get("optimized_score", 0.0)),
-        waypoints=waypoints,
-    )
-
-    mission_score = max(0.0, min(100.0,
-        0.30 * min(100.0, flight_time_minutes) +
-        0.20 * (100.0 - float(terrain_masking_profile.get("adjusted_overall_score", overall_score))) +
-        0.15 * float(sensor_model_profile.get("baseline_probability", 0.0)) / 2.0 +
-        0.15 * float(mission_profile.get("mission_feasible", True)) * 100.0 +
-        0.10 * float(nav_profile_v2.get("navigation_confidence", 100.0)) +
-        0.10 * float(adversary_profile.get("survivability_score", 100.0))
-    ))
-
-    return {
-        "label": scenario["label"],
-        "speed_kmh": round(flight_speed_kmh, 1),
-        "altitude_m": int(altitude_m),
-        "loiter_minutes": round(loiter_minutes, 1),
-        "endurance_min": round(flight_time_minutes, 1),
-        "detectability_score": round(float(terrain_masking_profile.get("adjusted_overall_score", overall_score)), 1),
-        "mission_score": round(mission_score, 1),
-        "survivability_score": round(float(adversary_profile.get("survivability_score", 100.0)), 1),
-        "nav_confidence": round(float(nav_profile_v2.get("navigation_confidence", 100.0)), 1),
-        "mission_feasible": bool(mission_profile.get("mission_feasible", True)),
-        "radar_detect_prob": round(float(adversary_profile.get("radar_detection_probability_pct", 0.0)), 1),
-        "allowed_loiter_min": round(float(coupled_loiter_profile.get("allowed_loiter_min", loiter_minutes)) if "coupled_loiter_profile" in locals() else float(loiter_minutes), 1),
-    }
-
-
-def render_scenario_comparison_panel(
-    enabled: bool,
-    profile: Dict[str, Any],
-    base_inputs: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Scenario Comparison Engine</div>"
-        "<div class='section-note'>Scientifically stronger comparison using full-stack mission reruns across three mission configurations.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not enabled:
-        st.info("Scenario Comparison Engine is disabled.")
-        return []
-
-    scenarios = build_scenario_variants(base_inputs)
-    results = [evaluate_full_stack_scenario(profile, s) for s in scenarios]
-
-    cols = st.columns(3)
-    for col, res in zip(cols, results):
-        with col:
-            st.markdown(f"**{res['label']}**")
-            st.metric("Mission Score", f"{res['mission_score']:.1f}/100")
-            st.metric("Endurance", f"{res['endurance_min']:.1f} min")
-            st.metric("Detectability", f"{res['detectability_score']:.1f}/100")
-            st.metric("Nav Confidence", f"{res['nav_confidence']:.1f}/100")
-            st.caption(f"Speed {res['speed_kmh']:.1f} km/h | Alt {res['altitude_m']} m | Loiter {res['loiter_minutes']:.1f} min (allowed {res.get('allowed_loiter_min', res['loiter_minutes']):.1f}) | Survivability {res['survivability_score']:.1f}/100 | Radar {res.get('radar_detect_prob', 0.0):.1f}%")
-
-    df_cmp = pd.DataFrame(results)
-    st.dataframe(df_cmp, use_container_width=True)
-
-    best = max(results, key=lambda x: x["mission_score"]) if results else None
-    if best:
-        st.success(f"Recommended comparison winner: {best['label']} (Mission Score {best['mission_score']:.1f}/100)")
-    return results
-
-
-def compute_gnss_denied_navigation_v2(
-    enabled: bool,
-    fusion_quality: float,
-    drift_sensitivity: float,
-    map_uncertainty_factor: float,
-    update_gain: float,
-    flight_time_minutes: float,
-    total_distance_km: float,
-    speed_kmh: float,
-    terrain_masking_score: float,
-    jammer_risk: float,
-    route_score: float,
-    waypoints: List[Tuple[float, float]],
-) -> Dict[str, Any]:
-    # Planning-grade GNSS-denied navigation v2 with EKF-style state/covariance surrogate
-    import math
-    result = {
-        "enabled": enabled,
-        "active": False,
-        "fusion_health_score": 100.0,
-        "estimated_drift_km": 0.0,
-        "map_uncertainty_km": 0.0,
-        "navigation_confidence": 100.0,
-        "recommended_mode": "Nominal",
-        "cov_trace": 0.0,
-        "state_vector": [0.0] * 8,
-        "estimated_path": [],
-        "actions": [],
-    }
-    if not enabled:
-        return result
-
-    jammer_factor = max(0.0, min(1.0, jammer_risk / 100.0))
-    route_factor = max(0.0, min(1.0, route_score / 100.0))
-    masking_bonus = max(0.0, min(1.0, terrain_masking_score / 100.0))
-    fusion_quality_n = max(0.4, min(1.6, float(fusion_quality)))
-    drift_sens = max(0.4, min(1.8, float(drift_sensitivity)))
-    gain_base = max(0.15, min(0.90, float(update_gain)))
-
-    pts = [(0.0, 0.0)] + list(waypoints)
-    if len(pts) < 2:
-        pts = [(0.0, 0.0), (max(0.1, total_distance_km), 0.0)]
-
-    # state vector [x, y, vx, vy, psi, bg, bax, bay]
-    x = [0.0, 0.0, max(0.1, speed_kmh / 3600.0), 0.0, 0.0, 0.0, 0.0, 0.0]
-    P = [1e-4, 1e-4, 5e-5, 5e-5, 1e-3, 5e-4, 5e-4, 5e-4]
-
-    q_pos = 2e-4 * drift_sens * (1.0 + 1.6 * jammer_factor + 0.5 * route_factor)
-    q_vel = 1e-4 * drift_sens * (1.0 + 1.4 * jammer_factor)
-    q_heading = 6e-4 * drift_sens * (1.0 + 1.2 * jammer_factor)
-    q_bias = 2e-4 * drift_sens * (1.0 + 1.8 * jammer_factor)
-
-    nominal_dense = []
-    for i in range(1, len(pts)):
-        p0, p1 = pts[i-1], pts[i]
-        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
-        d = max(1e-6, (dx*dx + dy*dy) ** 0.5)
-        sub = max(2, int(d * 4))
-        for k in range(sub):
-            frac = k / sub
-            nominal_dense.append((p0[0] + frac * dx, p0[1] + frac * dy))
-    nominal_dense.append(pts[-1])
-
-    dt_s = max(4.0, (flight_time_minutes * 60.0) / max(8, len(nominal_dense)))
-    update_interval = max(2, int(6 - min(3.0, 2.5 * fusion_quality_n) + 3.0 * jammer_factor))
-
-    est_path = []
-    for i, (nx, ny) in enumerate(nominal_dense):
-        desired_heading = math.atan2(ny - x[1], nx - x[0]) if (abs(nx - x[0]) + abs(ny - x[1])) > 1e-6 else x[4]
-        heading_err = desired_heading - x[4]
-        while heading_err > math.pi:
-            heading_err -= 2 * math.pi
-        while heading_err < -math.pi:
-            heading_err += 2 * math.pi
-
-        x[4] += 0.15 * heading_err * (fusion_quality_n / 1.5) * (1.0 - 0.5 * jammer_factor)
-        x[5] += q_bias * 0.05
-        x[6] += q_bias * 0.03
-        x[7] -= q_bias * 0.02
-
-        speed_kmps = max(0.00005, speed_kmh / 3600.0)
-        x[2] = speed_kmps * math.cos(x[4]) + x[6] * 0.01
-        x[3] = speed_kmps * math.sin(x[4]) + x[7] * 0.01
-        x[0] += x[2] * dt_s
-        x[1] += x[3] * dt_s
-
-        P[0] += q_pos
-        P[1] += q_pos
-        P[2] += q_vel
-        P[3] += q_vel
-        P[4] += q_heading
-        P[5] += q_bias
-        P[6] += q_bias
-        P[7] += q_bias
-
-        if i % update_interval == 0:
-            gain = max(0.12, min(0.90, gain_base * (fusion_quality_n / 1.5) * (1.0 - 0.55 * jammer_factor)))
-            x[0] = (1 - gain) * x[0] + gain * nx
-            x[1] = (1 - gain) * x[1] + gain * ny
-            P[0] *= max(0.35, 1.0 - 0.55 * gain)
-            P[1] *= max(0.35, 1.0 - 0.55 * gain)
-            P[4] *= max(0.45, 1.0 - 0.45 * gain)
-
-        est_path.append((round(x[0], 4), round(x[1], 4)))
-
-    final_nom = nominal_dense[-1]
-    drift_km = math.sqrt((x[0] - final_nom[0])**2 + (x[1] - final_nom[1])**2)
-    map_uncertainty_km = max(0.0, (0.02 * total_distance_km + 0.45 * map_uncertainty_factor) * (1.0 + 0.9 * jammer_factor))
-    fusion_health = 100.0 * max(0.0, min(1.0, 0.78 * (fusion_quality_n / 1.5) + 0.10 * masking_bonus + 0.12 * (1.0 - jammer_factor)))
-    cov_trace = P[0] + P[1] + P[4]
-    nav_conf = max(0.0, min(fusion_health, 100.0 - (55.0 * drift_km + 28.0 * map_uncertainty_km + 18.0 * cov_trace)))
-
-    mode = "Nominal"
-    if nav_conf < 40:
-        mode = "Degraded"
-    elif nav_conf < 65:
-        mode = "Caution"
-
-    actions = []
-    if fusion_health < 60:
-        actions.append("Sensor-fusion health is degraded — shorten exposed legs and reduce dependence on precise waypoint timing.")
-    else:
-        actions.append("Sensor-fusion health is acceptable for planning-grade degraded navigation.")
-    if drift_km >= 1.0:
-        actions.append("Estimated path drift is high — tighten waypoint spacing or shorten GNSS-denied segments.")
-    elif drift_km >= 0.4:
-        actions.append("Estimated path drift is moderate — maintain conservative routing and stronger aiding cadence.")
-    if map_uncertainty_km >= 0.8:
-        actions.append("Map uncertainty is significant — confirm terrain and landmark assumptions before relying on masked routing.")
-    elif map_uncertainty_km >= 0.3:
-        actions.append("Map uncertainty is present — preserve broader reserve margins for degraded navigation.")
-    if jammer_factor >= 0.6:
-        actions.append("Jammer pressure is high — expect faster covariance growth and more frequent aiding dropouts.")
-    if nav_conf < 40:
-        actions.append("Navigation confidence is low — recommend abort or route simplification under GNSS-denied conditions.")
-    elif nav_conf < 65:
-        actions.append("Navigation confidence is moderate — favor shorter legs and stronger fusion posture.")
-    else:
-        actions.append("Navigation confidence is strong enough for planning-grade GNSS-denied assessment.")
-
-    result.update({
-        "active": True,
-        "fusion_health_score": round(fusion_health, 1),
-        "estimated_drift_km": round(drift_km, 3),
-        "map_uncertainty_km": round(map_uncertainty_km, 3),
-        "navigation_confidence": round(nav_conf, 1),
-        "recommended_mode": mode,
-        "cov_trace": round(cov_trace, 4),
-        "state_vector": [round(v, 5) for v in x],
-        "estimated_path": est_path,
-        "actions": actions[:5],
-    })
-    return result
-
-
-def render_gnss_denied_navigation_v2_panel(nav_profile: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>GNSS-Denied Navigation v2</div>"
-        "<div class='section-note'>Planning-grade degraded-navigation estimate with state vector, covariance growth, measurement updates, and estimated-path drift.</div></div>",
-        unsafe_allow_html=True,
-    )
-    if not nav_profile.get("enabled", False):
-        st.info("GNSS-Denied Navigation v2 is disabled.")
-        return
-
-    mode = nav_profile.get("recommended_mode", "Nominal")
-    if mode == "Degraded":
-        st.error(f"Navigation mode: {mode}")
-    elif mode == "Caution":
-        st.warning(f"Navigation mode: {mode}")
-    else:
-        st.success(f"Navigation mode: {mode}")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Fusion Health", f"{nav_profile.get('fusion_health_score', 100.0):.1f}/100")
-    with c2:
-        st.metric("Estimated Drift", f"{nav_profile.get('estimated_drift_km', 0.0):.3f} km")
-    with c3:
-        st.metric("Map Uncertainty", f"{nav_profile.get('map_uncertainty_km', 0.0):.3f} km")
-
-    c4, c5 = st.columns(2)
-    with c4:
-        st.metric("Navigation Confidence", f"{nav_profile.get('navigation_confidence', 100.0):.1f}/100")
-    with c5:
-        st.metric("Covariance Trace", f"{nav_profile.get('cov_trace', 0.0):.4f}")
-
-    st.caption(f"State vector [x, y, vx, vy, psi, bg, bax, bay]: {nav_profile.get('state_vector', [])}")
-
-    for action in nav_profile.get("actions", []):
-        if "abort" in action.lower() or "degraded" in action.lower() or "high" in action.lower():
-            st.warning(action)
-        else:
-            st.info(action)
-
-
-def compute_coupled_loiter_feasibility(
-    requested_loiter_min: float,
-    radar_detect_probability_pct: float,
-    combined_threat_score: float,
-    route_mode: str,
-) -> Dict[str, Any]:
-    loiter_penalty = 0.0
-    if radar_detect_probability_pct >= 70:
-        loiter_penalty += 0.45
-    elif radar_detect_probability_pct >= 45:
-        loiter_penalty += 0.25
-    if combined_threat_score >= 75:
-        loiter_penalty += 0.35
-    elif combined_threat_score >= 50:
-        loiter_penalty += 0.20
-    if route_mode == "Stealth-Biased":
-        loiter_penalty *= 0.85
-
-    allowed_loiter = max(0.0, float(requested_loiter_min) * max(0.25, 1.0 - loiter_penalty))
-    posture = "Nominal"
-    if allowed_loiter + 1e-6 < requested_loiter_min * 0.5:
-        posture = "Restricted"
-    elif allowed_loiter + 1e-6 < requested_loiter_min:
-        posture = "Reduced"
-    return {
-        "requested_loiter_min": round(float(requested_loiter_min), 2),
-        "allowed_loiter_min": round(float(allowed_loiter), 2),
-        "loiter_penalty": round(float(loiter_penalty), 3),
-        "posture": posture,
-    }
-
-
-def render_coupled_threat_panel(coupled_profile: Dict[str, Any]):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Threat-Coupled Mission Effects</div>"
-        "<div class='section-note'>Adversary radar and jammer effects now feed route cost, navigation degradation, and loiter feasibility.</div></div>",
-        unsafe_allow_html=True,
-    )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Requested Loiter", f"{coupled_profile.get('requested_loiter_min', 0.0):.1f} min")
-    with c2:
-        st.metric("Allowed Loiter", f"{coupled_profile.get('allowed_loiter_min', 0.0):.1f} min")
-    with c3:
-        st.metric("Loiter Posture", coupled_profile.get('posture', 'Nominal'))
-
-def render_status_strip(platform_type: str, power_system: str, theme_name: str, caution_label: str, caution_class: str):
-    return f"""
-    <div class='status-strip'>
-        <div class='status-tile'>
-            <div class='status-label'>Platform Type</div>
-            <div class='status-value'>{platform_type.title()}</div>
-        </div>
-        <div class='status-tile'>
-            <div class='status-label'>Power System</div>
-            <div class='status-value'>{power_system}</div>
-        </div>
-        <div class='status-tile'>
-            <div class='status-label'>Theme</div>
-            <div class='status-value'>{theme_name}</div>
-        </div>
-        <div class='status-tile'>
-            <div class='status-label'>Mission Status</div>
-            <div class='status-value {caution_class}'>{caution_label}</div>
-        </div>
-    </div>
-    """
-
-def render_mission_hero(endurance_min: float, total_distance_km: float, best_range_km: float, detectability_label: str, detectability_color: str, power_system: str):
-    return f"""
-    <div class='mission-hero'>
-        <div class='mission-kicker'>Mission Summary</div>
-        <div class='mission-hero-grid'>
-            <div>
-                <div class='mission-label'>Endurance</div>
-                <div class='mission-value'>{endurance_min:.1f} min</div>
-            </div>
-            <div>
-                <div class='mission-label'>Total Distance</div>
-                <div class='mission-value'>{total_distance_km:.1f} km</div>
-            </div>
-            <div>
-                <div class='mission-label'>Best Heading Range</div>
-                <div class='mission-value'>{best_range_km:.1f} km</div>
-            </div>
-            <div>
-                <div class='mission-label'>Detectability</div>
-                <div class='mission-value' style='color:{detectability_color};'>{detectability_label}</div>
-            </div>
-            <div>
-                <div class='mission-label'>Power System</div>
-                <div class='mission-value'>{power_system}</div>
-            </div>
-        </div>
-    </div>
-    """
-
-def render_hud_gauge(label: str, pct: float, remaining_text: str, draw_text: str, accent_color: str) -> str:
-    pct_clamped = max(0.0, min(100.0, float(pct)))
-    fill = pct_clamped
-    if pct_clamped >= 60:
-        status_color = "#22c55e"
-    elif pct_clamped >= 30:
-        status_color = "#f59e0b"
-    else:
-        status_color = "#ef4444"
-    return f"""
-    <div style='background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--border);border-radius:16px;padding:14px 16px;margin:8px 0 12px 0;box-shadow:0 8px 24px rgba(0,0,0,0.18);'>
-        <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;'>
-            <div style='color:var(--accent);font-weight:800;letter-spacing:0.06em;text-transform:uppercase;font-size:0.82rem;'>{label}</div>
-            <div style='color:{status_color};font-weight:800;font-size:1.05rem;'>{pct_clamped:.0f}%</div>
-        </div>
-        <div style='position:relative;height:22px;border-radius:999px;background:#0a0f1a;border:1px solid var(--border);overflow:hidden;'>
-            <div style='position:absolute;left:0;top:0;height:100%;width:{fill:.1f}%;background:linear-gradient(90deg,{accent_color},{status_color});box-shadow:0 0 14px {status_color};'></div>
-            <div style='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e6edf7;font-weight:800;font-size:0.86rem;text-shadow:0 1px 2px rgba(0,0,0,0.65);'>
-                {remaining_text}
-            </div>
-        </div>
-        <div style='display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--muted);font-size:0.90rem;'>
-            <div>{draw_text}</div>
-            <div style='color:{status_color};font-weight:700;'>HUD Live Gauge</div>
-        </div>
-    </div>
-    """
-
-
-
-
-st.info(
-    'This tool uses first-order physics and bounded heuristics. '
-    'It is not a validated flight-performance or EO/IR sensor model.'
-)
-
-RHO0 = 1.225
-P0 = 101325.0
-T0_STD = 288.15
-LAPSE = 0.0065
+VERSION = "0.8.4"
+G = 9.80665
 R_AIR = 287.05
-G0 = 9.80665
-SIGMA_SB = 5.670374419e-8
-
-USABLE_BATT_FRAC = 0.85
-USABLE_FUEL_FRAC = 0.90
-DISPATCH_RESERVE = 0.30
-HOTEL_W_DEFAULT = 15.0
-
-def clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
+P_SL = 101325.0
+LAPSE = 0.0065
 
 
-def clamp01(x: float) -> float:
-    return max(0.0, min(1.0, x))
-
-def numeric_input(label: str, default: float) -> float:
-    val_str = st.text_input(label, value=str(default))
-    if val_str.strip() == '':
-        return default
-    try:
-        return float(val_str)
-    except ValueError:
-        st.error(f'Invalid number for {label}. Using default {default}.')
-        return default
-
-def clamp_battery(platform: Dict[str, Any], requested_wh: float, allow_override: bool) -> float:
-    nominal = float(platform.get('battery_wh', requested_wh))
-    if allow_override:
-        return max(0.0, requested_wh)
-    if requested_wh > nominal:
-        st.warning(f'Battery clamped to platform nominal: {nominal:.0f} Wh.')
-    return max(0.0, min(requested_wh, nominal))
-
-def isa_density_troposphere(alt_m: float, delta_isa_C: float = 0.0) -> Tuple[float, float, float]:
-    h = max(0.0, alt_m)
-    T_std = T0_STD - LAPSE * h
-    p = P0 * (T_std / T0_STD) ** (G0 / (R_AIR * LAPSE))
-    T = max(150.0, T_std + delta_isa_C)
-    rho = p / (R_AIR * T)
-    return T, p, rho
-
-def density_ratio_from_ambient(alt_m: float, ambient_C: float) -> Tuple[float, float]:
-    h = max(0.0, alt_m)
-    T_std_alt_C = (T0_STD - LAPSE * h) - 273.15
-    delta_isa_C = ambient_C - T_std_alt_C
-    _, _, rho = isa_density_troposphere(h, delta_isa_C)
-    return rho, rho / RHO0
-
-def heading_range_km(V_air_ms: float, W_ms: float, t_min: float) -> Tuple[float, float]:
-    t_s = max(0.0, t_min) * 60.0
-    if V_air_ms <= 0.1:
-        return 0.0, 0.0
-    best_gs = V_air_ms + max(0.0, W_ms)
-    if W_ms >= V_air_ms:
-        return best_gs * t_s / 1000.0, 0.0
-    worst_gs = V_air_ms - max(0.0, W_ms)
-    return best_gs * t_s / 1000.0, worst_gs * t_s / 1000.0
-
-def battery_temp_capacity_factor(temp_c: float) -> float:
-    if temp_c <= -10:
-        return 0.65
-    if temp_c <= 0:
-        return 0.78
-    if temp_c <= 10:
-        return 0.88
-    if temp_c <= 30:
-        return 1.00
-    if temp_c <= 40:
-        return 0.96
-    return 0.92
-
-def climb_energy_wh(total_mass_kg: float, climb_m: float, eta_climb: float = 0.75) -> float:
-    if climb_m <= 0.0:
-        return 0.0
-    return (total_mass_kg * G0 * climb_m) / (3600.0 * max(0.3, eta_climb))
-
-def climb_fuel_liters(total_mass_kg: float, climb_m: float, bsfc_gpkwh: float, fuel_density_kgpl: float, eta_climb: float = 0.70) -> float:
-    if climb_m <= 0.0:
-        return 0.0
-    E_kWh = (total_mass_kg * G0 * climb_m) / (3_600_000.0 * max(0.3, eta_climb))
-    fuel_kg = (bsfc_gpkwh / 1000.0) * E_kWh
-    return fuel_kg / max(0.5, fuel_density_kgpl)
-
-def drag_polar_cd(cd0: float, cl: float, e: float, aspect_ratio: float) -> float:
-    e_eff = clamp(e, 0.5, 0.95)
-    ar_eff = max(2.0, aspect_ratio)
-    k = 1.0 / (math.pi * e_eff * ar_eff)
-    return cd0 + k * cl * cl
-
-def prop_efficiency_map(advance_factor: float, eta_nominal: float, power_system: str = 'Battery') -> float:
-    """
-    First-order educational propulsor efficiency abstraction.
-    Less punitive at higher advance factors for larger ICE / turboprop aircraft.
-    """
-    eta_peak = clamp(eta_nominal, 0.45, 0.90)
-    if power_system == 'ICE':
-        penalty = 0.04 * abs(advance_factor - 1.0)
-        eta_floor = 0.70
-    else:
-        penalty = 0.10 * abs(advance_factor - 1.0)
-        eta_floor = 0.40
-    return clamp(eta_peak - penalty, eta_floor, eta_peak)
-
-def fixedwing_power_required(weight_N: float, rho: float, V_ms: float, wing_area_m2: float, span_m: float, cd0: float, e: float, prop_eff: float, power_system: str, hotel_W: float = HOTEL_W_DEFAULT, install_frac: float = 0.10, cl_max: float = 1.4) -> Dict[str, float]:
-    V = max(8.0, V_ms)
-    S = max(1e-4, wing_area_m2)
-    b = max(0.1, span_m)
-    cd0_eff = max(0.015, cd0)
-    q = 0.5 * rho * V * V
-    AR = (b * b) / S
-    cl = weight_N / max(1e-6, q * S)
-    cd = drag_polar_cd(cd0_eff, cl, e, AR)
-    drag_N = q * S * cd
-    V_ref = 25.0
-    eta_p = prop_efficiency_map(V / V_ref, prop_eff, power_system=power_system)
-    shaft_W = (drag_N * V) / eta_p
-    total_W = hotel_W + shaft_W * (1.0 + max(0.0, install_frac))
-    return {'q_Pa': q, 'AR': AR, 'CL': cl, 'CD': cd, 'drag_N': drag_N, 'eta_prop_eff': eta_p, 'shaft_W': shaft_W, 'total_W': total_W, 'stall_margin_ok': 1.0 if cl <= cl_max else 0.0}
-
-def fixedwing_endurance_minutes(battery_wh: float, total_draw_W: float, reserve_frac: float = DISPATCH_RESERVE, usable_frac: float = USABLE_BATT_FRAC) -> float:
-    usable_Wh = max(0.0, battery_wh) * usable_frac
-    raw_min = (usable_Wh / max(1.0, total_draw_W)) * 60.0
-    return raw_min * (1.0 - reserve_frac)
-
-def rotor_power_required(gross_mass_kg: float, rho_ratio: float, speed_kmh: float, hover_power_W_ref: float, parasitic_area_m2: float = 0.03, cd_body: float = 1.0, hotel_W: float = HOTEL_W_DEFAULT) -> Dict[str, float]:
-    V = max(0.0, speed_kmh / 3.6)
-    sigma = max(0.3, rho_ratio)
-    induced_hover_W = max(1.0, hover_power_W_ref) / math.sqrt(sigma)
-    induced_forward_factor = 1.0 / math.sqrt(1.0 + (V / 12.0) ** 2)
-    induced_W = induced_hover_W * induced_forward_factor
-    profile_W = 0.18 * induced_hover_W
-    q = 0.5 * RHO0 * V * V
-    parasite_drag_N = q * max(0.001, parasitic_area_m2) * max(0.2, cd_body)
-    parasite_W = parasite_drag_N * V
-    total_W = induced_W + profile_W + parasite_W + hotel_W
-    return {'induced_W': induced_W, 'profile_W': profile_W, 'parasite_W': parasite_W, 'hover_W': induced_hover_W, 'total_W': total_W}
-
-def mission_gust_penalty_fraction(gustiness_index: int, wind_kmh: float, V_ms: float, wing_loading_Nm2: float) -> float:
-    gust_ms = max(0.0, 0.6 * float(gustiness_index))
-    V = max(4.0, V_ms)
-    WL = max(20.0, wing_loading_Nm2)
-    base = 0.9 * (gust_ms / V) ** 2 * (70.0 / WL) ** 0.6
-    wind_bias = 0.02 * ((max(0.0, wind_kmh) / 3.6) / 8.0)
-    return clamp(base + wind_bias, 0.0, 0.30)
-
-def bsfc_fuel_burn_lph(power_W: float, bsfc_gpkwh: float, fuel_density_kgpl: float) -> float:
-    fuel_kgph = (max(0.0, bsfc_gpkwh) / 1000.0) * (max(0.0, power_W) / 1000.0)
-    return fuel_kgph / max(0.5, fuel_density_kgpl)
-
-def convective_deltaT_simple(waste_heat_W: float, surface_area_m2: float, ambient_C: float, rho: float, V_ms: float, emissivity: float = 0.90) -> float:
-    if waste_heat_W <= 0.0 or surface_area_m2 <= 0.0:
-        return 0.0
-    V = max(0.5, V_ms)
-    h = max(6.0, 10.45 - V + 10.0 * math.sqrt(V)) * max(0.4, rho / RHO0)
-    T_ambK = ambient_C + 273.15
-    rad_coeff = 4.0 * emissivity * SIGMA_SB * (T_ambK ** 3)
-    sink_per_K = (h + rad_coeff) * surface_area_m2
-    dT = waste_heat_W / max(1.0, sink_per_K)
-    return max(0.0, dT)
-
-DEFAULT_SIZE_M = {'Generic Quad': 0.45, 'DJI Phantom': 0.35, 'Skydio 2+': 0.30, 'Freefly Alta 8': 1.30, 'Teal 2 / Golden Eagle': 0.50, 'RQ-11 Raven': 1.40, 'RQ-20 Puma': 2.80, 'Vector AI (Fixed-Wing)': 2.80, 'Vector AI (Multicopter)': 2.20, 'MQ-1 Predator': 14.8, 'MQ-9 Reaper': 20.0, 'Custom Build': 1.00}
-
-def _risk_bucket(score: float) -> Tuple[str, str, str]:
-    if score < 33:
-        return ('Low', 'success', '#0f9d58')
-    if score < 67:
-        return ('Moderate', 'warning', '#f4b400')
-    return ('High', 'error', '#db4437')
-
-def _badge(label: str, score: float, bg: str) -> str:
-    return f"<span style='display:inline-block;padding:6px 10px;margin-right:8px;border-radius:8px;background:{bg};color:#fff;font-weight:600;font-size:13px;white-space:nowrap;'>{label}: {score:.0f}/100</span>"
-
-def compute_detectability_scores_v3(
-    delta_T: float,
-    altitude_m: float,
-    speed_kmh: float,
-    cloud_cover: int,
-    gustiness: int,
-    stealth_factor: float,
-    drone_type: str,
-    power_system: str,
-    effective_size_m: float,
-    background_complexity: float,
-    humidity_factor: float = 0.5,
-) -> dict:
-    """
-    Heuristic mission-awareness model only.
-    Not a validated EO/IR sensor model.
-    """
-
-    size_term = clamp01(effective_size_m / 3.0)
-    altitude_term = 1.0 - min(0.80, altitude_m / 1200.0)
-    speed_term = clamp01(speed_kmh / 90.0)
-    motion_bonus = 0.18 if drone_type == "rotor" else 0.08
-
-    clutter_reduction = 1.0 - 0.35 * clamp01(background_complexity)
-    cloud_reduction = 1.0 - 0.18 * (cloud_cover / 100.0)
-    humidity_reduction = 1.0 - 0.10 * clamp01(humidity_factor)
-    stealth_reduction = 1.0 - max(0.0, (stealth_factor - 1.0) * 0.18)
-
-    visual_raw = (
-        0.36 * size_term +
-        0.30 * altitude_term +
-        0.16 * speed_term +
-        0.10 * motion_bonus
-    )
-
-    visual_score = 100.0 * clamp01(
-        visual_raw *
-        clutter_reduction *
-        cloud_reduction *
-        humidity_reduction *
-        stealth_reduction
-    )
-
-    thermal_contrast = clamp01(delta_T / 25.0)
-    exposed_size = clamp01(effective_size_m / 2.5)
-
-    altitude_reduction = 1.0 - min(0.50, altitude_m / 2000.0)
-    cloud_ir_reduction = 1.0 - 0.22 * (cloud_cover / 100.0)
-    humidity_ir_reduction = 1.0 - 0.18 * clamp01(humidity_factor)
-    atmosphere_factor = max(0.45, cloud_ir_reduction * humidity_ir_reduction)
-
-    propulsion_bias = 0.12 if power_system == "ICE" else 0.03
-    thermal_speed_term = 0.06 * clamp01(speed_kmh / 120.0)
-    gust_uncertainty = 1.0 - 0.04 * (gustiness / 10.0)
-
-    thermal_raw = (
-        0.56 * thermal_contrast +
-        0.18 * exposed_size +
-        propulsion_bias +
-        thermal_speed_term
-    )
-
-    thermal_score = 100.0 * clamp01(
-        thermal_raw *
-        altitude_reduction *
-        atmosphere_factor *
-        gust_uncertainty *
-        stealth_reduction
-    )
-
-    confidence = 1.0 - (
-        0.20 * (cloud_cover / 100.0) +
-        0.18 * clamp01(background_complexity) +
-        0.10 * (gustiness / 10.0)
-    )
-    confidence = max(0.45, min(0.95, confidence))
-
-    if power_system == "ICE":
-        overall = 0.40 * visual_score + 0.60 * thermal_score
-    elif drone_type == "rotor":
-        overall = 0.55 * visual_score + 0.45 * thermal_score
-    else:
-        overall = 0.50 * visual_score + 0.50 * thermal_score
-
-    return {
-        'visual_score': round(visual_score, 1),
-        'thermal_score': round(thermal_score, 1),
-        'overall_score': round(overall, 1),
-        'confidence': round(confidence * 100.0, 1),
-    }
-
-def render_detectability_alert(visual_score: float, thermal_score: float) -> Tuple[str, str]:
-    visual_label, _, visual_bg = _risk_bucket(visual_score)
-    thermal_label, _, thermal_bg = _risk_bucket(thermal_score)
-    overall_kind = 'error' if 'High' in (visual_label, thermal_label) else ('warning' if 'Moderate' in (visual_label, thermal_label) else 'success')
-    badges = "<div style='margin:6px 0;'>" + _badge(f'Visual • {visual_label}', visual_score, visual_bg) + _badge(f'Thermal • {thermal_label}', thermal_score, thermal_bg) + "</div>"
-    return overall_kind, badges
+def clamp(x, low, high):
+    return max(low, min(high, float(x)))
 
 
-def detectability_ai_suggestions(
-    visual_score: float,
-    thermal_score: float,
-    overall_score: float,
-    confidence: float,
-    altitude_m: float,
-    speed_kmh: float,
-    cloud_cover: float,
-    gustiness: float,
-    stealth_factor: float,
-    power_system: str,
-    delta_T: float,
-) -> List[Tuple[str, str]]:
-    suggestions: List[Tuple[str, str]] = []
+def clamp01(x):
+    return clamp(x, 0.0, 1.0)
 
-    if thermal_score > 65:
-        suggestions.append(("error", "🔥 High IR signature: Reduce sustained high-power output or shorten time at maximum climb / thrust."))
-        if delta_T > 25:
-            suggestions.append(("warning", "🌡️ Elevated ΔT: Increase convective cooling with a more efficient cruise segment or reduce engine load."))
-        if power_system == 'ICE':
-            suggestions.append(("warning", "⛽ ICE platform: Reserve Hybrid Assist or reduced-power ingress for the highest-threat segments."))
-    elif thermal_score < 35:
-        suggestions.append(("success", "❄️ Low IR signature: Current thermal profile is favorable for reduced thermal exposure."))
 
-    if visual_score > 65:
-        suggestions.append(("error", "👁️ High visual detectability: Increase altitude, use terrain masking, or reduce straight-line exposure."))
-        if speed_kmh > 120:
-            suggestions.append(("info", "💨 Current speed increases visual observability. Consider reducing speed while inside the threat envelope."))
-        if cloud_cover < 30:
-            suggestions.append(("warning", "☁️ Low cloud cover limits concealment. Avoid prolonged exposure in open sky backgrounds."))
-    elif visual_score < 35:
-        suggestions.append(("success", "🌫️ Low visual detectability: Current geometry and environment support a relatively covert profile."))
-
-    if cloud_cover > 70:
-        suggestions.append(("success", "☁️ High cloud cover is favorable for both visual and IR concealment in this heuristic model."))
-
-    if gustiness > 5:
-        suggestions.append(("info", "🌪️ High gustiness may reduce detection consistency, but it also increases control and energy penalties."))
-
-    if stealth_factor > 1.2:
-        suggestions.append(("warning", "🥷 High stealth drag factor is helping signature management but materially reducing endurance margins."))
-
-    if altitude_m < 300 and overall_score > 50:
-        suggestions.append(("warning", "📉 Low-altitude exposure is increasing detectability. Climb if the mission and threat picture allow it."))
-    elif altitude_m > 800 and visual_score > thermal_score:
-        suggestions.append(("info", "📈 Altitude is helping thermal concealment more than visual concealment. Route choice and cloud timing matter here."))
-
-    if confidence < 60:
-        suggestions.append(("warning", "⚠️ Low detectability confidence: treat these scores cautiously because environmental uncertainty is elevated."))
-    elif confidence > 85:
-        suggestions.append(("success", "📡 High confidence: the detectability estimate is relatively stable under the current environmental assumptions."))
-
-    if overall_score > 70:
-        suggestions.append(("error", "🚨 Overall detectability is high. Adjust altitude, timing, speed, or exposure duration before committing to ingress."))
-    elif overall_score < 40:
-        suggestions.append(("success", "✅ Overall detectability is low. Current settings are favorable for lower exposure risk."))
-
-    return suggestions[:5]
-
-UAV_PROFILES = {
-    'Generic Quad': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 1.2, 'max_payload_g': 800, 'battery_wh': 60.0, 'hover_power_W_ref': 150.0, 'parasitic_area_m2': 0.025, 'cd_body': 1.0, 'surface_area_m2': 0.20, 'ai_capabilities': 'Basic flight stabilization, waypoint navigation'},
-    'DJI Phantom': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 1.4, 'max_payload_g': 500, 'battery_wh': 68.0, 'hover_power_W_ref': 140.0, 'parasitic_area_m2': 0.024, 'cd_body': 1.0, 'surface_area_m2': 0.22, 'ai_capabilities': 'Visual object tracking, return-to-home, autonomous mapping'},
-    'Skydio 2+': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 0.8, 'max_payload_g': 150, 'battery_wh': 45.0, 'hover_power_W_ref': 95.0, 'parasitic_area_m2': 0.018, 'cd_body': 1.0, 'surface_area_m2': 0.15, 'ai_capabilities': 'Full obstacle avoidance, visual SLAM, autonomous following'},
-    'Freefly Alta 8': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 6.2, 'max_payload_g': 9000, 'battery_wh': 710.0, 'hover_power_W_ref': 900.0, 'parasitic_area_m2': 0.08, 'cd_body': 1.1, 'surface_area_m2': 0.60, 'ai_capabilities': 'Autonomous camera coordination, precision loitering'},
-    'Teal 2 / Golden Eagle': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 1.25, 'max_payload_g': 300, 'battery_wh': 110.0, 'hover_power_W_ref': 180.0, 'parasitic_area_m2': 0.020, 'cd_body': 1.0, 'surface_area_m2': 0.18, 'ai_capabilities': 'AI-driven ISR, edge-based visual classification, GPS-denied flight'},
-    'RQ-11 Raven': {'type': 'fixed', 'power_system': 'Battery', 'base_weight_kg': 1.9, 'max_payload_g': 0, 'battery_wh': 120.0, 'wing_area_m2': 0.24, 'wingspan_m': 1.4, 'cd0': 0.040, 'oswald_e': 0.78, 'prop_eff': 0.72, 'hotel_W': 8.0, 'surface_area_m2': 0.22, 'cl_max': 1.3, 'ai_capabilities': 'Auto-stabilized flight, limited route autonomy'},
-    'RQ-20 Puma': {'type': 'fixed', 'power_system': 'Battery', 'base_weight_kg': 6.3, 'max_payload_g': 600, 'battery_wh': 700.0, 'wing_area_m2': 0.55, 'wingspan_m': 2.8, 'cd0': 0.038, 'oswald_e': 0.80, 'prop_eff': 0.75, 'hotel_W': 12.0, 'surface_area_m2': 0.45, 'cl_max': 1.4, 'ai_capabilities': 'AI-enhanced ISR mission planning, autonomous loitering'},
-    'Vector AI (Fixed-Wing)': {'type': 'fixed', 'power_system': 'Battery', 'base_weight_kg': 8.0, 'max_payload_g': 1500, 'battery_wh': 1200.0, 'wing_area_m2': 0.90, 'wingspan_m': 2.8, 'cd0': 0.035, 'oswald_e': 0.82, 'prop_eff': 0.78, 'hotel_W': 20.0, 'surface_area_m2': 0.55, 'cl_max': 1.5, 'ai_capabilities': 'Modular AI sensor pods, onboard geospatial intelligence, autonomous route learning'},
-    'Vector AI (Multicopter)': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 8.0, 'max_payload_g': 1500, 'battery_wh': 1200.0, 'hover_power_W_ref': 1200.0, 'parasitic_area_m2': 0.10, 'cd_body': 1.1, 'surface_area_m2': 0.60, 'ai_capabilities': 'VTOL mode for launch/recovery and confined-area operations'},
-    'MQ-1 Predator': {'type': 'fixed', 'power_system': 'ICE', 'base_weight_kg': 512.0, 'max_payload_g': 204000, 'battery_wh': 150.0, 'wing_area_m2': 11.5, 'wingspan_m': 16.8, 'cd0': 0.030, 'oswald_e': 0.82, 'prop_eff': 0.80, 'hotel_W': 400.0, 'surface_area_m2': 5.0, 'cl_max': 1.5, 'bsfc_gpkwh': 285.0, 'fuel_density_kgpl': 0.72, 'fuel_tank_l': 379.0, 'ai_capabilities': 'Semi-autonomous surveillance, pattern-of-life analysis'},
-    'MQ-9 Reaper': {'type': 'fixed', 'power_system': 'ICE', 'base_weight_kg': 2223.0, 'max_payload_g': 1701000, 'battery_wh': 0.0, 'wing_area_m2': 24.0, 'wingspan_m': 20.1, 'cd0': 0.024, 'oswald_e': 0.88, 'prop_eff': 0.84, 'hotel_W': 700.0, 'surface_area_m2': 8.0, 'cl_max': 1.6, 'bsfc_gpkwh': 255.0, 'fuel_density_kgpl': 0.80, 'fuel_tank_l': 2279.0, 'ai_capabilities': 'Real-time threat detection, sensor fusion, autonomous target tracking'},
-    'Custom Build': {'type': 'rotor', 'power_system': 'Battery', 'base_weight_kg': 2.0, 'max_payload_g': 1500, 'battery_wh': 150.0, 'hover_power_W_ref': 220.0, 'parasitic_area_m2': 0.03, 'cd_body': 1.0, 'surface_area_m2': 0.25, 'ai_capabilities': 'User-defined platform with configurable components'},
+# Aircraft reference data are ILLUSTRATIVE research inputs, not manufacturer-
+# verified performance data. In battery profiles, base mass includes reference
+# battery. For ICE aircraft, base mass excludes mission fuel.
+UAV_PROFILES: Dict[str, Dict[str, Any]] = {
+    "Generic Quad": dict(type="rotor", power_system="Battery", base_weight_kg=1.2,
+        max_payload_g=800, battery_wh=60., draw_watt=150., hover_power_W_ref=150.,
+        rotor_WL_proxy=45., parasitic_area_m2=.025, cd_body=1., surface_area_m2=.20,
+        ai_capabilities="Basic stabilization and waypoint navigation"),
+    "DJI Phantom": dict(type="rotor", power_system="Battery", base_weight_kg=1.4,
+        max_payload_g=500, battery_wh=68., draw_watt=140., hover_power_W_ref=140.,
+        rotor_WL_proxy=50., parasitic_area_m2=.024, cd_body=1., surface_area_m2=.22,
+        ai_capabilities="Object tracking and return-to-home concepts"),
+    "Skydio 2+": dict(type="rotor", power_system="Battery", base_weight_kg=.8,
+        max_payload_g=150, battery_wh=45., draw_watt=95., hover_power_W_ref=95.,
+        rotor_WL_proxy=40., parasitic_area_m2=.018, cd_body=1., surface_area_m2=.15,
+        ai_capabilities="Visual navigation and obstacle avoidance concepts"),
+    "Freefly Alta 8": dict(type="rotor", power_system="Battery", base_weight_kg=6.2,
+        max_payload_g=9000, battery_wh=710., draw_watt=900., hover_power_W_ref=900.,
+        rotor_WL_proxy=60., parasitic_area_m2=.08, cd_body=1.1, surface_area_m2=.60,
+        ai_capabilities="Autonomous payload positioning concepts"),
+    "Teal 2 / Golden Eagle": dict(type="rotor", power_system="Battery", base_weight_kg=1.25,
+        max_payload_g=300, battery_wh=110., draw_watt=180., hover_power_W_ref=180.,
+        rotor_WL_proxy=46., parasitic_area_m2=.020, cd_body=1., surface_area_m2=.18,
+        ai_capabilities="Edge perception and GNSS-denied operation concepts"),
+    "RQ-11 Raven": dict(type="fixed", power_system="Battery", base_weight_kg=1.9,
+        max_payload_g=300, battery_wh=120., draw_watt=90., wing_area_m2=.24,
+        wingspan_m=1.4, cd0=.040, oswald_e=.78, prop_eff=.72, hotel_W=8.,
+        surface_area_m2=.22, cl_max=1.3,
+        ai_capabilities="Stabilized flight and route autonomy concepts"),
+    "RQ-20 Puma": dict(type="fixed", power_system="Battery", base_weight_kg=6.3,
+        max_payload_g=600, battery_wh=700., draw_watt=180., wing_area_m2=.55,
+        wingspan_m=2.8, cd0=.038, oswald_e=.80, prop_eff=.75, hotel_W=12.,
+        surface_area_m2=.45, cl_max=1.4,
+        ai_capabilities="Route planning and autonomous loiter concepts"),
+    "Quantum Systems Vector": dict(type="fixed", power_system="Battery", base_weight_kg=8.0,
+        max_payload_g=1500, battery_wh=1200., draw_watt=300., wing_area_m2=.90,
+        wingspan_m=2.8, cd0=.035, oswald_e=.82, prop_eff=.78, hotel_W=20.,
+        surface_area_m2=.55, cl_max=1.5,
+        ai_capabilities="Edge sensing and geospatial mission planning concepts"),
+    "Vector AI (Fixed-Wing)": dict(type="fixed", power_system="Battery", base_weight_kg=8.0,
+        max_payload_g=1500, battery_wh=1200., draw_watt=300., wing_area_m2=.90,
+        wingspan_m=2.8, cd0=.035, oswald_e=.82, prop_eff=.78, hotel_W=20.,
+        surface_area_m2=.55, cl_max=1.5,
+        ai_capabilities="Experimental onboard intelligence and route planning"),
+    "Vector AI (Multicopter)": dict(type="rotor", power_system="Battery", base_weight_kg=8.0,
+        max_payload_g=1500, battery_wh=1200., draw_watt=1200., hover_power_W_ref=1200.,
+        rotor_WL_proxy=65., parasitic_area_m2=.10, cd_body=1.1, surface_area_m2=.60,
+        ai_capabilities="VTOL mode and confined-area operations concepts"),
+    "MQ-1 Predator": dict(type="fixed", power_system="ICE", base_weight_kg=512.,
+        max_payload_g=204000, battery_wh=150., draw_watt=650., wing_area_m2=11.5,
+        wingspan_m=14.8, cd0=.025, oswald_e=.80, prop_eff=.80, hotel_W=400.,
+        surface_area_m2=5., cl_max=1.5, bsfc_gpkwh=260., fuel_density_kgpl=.72,
+        fuel_tank_l=300., max_shaft_power_w=86000.,
+        ai_capabilities="Surveillance and mission planning concepts"),
+    "MQ-9 Reaper": dict(type="fixed", power_system="ICE", base_weight_kg=2223.,
+        max_payload_g=1700000, battery_wh=200., draw_watt=800., wing_area_m2=24.,
+        wingspan_m=20., cd0=.030, oswald_e=.85, prop_eff=.82, hotel_W=700.,
+        surface_area_m2=8., cl_max=1.6, bsfc_gpkwh=330., fuel_density_kgpl=.80,
+        fuel_tank_l=900., max_shaft_power_w=671000.,
+        ai_capabilities="Sensor fusion and autonomous monitoring concepts"),
+    "Custom Build": dict(type="rotor", power_system="Battery", base_weight_kg=2.,
+        max_payload_g=1500, battery_wh=150., draw_watt=220., hover_power_W_ref=220.,
+        rotor_WL_proxy=50., parasitic_area_m2=.03, cd_body=1., surface_area_m2=.25,
+        ai_capabilities="Experimental user-configured system"),
+}
+DEFAULT_SPEED_KMH = {
+    "Generic Quad":25, "DJI Phantom":35, "Skydio 2+":30, "Freefly Alta 8":25,
+    "Teal 2 / Golden Eagle":50, "RQ-11 Raven":45, "RQ-20 Puma":60,
+    "Quantum Systems Vector":70, "Vector AI (Fixed-Wing)":70,
+    "Vector AI (Multicopter)":30, "MQ-1 Predator":140, "MQ-9 Reaper":180,
+    "Custom Build":30,
+}
+DEFAULT_SIZE_M = {
+    "Generic Quad":.45, "DJI Phantom":.35, "Skydio 2+":.30,
+    "Freefly Alta 8":1.3, "Teal 2 / Golden Eagle":.50,
+    "RQ-11 Raven":1.4, "RQ-20 Puma":2.8, "Quantum Systems Vector":2.8,
+    "Vector AI (Fixed-Wing)":2.8, "Vector AI (Multicopter)":2.2,
+    "MQ-1 Predator":14.8, "MQ-9 Reaper":20., "Custom Build":1.,
 }
 
-def simulate_battery_aircraft(profile: Dict[str, Any], payload_weight_g: int, flight_speed_kmh: float, wind_speed_kmh: float, temperature_c: float, altitude_m: int, elevation_gain_m: int, flight_mode: str, gustiness: int, terrain_penalty: float, stealth_drag_penalty: float, battery_capacity_wh: float) -> Dict[str, Any]:
-    total_mass_kg = profile['base_weight_kg'] + (payload_weight_g / 1000.0)
-    weight_N = total_mass_kg * G0
-    V_ms = max(1.0, flight_speed_kmh / 3.6)
-    W_ms = max(0.0, wind_speed_kmh / 3.6)
-    rho, rho_ratio = density_ratio_from_ambient(altitude_m, temperature_c)
-    batt_Wh = float(battery_capacity_wh) * battery_temp_capacity_factor(temperature_c)
-    climb_Wh = 0.0
-    if elevation_gain_m > 0:
-        climb_Wh = climb_energy_wh(total_mass_kg, elevation_gain_m, eta_climb=0.75)
-        batt_Wh = max(0.0, batt_Wh - climb_Wh)
 
-    if profile['type'] == 'fixed':
-        V_eff = V_ms if flight_mode != 'Loiter' else max(8.0, 0.75 * V_ms)
-        perf = fixedwing_power_required(weight_N, rho, V_eff, profile['wing_area_m2'], profile['wingspan_m'], profile['cd0'], profile['oswald_e'], profile['prop_eff'], 'Battery', profile.get('hotel_W', HOTEL_W_DEFAULT), 0.10, profile.get('cl_max', 1.4))
-        WL = weight_N / max(0.05, profile['wing_area_m2'])
-        wind_penalty_frac = mission_gust_penalty_fraction(gustiness, wind_speed_kmh, V_eff, WL)
-        total_draw_W = perf['total_W'] * (1.0 + wind_penalty_frac)
-        if flight_mode == 'Waypoint Mission':
-            total_draw_W *= 1.05
-        elif flight_mode == 'Loiter':
-            total_draw_W *= 1.05
-        total_draw_W *= terrain_penalty * stealth_drag_penalty
-        endurance_min = fixedwing_endurance_minutes(batt_Wh, total_draw_W)
-        best_km, worst_km = heading_range_km(V_eff, W_ms, endurance_min)
-        delta_T = convective_deltaT_simple(total_draw_W, profile.get('surface_area_m2', 0.3), temperature_c, rho, V_eff)
-        return {'rho': rho, 'rho_ratio': rho_ratio, 'total_mass_kg': total_mass_kg, 'weight_N': weight_N, 'battery_derated_Wh': batt_Wh, 'climb_energy_Wh': climb_Wh, 'total_draw_W': total_draw_W, 'dispatch_endurance_min': endurance_min, 'best_heading_range_km': best_km, 'upwind_range_km': worst_km, 'thermal_load_deltaT_estimate_C': delta_T, 'wind_penalty_frac': wind_penalty_frac, 'CL': perf['CL'], 'CD': perf['CD'], 'drag_N': perf['drag_N'], 'eta_prop_eff': perf['eta_prop_eff'], 'stall_margin_ok': bool(perf['stall_margin_ok']), 'V_effective_ms': V_eff}
+def battery_mass_kg(wh, specific_energy_whkg):
+    return float(wh) / max(50., float(specific_energy_whkg))
 
-    rotor = rotor_power_required(total_mass_kg, rho_ratio, flight_speed_kmh, profile['hover_power_W_ref'], profile.get('parasitic_area_m2', 0.03), profile.get('cd_body', 1.0), profile.get('hotel_W', HOTEL_W_DEFAULT))
-    WL_proxy = max(25.0, weight_N / max(0.15, profile.get('surface_area_m2', 0.25)))
-    wind_penalty_frac = mission_gust_penalty_fraction(gustiness, wind_speed_kmh, V_ms, WL_proxy)
-    total_draw_W = rotor['total_W'] * (1.0 + wind_penalty_frac)
-    if flight_mode == 'Hover':
-        total_draw_W *= 1.08
-    elif flight_mode == 'Waypoint Mission':
-        total_draw_W *= 1.05
-    elif flight_mode == 'Loiter':
-        total_draw_W *= 1.03
-    total_draw_W *= terrain_penalty * stealth_drag_penalty
-    endurance_min = fixedwing_endurance_minutes(batt_Wh, total_draw_W)
-    best_km, worst_km = heading_range_km(V_ms, W_ms, endurance_min)
-    delta_T = convective_deltaT_simple(total_draw_W, profile.get('surface_area_m2', 0.2), temperature_c, rho, V_ms)
-    return {'rho': rho, 'rho_ratio': rho_ratio, 'total_mass_kg': total_mass_kg, 'weight_N': weight_N, 'battery_derated_Wh': batt_Wh, 'climb_energy_Wh': climb_Wh, 'total_draw_W': total_draw_W, 'dispatch_endurance_min': endurance_min, 'best_heading_range_km': best_km, 'upwind_range_km': worst_km, 'thermal_load_deltaT_estimate_C': delta_T, 'wind_penalty_frac': wind_penalty_frac, 'induced_W': rotor['induced_W'], 'profile_W': rotor['profile_W'], 'hover_W': rotor['hover_W'], 'parasite_W': rotor['parasite_W'], 'V_effective_ms': V_ms}
 
-def simulate_ice_aircraft(profile: Dict[str, Any], payload_weight_g: int, flight_speed_kmh: float, wind_speed_kmh: float, temperature_c: float, altitude_m: int, elevation_gain_m: int, flight_mode: str, gustiness: int, terrain_penalty: float, stealth_drag_penalty: float, fuel_tank_l: Optional[float] = None) -> Dict[str, Any]:
-    total_mass_kg = profile['base_weight_kg'] + (payload_weight_g / 1000.0)
-    weight_N = total_mass_kg * G0
-    V_ms = max(10.0, flight_speed_kmh / 3.6)
-    W_ms = max(0.0, wind_speed_kmh / 3.6)
-    rho, rho_ratio = density_ratio_from_ambient(altitude_m, temperature_c)
-    V_eff = V_ms if flight_mode != 'Loiter' else max(18.0, 0.80 * V_ms)
-    perf = fixedwing_power_required(weight_N, rho, V_eff, profile['wing_area_m2'], profile['wingspan_m'], profile['cd0'], profile['oswald_e'], profile['prop_eff'], 'ICE', profile.get('hotel_W', 250.0), 0.08, profile.get('cl_max', 1.5))
-    WL = weight_N / max(0.05, profile['wing_area_m2'])
-    wind_penalty_frac = mission_gust_penalty_fraction(gustiness, wind_speed_kmh, V_eff, WL)
-    total_power_W = perf['total_W'] * (1.0 + wind_penalty_frac)
-    if flight_mode == 'Waypoint Mission':
-        total_power_W *= 1.04
-    elif flight_mode == 'Loiter':
-        total_power_W *= 1.03
-    total_power_W *= terrain_penalty * stealth_drag_penalty
-    fuel_l_total = float(fuel_tank_l if fuel_tank_l is not None else profile['fuel_tank_l'])
-    fuel_l_total = max(0.0, fuel_l_total)
-    lph = bsfc_fuel_burn_lph(total_power_W, profile['bsfc_gpkwh'], profile['fuel_density_kgpl'])
-    climb_L = climb_fuel_liters(total_mass_kg, max(0, elevation_gain_m), profile['bsfc_gpkwh'], profile['fuel_density_kgpl'], 0.70)
-    usable_fuel_L = max(0.0, fuel_l_total * USABLE_FUEL_FRAC - climb_L)
-    raw_endurance_hr = usable_fuel_L / max(0.05, lph)
-    dispatch_endurance_min = raw_endurance_hr * 60.0 * (1.0 - DISPATCH_RESERVE)
-    best_km, worst_km = heading_range_km(V_eff, W_ms, dispatch_endurance_min)
-    delta_T = convective_deltaT_simple(total_power_W, profile.get('surface_area_m2', 5.0), temperature_c, rho, V_eff, 0.85)
-    return {'rho': rho, 'rho_ratio': rho_ratio, 'total_mass_kg': total_mass_kg, 'weight_N': weight_N, 'total_power_W': total_power_W, 'fuel_burn_L_per_hr': lph, 'climb_fuel_L': climb_L, 'usable_fuel_L': usable_fuel_L, 'dispatch_endurance_min': dispatch_endurance_min, 'best_heading_range_km': best_km, 'upwind_range_km': worst_km, 'thermal_load_deltaT_estimate_C': delta_T, 'wind_penalty_frac': wind_penalty_frac, 'CL': perf['CL'], 'CD': perf['CD'], 'drag_N': perf['drag_N'], 'eta_prop_eff': perf['eta_prop_eff'], 'stall_margin_ok': bool(perf['stall_margin_ok']), 'V_effective_ms': V_eff}
+def infer_series_cells(wh):
+    return 4 if wh <= 80 else (6 if wh <= 180 else 12)
 
-REFERENCE_CASES = [
-    {'name': 'RQ-11 Raven', 'target_min': 75.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload'},
-    {'name': 'RQ-20 Puma', 'target_min': 180.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload'},
-    {'name': 'Teal 2 / Golden Eagle', 'target_min': 30.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload'},
-    {'name': 'Vector AI (Fixed-Wing)', 'target_min': 180.0, 'tolerance_pct': 20.0, 'note': 'Fixed-wing mode, nominal sea-level condition'},
-    {'name': 'Vector AI (Multicopter)', 'target_min': 45.0, 'tolerance_pct': 20.0, 'note': 'Multicopter mode, nominal sea-level condition'},
-    {'name': 'MQ-1 Predator', 'target_min': 1440.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload, cruise near 70 kt'},
-    {'name': 'MQ-9 Reaper', 'target_min': 1620.0, 'tolerance_pct': 20.0, 'note': 'Nominal sea-level condition, low wind, no payload, standard fuel'},
-]
 
-def pct_error(pred: float, truth: float) -> float:
-    if truth == 0:
-        return 0.0
-    return 100.0 * (pred - truth) / truth
+def atmosphere_state(altitude_m, sea_level_temp_c=15.):
+    # Tropospheric approximation, used only up to 11 km.
+    h = clamp(altitude_m, 0., 11000.)
+    t0 = float(sea_level_temp_c) + 273.15
+    temp_k = max(180., t0 - LAPSE * h)
+    p = P_SL * (temp_k / t0) ** (G / (R_AIR * LAPSE))
+    return p / (R_AIR * temp_k), temp_k - 273.15, p
 
-def simulate_nominal_endurance(name: str) -> float:
-    p = UAV_PROFILES[name]
-    if p['power_system'] == 'Battery':
-        out = simulate_battery_aircraft(p, 0, 45.0 if p['type'] == 'fixed' else 20.0, 0.0, 15.0, 0, 0, 'Forward Flight' if p['type'] == 'fixed' else 'Hover', 0, 1.0, 1.0, p['battery_wh'])
-        return out['dispatch_endurance_min']
-    nominal_speed = 129.6 if name == 'MQ-1 Predator' else 370.0 if name == 'MQ-9 Reaper' else 140.0
-    out = simulate_ice_aircraft(p, 0, nominal_speed, 0.0, 15.0, 0, 0, 'Forward Flight', 0, 1.0, 1.0)
-    return out['dispatch_endurance_min']
 
-def validation_report() -> List[Dict[str, Any]]:
-    rows = []
-    for case in REFERENCE_CASES:
-        pred = simulate_nominal_endurance(case['name'])
-        err = pct_error(pred, case['target_min'])
-        rows.append({'platform': case['name'], 'predicted_min': round(pred, 1), 'target_min': case['target_min'], 'error_pct': round(err, 1), 'pass': abs(err) <= case['tolerance_pct'], 'assumption': case['note']})
-    return rows
+def qnormalize(q):
+    q = np.asarray(q, float)
+    norm = np.linalg.norm(q)
+    return q / norm if norm > 1e-12 else np.array([1.,0.,0.,0.])
 
-def _responses_text(resp) -> str:
-    text = getattr(resp, 'output_text', None)
-    if text:
-        return text.strip()
-    try:
-        chunks = []
-        for item in getattr(resp, 'output', []):
-            for content in getattr(item, 'content', []):
-                if getattr(content, 'type', '') == 'output_text':
-                    chunks.append(getattr(content, 'text', ''))
-        return ''.join(chunks).strip()
-    except Exception:
-        return ''
 
-def generate_llm_advice(params: Dict[str, Any]) -> str:
-    if not OPENAI_AVAILABLE:
-        return "LLM unavailable — heuristic advice:\n- Reduce payload for longer endurance.\n- Lower airspeed in gusty winds.\n- Avoid high-drag mission configurations unless required.\n- Preserve reserve margin for ingress and return."
-    developer_prompt = 'You are a precise aerospace UAV mission advisor for an educational simulator. Be concise, technically grounded, and operationally practical. Do not invent aircraft or sensor capabilities.'
-    user_prompt = f"""Provide 4 short bullet recommendations for this UAV mission.
+def q_from_euler(roll, pitch, yaw):
+    cr,sr=math.cos(roll/2),math.sin(roll/2)
+    cp,sp=math.cos(pitch/2),math.sin(pitch/2)
+    cy,sy=math.cos(yaw/2),math.sin(yaw/2)
+    return qnormalize([cr*cp*cy+sr*sp*sy, sr*cp*cy-cr*sp*sy,
+                       cr*sp*cy+sr*cp*sy, cr*cp*sy-sr*sp*cy])
 
-Parameters:
-- Drone: {params['drone']}
-- Payload: {params['payload_g']} g
-- Mode: {params['mode']}
-- Speed: {params['speed_kmh']} km/h
-- Altitude: {params['alt_m']} m
-- Wind: {params['wind_kmh']} km/h (gust {params['gust']})
-- Dispatchable Endurance: {params['endurance_min']:.1f} min
-- Thermal Load ΔT Estimate: {params['delta_T']:.1f} °C
-- Fuel context: {params['fuel_l']}
 
-Requirements:
-- Bullet style only
-- Prioritize endurance, control margin, and return safety
-- Mention one tradeoff if relevant
-"""
-    try:
-        resp = _client.responses.create(model='gpt-5.4', reasoning={'effort': 'medium'}, input=[{'role': 'developer', 'content': [{'type': 'input_text', 'text': developer_prompt}]}, {'role': 'user', 'content': [{'type': 'input_text', 'text': user_prompt}]}], max_output_tokens=220)
-        text = _responses_text(resp)
-        if text:
-            return text
-        raise ValueError('Empty response text')
-    except Exception:
-        return "LLM error — heuristic advice:\n- Fly closer to best-endurance speed.\n- Reduce drag and payload where possible.\n- Preserve reserve for return-to-base."
+def euler_from_q(q):
+    w,x,y,z = qnormalize(q)
+    roll=math.atan2(2*(w*x+y*z),1-2*(x*x+y*y))
+    sp=clamp(2*(w*y-z*x),-1.,1.)
+    pitch=math.asin(sp)
+    yaw=math.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
+    return roll,pitch,yaw
 
-ALLOWED_ACTIONS = ['RTB', 'LOITER', 'HANDOFF_TRACK', 'RELOCATE', 'ALTITUDE_CHANGE', 'SPEED_CHANGE', 'RELAY_COMMS', 'STANDBY']
 
-@dataclass
-class VehicleState:
-    id: str
-    role: str
-    platform: str
-    power_system: str
-    x_km: float
-    y_km: float
-    altitude_m: int
-    speed_kmh: float
-    endurance_min: float
-    battery_wh: float = 0.0
-    fuel_l: float = 0.0
-    draw_W: float = 0.0
-    fuel_burn_lph: float = 0.0
-    delta_T: float = 0.0
-    current_wp: int = 0
-    waypoints: Optional[List[tuple]] = field(default_factory=list)
-    status_note: str = ''
-    inside_threat_zone: bool = False
-    valid_trim: bool = True
+def body_to_ned(q):
+    w,x,y,z=qnormalize(q)
+    return np.array([
+        [1-2*(y*y+z*z),2*(x*y-w*z),2*(x*z+w*y)],
+        [2*(x*y+w*z),1-2*(x*x+z*z),2*(y*z-w*x)],
+        [2*(x*z-w*y),2*(y*z+w*x),1-2*(x*x+y*y)],
+    ])
+
+
+def q_derivative(q,p,rate_q,r):
+    w,x,y,z=qnormalize(q)
+    return .5*np.array([-x*p-y*rate_q-z*r,
+        w*p+y*r-z*rate_q, w*rate_q-x*r+z*p, w*r+x*rate_q-y*p])
+
+
+def q_integrate(q,p,rate_q,r,dt):
+    q=qnormalize(q)
+    mid=qnormalize(q+.5*dt*q_derivative(q,p,rate_q,r))
+    return qnormalize(q+dt*q_derivative(mid,p,rate_q,r))
 
 
 @dataclass
-class MissionPhase:
-    name: str
-    duration_min: float
-    power_W: float = 0.0
-    energy_Wh: float = 0.0
-    fuel_L: float = 0.0
-    notes: str = ""
+class Environment:
+    density:float=1.225
+    temperature_c:float=15.
+    pressure_pa:float=P_SL
+    wind_n:float=0.
+    wind_e:float=0.
+    wind_d:float=0.
 
 
-def summarize_vehicle_state(s: VehicleState) -> Dict[str, Any]:
-    return {'id': s.id, 'role': s.role, 'platform': s.platform, 'power_system': s.power_system, 'x_km': round(s.x_km, 3), 'y_km': round(s.y_km, 3), 'altitude_m': s.altitude_m, 'speed_kmh': round(s.speed_kmh, 2), 'endurance_min': round(s.endurance_min, 2), 'battery_wh': round(s.battery_wh, 2), 'fuel_l': round(s.fuel_l, 3), 'draw_W': round(s.draw_W, 2), 'fuel_burn_lph': round(s.fuel_burn_lph, 3), 'delta_T': round(s.delta_T, 2), 'current_wp': s.current_wp, 'inside_threat_zone': s.inside_threat_zone, 'status_note': s.status_note, 'valid_trim': s.valid_trim}
+@dataclass
+class DynamicsParams:
+    kind:str
+    mass_reference:float
+    ix:float
+    iy:float
+    iz:float
+    area:float
+    span:float
+    chord:float
+    rotor_disk_area:float
+    max_roll_moment:float
+    max_pitch_moment:float
+    max_yaw_moment:float
+    cl0:float=.25
+    cl_alpha:float=4.8
+    cl_q:float=3.5
+    cl_de:float=.55
+    cd0:float=.035
+    induced_k:float=.055
+    cy_beta:float=-.65
+    cy_da:float=.05
+    cy_dr:float=.20
+    cl_beta:float=-.10
+    cl_p:float=-.45
+    cl_r:float=.12
+    cl_da:float=.18
+    cl_dr:float=.08
+    cm0:float=.03
+    cm_alpha:float=-1.05
+    cm_q:float=-7.
+    cm_de:float=-1.15
+    cn_beta:float=.16
+    cn_p:float=-.06
+    cn_r:float=-.22
+    cn_da:float=.02
+    cn_dr:float=-.12
+    alpha_stall_deg:float=16.
+    cl_max:float=1.45
+    rotor_drag_area:float=.03
 
-def in_threat_zone(s: VehicleState, threat_zone_km: float) -> bool:
-    return (s.x_km ** 2 + s.y_km ** 2) ** 0.5 <= threat_zone_km
 
-def move_towards_waypoint(s: VehicleState, dt_s: float) -> VehicleState:
-    if not s.waypoints or s.current_wp >= len(s.waypoints):
-        return s
-    tx, ty = s.waypoints[s.current_wp]
-    dx = tx - s.x_km
-    dy = ty - s.y_km
-    dist = math.sqrt(dx * dx + dy * dy)
-    if dist <= 1e-6:
-        s.current_wp += 1
-        return s
-    step_km = (max(0.0, s.speed_kmh) * dt_s) / 3600.0
-    if step_km >= dist:
-        s.x_km = tx
-        s.y_km = ty
-        s.current_wp += 1
+def build_dynamics_params(profile, mass):
+    m=max(.1,float(mass))
+    if profile['type']=='fixed':
+        area=max(.08,float(profile.get('wing_area_m2',.5)))
+        span=max(.4,float(profile.get('wingspan_m',2.)))
+        chord=area/span
+        aspect_ratio=span*span/area
+        oswald=clamp(profile.get('oswald_e',.8),.3,.95)
+        return DynamicsParams('fixed',m, max(.02,.055*m*span**2),
+            max(.03,.08*m*(.55*span)**2), max(.03,.095*m*span**2),
+            area,span,chord,0.,.12*m*G*span,.10*m*G*chord,.06*m*G*span,
+            cd0=float(profile.get('cd0',.035)),induced_k=1/(math.pi*oswald*aspect_ratio),
+            alpha_stall_deg=float(profile.get('alpha_stall_deg',16.)),
+            cl_max=float(profile.get('cl_max',1.45)))
+    c=max(.25,.22*math.sqrt(m)+.25)
+    disk=max(.03,float(profile['base_weight_kg'])*G/max(20.,profile.get('rotor_WL_proxy',45.)))
+    return DynamicsParams('rotor',m,max(.015,.18*m*c*c),max(.015,.18*m*c*c),
+        max(.02,.30*m*c*c),c*c,2*c,c,disk,.35*m*G*c,.35*m*G*c,.12*m*G*c,
+        rotor_drag_area=max(.005,float(profile.get('parasitic_area_m2',.03))*float(profile.get('cd_body',1.))))
+
+
+ALPHA_GRID=np.array([-90,-70,-50,-35,-25,-20,-15,-10,-5,0,5,10,15,20,25,35,50,70,90.])
+
+
+def aero_coefficients(alpha_deg, p):
+    alpha=math.radians(clamp(alpha_deg,-90.,90.))
+    stall=math.radians(p.alpha_stall_deg)
+    attached_cl=p.cl_max*math.tanh((p.cl0+p.cl_alpha*alpha)/p.cl_max)
+    attached_cd=p.cd0+p.induced_k*attached_cl**2
+    separated_cl=1.10*math.sin(2*alpha)
+    separated_cd=.10+1.35*math.sin(alpha)**2
+    start=.85*stall
+    end=max(start+math.radians(8.),1.45*stall)
+    blend=clamp01((abs(alpha)-start)/(end-start))
+    cl=(1-blend)*attached_cl+blend*separated_cl
+    cd=(1-blend)*attached_cd+blend*separated_cd
+    cm=(1-blend)*(p.cm0+p.cm_alpha*alpha)+blend*clamp(-.35*math.sin(alpha),-.35,.35)
+    return cl,cd,cm
+
+
+def aerodynamic_table(p):
+    arr=np.array([aero_coefficients(a,p) for a in ALPHA_GRID])
+    return pd.DataFrame({'alpha_deg':ALPHA_GRID,'CL':arr[:,0],'CD':arr[:,1],'Cm':arr[:,2]})
+
+
+@dataclass
+class Trim:
+    alpha_deg:float=0.
+    elevator:float=0.
+    throttle:float=.5
+    drag_n:float=0.
+    shaft_required_w:float=0.
+    converged:bool=True
+    power_feasible:bool=True
+
+
+def solve_trim(p,profile,rho,speed,mass,max_shaft):
+    if p.kind=='rotor':
+        weight=mass*G
+        shaft=weight**1.5/(.72*math.sqrt(2*max(.2,rho)*max(.03,p.rotor_disk_area)))
+        return Trim(0.,0.,clamp(shaft/max(1.,max_shaft),.0,1.),0.,shaft,
+                    True,shaft<=max_shaft)
+    v=max(4.,speed)
+    qbar=.5*max(.2,rho)*v*v
+    weight=mass*G
+    def residual(alpha_deg):
+        cl,cd,cm=aero_coefficients(alpha_deg,p)
+        elevator=clamp(-cm/p.cm_de,-.65,.65)
+        lift=qbar*p.area*(cl+p.cl_de*elevator)
+        return lift-weight,elevator,cd+.012*elevator**2
+    low,high=-3.,min(p.alpha_stall_deg-1.5,13.5)
+    rlow,rhigh=residual(low)[0],residual(high)[0]
+    converged=rlow*rhigh<=0
+    if converged:
+        for _ in range(55):
+            mid=(low+high)/2
+            rm=residual(mid)[0]
+            if rlow*rm<=0: high=mid
+            else: low=mid;rlow=rm
+        alpha=(low+high)/2
     else:
-        s.x_km += step_km * dx / dist
-        s.y_km += step_km * dy / dist
-    return s
+        candidates=np.linspace(low,high,100)
+        alpha=float(min(candidates,key=lambda a: abs(residual(a)[0])))
+    _,elevator,cd=residual(alpha)
+    drag=qbar*p.area*cd
+    shaft=drag*v/max(.3,float(profile.get('prop_eff',.72)))
+    return Trim(alpha,elevator,clamp(shaft/max(1.,max_shaft),0.,1.),
+                drag,shaft,converged,shaft<=max_shaft)
 
-def burn_battery_step(battery_wh: float, draw_W: float, dt_s: float) -> float:
-    return max(0.0, battery_wh - (draw_W * dt_s / 3600.0))
 
-def burn_fuel_step(fuel_l: float, fuel_burn_lph: float, dt_s: float) -> float:
-    return max(0.0, fuel_l - (fuel_burn_lph * dt_s / 3600.0))
+@dataclass
+class BatterySnapshot:
+    soc:float
+    soh:float
+    nominal_wh:float
+    temp_adjusted_wh:float
+    soh_adjusted_wh:float
+    usable_capacity_wh:float
+    remaining_wh:float
+    ocv_v:float
+    terminal_v:float
+    current_a:float
+    c_rate:float
+    r0_ohm:float
+    polarization_v:float
+    demanded_w:float
+    delivered_w:float
+    limit_w:float
+    limited:bool
+    temperature_c:float
+    heat_w:float
+    min_cell_v:float
+    max_cell_v:float
+    voltage_margin_v:float
+    thermal_margin_c:float
+    equivalent_cycles:float
+    reserve_soc:float
+    status:str
 
-def recompute_endurance_minutes(s: VehicleState) -> float:
-    if s.power_system == 'Battery':
-        if s.draw_W <= 0:
-            return 0.0
-        return max(0.0, (s.battery_wh / s.draw_W) * 60.0)
-    if s.fuel_burn_lph <= 0:
-        return 0.0
-    return max(0.0, (s.fuel_l / s.fuel_burn_lph) * 60.0)
 
-def seed_swarm_from_result(platform_name: str, profile: Dict[str, Any], base_result: Dict[str, Any], swarm_size: int, altitude_m: int, waypoints: List[tuple]) -> List[VehicleState]:
-    roles = ['LEAD', 'SCOUT', 'TRACKER', 'RELAY', 'STRIKER']
-    swarm = []
-    for i in range(swarm_size):
-        swarm.append(VehicleState(id=f'UAV_{i+1}', role=roles[i % len(roles)], platform=platform_name, power_system=profile['power_system'], x_km=0.0, y_km=0.0, altitude_m=altitude_m, speed_kmh=30.0, endurance_min=float(base_result['dispatch_endurance_min']), battery_wh=float(base_result.get('battery_derated_Wh', 0.0)), fuel_l=float(base_result.get('usable_fuel_L', 0.0)), draw_W=float(base_result.get('total_draw_W', 0.0)), fuel_burn_lph=float(base_result.get('fuel_burn_L_per_hr', 0.0)), delta_T=float(base_result.get('thermal_load_deltaT_estimate_C', 0.0)), current_wp=0, waypoints=waypoints.copy(), valid_trim=bool(base_result.get('stall_margin_ok', True))))
-    return swarm
+class BatteryTwin:
+    """Educational 1-RC Thevenin pack model, not a characterized cell BMS."""
+    def __init__(self,wh,series,soc=1.,soh=1.,temperature=25.,max_c=8.,
+                 resistance_scale=1.,imbalance_mv=0.,degraded=False,reserve=.10,ideal=False):
+        self.nominal_wh=max(1.,float(wh));self.series=max(1,int(series))
+        self.nominal_voltage=3.7*self.series
+        self.capacity_ah=self.nominal_wh/self.nominal_voltage
+        self.soc=clamp01(soc);self.soh=clamp(soh,.5,1.)
+        self.temp=float(temperature);self.max_c=max(.5,float(max_c))
+        self.resistance_scale=max(.25,float(resistance_scale))
+        self.imbalance=max(0.,float(imbalance_mv)/1000.)
+        self.degraded=bool(degraded);self.reserve=clamp(reserve,0.,.5)
+        self.ideal=bool(ideal)
+        self.rc_v=0.;self.throughput_wh=0.
+        self.base_r0=max(.003,min(.18,.018*(self.nominal_voltage/22.2)/
+                                  max(.45,math.sqrt(self.capacity_ah/5.))))
+        self.thermal_capacity=max(500.,10.*self.nominal_wh)
+        self.thermal_resistance=max(.08,min(1.2,.80*(100/self.nominal_wh)**.3))
+        self.ocv=self.open_circuit_voltage();self.terminal_v=self.ocv
+        self.current=0.;self.demanded=0.;self.delivered=0.;self.limit=0.
+        self.limited=False;self.heat=0.;self.status='NORMAL'
+        self.min_cell_v=self.ocv/self.series
+        self.max_cell_v=self.min_cell_v
+        self.initial_usable_wh=self.remaining_wh()
 
-def recompute_vehicle_from_state(s: VehicleState, profile: Dict[str, Any], temperature_c: float, wind_speed_kmh: float, gustiness: int, terrain_penalty: float, stealth_drag_penalty: float) -> VehicleState:
-    if s.power_system == 'Battery':
-        flight_mode = 'Forward Flight' if profile['type'] == 'fixed' else 'Hover'
-        out = simulate_battery_aircraft(profile, 0, s.speed_kmh, wind_speed_kmh, temperature_c, s.altitude_m, 0, flight_mode, gustiness, terrain_penalty, stealth_drag_penalty, s.battery_wh)
-        s.draw_W = float(out.get('total_draw_W', s.draw_W))
-        s.delta_T = float(out.get('thermal_load_deltaT_estimate_C', s.delta_T))
-        s.valid_trim = bool(out.get('stall_margin_ok', True))
-        s.endurance_min = float(out.get('dispatch_endurance_min', s.endurance_min))
-    else:
-        out = simulate_ice_aircraft(profile, 0, s.speed_kmh, wind_speed_kmh, temperature_c, s.altitude_m, 0, 'Forward Flight', gustiness, terrain_penalty, stealth_drag_penalty, s.fuel_l)
-        s.fuel_burn_lph = float(out.get('fuel_burn_L_per_hr', s.fuel_burn_lph))
-        s.delta_T = float(out.get('thermal_load_deltaT_estimate_C', s.delta_T))
-        s.valid_trim = bool(out.get('stall_margin_ok', True))
-        s.endurance_min = float(out.get('dispatch_endurance_min', s.endurance_min))
-    return s
+    def temperature_factor(self):
+        if self.ideal:return 1.
+        points=[(-50,.50),(-10,.65),(0,.78),(10,.88),(20,.97),(30,1.),(40,.96),(80,.90)]
+        return float(np.interp(self.temp,[x[0] for x in points],[x[1] for x in points]))
 
-def _safe_json(txt: str) -> Dict[str, Any]:
-    try:
-        return json.loads(txt)
-    except Exception:
-        s = txt.find('{')
-        e = txt.rfind('}')
-        return json.loads(txt[s:e+1])
+    def fault_factor(self):return .88 if self.degraded and not self.ideal else 1.
+    def usable_wh(self):return self.nominal_wh*self.temperature_factor()*self.soh*self.fault_factor()
+    def remaining_wh(self):return self.soc*self.usable_wh()
 
-AGENT_SYSTEM_TMPL = """You are {role} for {uav_id}, a UAV swarm mission agent.
-Return STRICT JSON with:
-- "message": short comms (<20 words)
-- "proposed_action": one of {allowed}
-- "params": dict
-- "confidence": float 0-1
-Mission rules:
-- Prefer RTB if endurance is critically low.
-- Prefer LOITER if awaiting tasking.
-- Prefer RELAY_COMMS if acting as comms support.
-- Use SPEED_CHANGE or ALTITUDE_CHANGE only when tactically justified.
-- Do not invent physics. Actions are mission-logic only.
-"""
+    def open_circuit_voltage(self):
+        if self.ideal:return self.nominal_voltage
+        socs=[0,.03,.08,.15,.30,.50,.70,.85,.95,1.]
+        cells=[3.,3.2,3.4,3.52,3.66,3.76,3.86,3.98,4.12,4.2]
+        return self.series*float(np.interp(self.soc,socs,cells))
 
-LEAD_SYSTEM = """You are LEAD, the swarm coordinator.
-Input: environment + UAV states + proposals.
-Return STRICT JSON with:
-- "conversation": list of { "from": "...", "msg": "..." }
-- "actions": list of { "uav_id": "...", "action": "...", "reason": "...", ...params }
-Rules:
-- Prioritize survivability and mission continuity.
-- RTB if endurance is low.
-- Do not invent new action types.
-- Use only mission-logic actions, not physics changes.
-"""
+    def resistance(self):
+        if self.ideal:return 0.
+        cold=min(2.8,1+.035*max(0.,25-self.temp))
+        hot=1+.006*max(0.,self.temp-35)
+        aging=1+1.8*(1-self.soh)
+        low_soc=1+.8*max(0.,.15-self.soc)/.15
+        return self.base_r0*self.resistance_scale*cold*hot*aging*low_soc*(1.65 if self.degraded else 1.)
 
-def agent_call(env: Dict[str, Any], s: VehicleState) -> Dict[str, Any]:
-    if not OPENAI_AVAILABLE:
-        if s.endurance_min < 8:
-            return {'message': 'Low endurance, RTB.', 'proposed_action': 'RTB', 'params': {}, 'confidence': 0.8}
-        if s.role == 'RELAY':
-            return {'message': 'Holding as relay.', 'proposed_action': 'RELAY_COMMS', 'params': {}, 'confidence': 0.7}
-        return {'message': 'Continuing mission.', 'proposed_action': 'LOITER', 'params': {}, 'confidence': 0.6}
-    sys = AGENT_SYSTEM_TMPL.format(role=s.role, uav_id=s.id, allowed=ALLOWED_ACTIONS)
-    payload = {'env': env, 'self': summarize_vehicle_state(s)}
-    try:
-        resp = _client.responses.create(model='gpt-5.4', input=[{'role': 'developer', 'content': [{'type': 'input_text', 'text': sys}]}, {'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(payload, ensure_ascii=False)}]}], max_output_tokens=180)
-        text = _responses_text(resp)
-        if text:
-            return _safe_json(text)
-        raise ValueError('Empty response')
-    except Exception:
-        return {'message': 'Holding.', 'proposed_action': 'STANDBY', 'params': {}, 'confidence': 0.5}
+    def max_current(self):
+        tf=.55 if self.temp<0 else (.75 if self.temp<10 else (.65 if self.temp>55 else 1.))
+        return self.capacity_ah*self.max_c*self.soh*tf*(.65 if self.degraded else 1.)
 
-def lead_call(env: Dict[str, Any], swarm: List[VehicleState], proposals: Dict[str, Any]) -> Dict[str, Any]:
-    if not OPENAI_AVAILABLE:
-        actions = []
-        for s in swarm:
-            prop = proposals.get(s.id, {})
-            act = prop.get('proposed_action', 'LOITER')
-            if s.endurance_min < 8:
-                actions.append({'uav_id': s.id, 'action': 'RTB', 'reason': 'Low endurance'})
-            elif act == 'RELAY_COMMS':
-                actions.append({'uav_id': s.id, 'action': 'RELAY_COMMS', 'reason': 'Relay support'})
-            elif act == 'ALTITUDE_CHANGE':
-                actions.append({'uav_id': s.id, 'action': 'ALTITUDE_CHANGE', 'delta_m': 50, 'reason': 'Altitude adjust'})
-            elif act == 'SPEED_CHANGE':
-                actions.append({'uav_id': s.id, 'action': 'SPEED_CHANGE', 'delta_kmh': -5, 'reason': 'Conserve energy'})
-            else:
-                actions.append({'uav_id': s.id, 'action': 'LOITER', 'reason': 'Hold position'})
-        return {'conversation': [{'from': 'LEAD', 'msg': 'Fallback coordination active'}], 'actions': actions}
-    packed = {'env': env, 'swarm': [summarize_vehicle_state(s) for s in swarm], 'proposals': proposals, 'allowed_actions': ALLOWED_ACTIONS}
-    try:
-        resp = _client.responses.create(model='gpt-5.4', input=[{'role': 'developer', 'content': [{'type': 'input_text', 'text': LEAD_SYSTEM}]}, {'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(packed, ensure_ascii=False)}]}], max_output_tokens=500)
-        text = _responses_text(resp)
-        if text:
-            return _safe_json(text)
-        raise ValueError('Empty response')
-    except Exception:
-        return {'conversation': [{'from': 'LEAD', 'msg': 'LLM fallback active'}], 'actions': [{'uav_id': s.id, 'action': 'LOITER', 'reason': 'Fallback hold'} for s in swarm]}
+    def _max_power(self):
+        if self.ideal:return float('inf')
+        effective=max(0.,self.ocv-self.rc_v)
+        vmin=self.series*(3.2+.5*self.imbalance)
+        r0=max(1e-6,self.resistance())
+        if effective<=vmin or self.soc<=0:return 0.
+        current=min(self.max_current(),(effective-vmin)/r0,effective/(2*r0))
+        return max(0.,current*(effective-current*r0))
 
-def apply_swarm_actions(swarm: List[VehicleState], actions: List[Dict[str, Any]], threat_zone_km: float, profile: Dict[str, Any], temperature_c: float, wind_speed_kmh: float, gustiness: int, terrain_penalty: float, stealth_drag_penalty: float) -> List[VehicleState]:
-    idx = {s.id: s for s in swarm}
-    for a in actions:
-        s = idx.get(a.get('uav_id'))
-        if not s:
-            continue
-        act = a.get('action', 'STANDBY')
-        if act == 'RTB':
-            s.status_note = 'RTB ordered'
-            s.waypoints = [(0.0, 0.0)]
-            s.current_wp = 0
-        elif act == 'LOITER':
-            s.status_note = 'Loiter'
-            s.speed_kmh = max(10.0, s.speed_kmh * 0.90)
-        elif act == 'HANDOFF_TRACK':
-            s.status_note = 'Track handoff'
-        elif act == 'RELOCATE':
-            dx = float(a.get('dx_km', 0.0))
-            dy = float(a.get('dy_km', 0.0))
-            s.x_km += dx
-            s.y_km += dy
-            s.status_note = f'Relocate ({dx:+.1f},{dy:+.1f}) km'
-        elif act == 'ALTITUDE_CHANGE':
-            delta_m = int(a.get('delta_m', 0))
-            s.altitude_m = max(0, s.altitude_m + delta_m)
-            s.status_note = f'Altitude change {delta_m:+d} m'
-        elif act == 'SPEED_CHANGE':
-            delta_kmh = float(a.get('delta_kmh', 0.0))
-            s.speed_kmh = max(5.0, s.speed_kmh + delta_kmh)
-            s.status_note = f'Speed change {delta_kmh:+.1f} km/h'
-        elif act == 'RELAY_COMMS':
-            s.status_note = 'Relay node active'
+    def step(self,demand_w,ambient,dt):
+        dt=max(1e-4,float(dt));self.demanded=max(0.,float(demand_w))
+        self.ocv=self.open_circuit_voltage()
+        if self.ideal:
+            self.limit=self.nominal_wh*self.soc*3600./dt
+            self.delivered=min(self.demanded,self.limit)
+            self.soc=max(0.,self.soc-self.delivered*dt/(3600.*self.nominal_wh))
+            self.terminal_v=self.nominal_voltage
+            self.current=self.delivered/max(.001,self.nominal_voltage)
+            self.temp=float(ambient);self.heat=0.;self.rc_v=0.
+            self.min_cell_v=self.max_cell_v=self.nominal_voltage/self.series
         else:
-            s.status_note = 'Standby'
-        s.inside_threat_zone = in_threat_zone(s, threat_zone_km)
-        s = recompute_vehicle_from_state(s, profile, temperature_c, wind_speed_kmh, gustiness, terrain_penalty, stealth_drag_penalty)
-    return swarm
+            self.limit=self._max_power()
+            self.delivered=min(self.demanded,self.limit)
+            r0=max(1e-6,self.resistance())
+            veff=max(1e-3,self.ocv-self.rc_v)
+            discriminant=max(0.,veff**2-4*r0*self.delivered)
+            self.current=min(self.max_current(),
+                (veff-math.sqrt(discriminant))/(2*r0)) if self.delivered>0 else 0.
+            self.terminal_v=max(0.,veff-r0*self.current)
+            # Coulomb counting uses charge capacity, not the temporary thermal
+            # derating factor (which is an available-energy estimate).
+            charge_ah=max(.05,self.capacity_ah*self.soh*self.fault_factor())
+            self.soc=max(0.,self.soc-self.current*dt/(3600.*charge_ah))
+            r1=max(1e-5,.6*r0)
+            a=math.exp(-dt/18.)
+            self.rc_v=clamp(a*self.rc_v+(1-a)*self.current*r1,0.,.25*self.ocv)
+            self.heat=self.current**2*r0+self.current*self.rc_v
+            self.temp+=(self.heat-(self.temp-float(ambient))/self.thermal_resistance)*dt/self.thermal_capacity
+            stress=1+.18*max(0.,self.current/max(.05,self.capacity_ah)-1.)+.035*max(0.,self.temp-35.)
+            self.soh=max(.5,self.soh-.00035*(self.delivered*dt/(3600*self.nominal_wh))*stress)
+            mean=self.terminal_v/self.series
+            self.min_cell_v=max(0.,mean-.5*self.imbalance)
+            self.max_cell_v=mean+.5*self.imbalance
+        self.throughput_wh+=self.delivered*dt/3600.
+        self.limited=self.delivered+1e-5<self.demanded
+        flags=[]
+        if self.limited:flags.append('POWER_LIMITED')
+        if not self.ideal and self.min_cell_v<=3.25:flags.append('LOW_VOLTAGE')
+        if self.temp>=57 and not self.ideal:flags.append('THERMAL_LIMIT')
+        if self.soc<=self.reserve:flags.append('RESERVE')
+        if self.degraded and not self.ideal:flags.append('DEGRADED_CELL')
+        self.status='+'.join(flags) if flags else ('IDEAL_RESERVOIR' if self.ideal else 'NORMAL')
+        return self.snapshot()
 
-def simulate_swarm_step(swarm: List[VehicleState], dt_s: float, threat_zone_km: float) -> List[VehicleState]:
-    updated = []
-    for s in swarm:
-        s = move_towards_waypoint(s, dt_s)
-        s.inside_threat_zone = in_threat_zone(s, threat_zone_km)
-        if s.power_system == 'Battery':
-            s.battery_wh = burn_battery_step(s.battery_wh, s.draw_W, dt_s)
-        else:
-            s.fuel_l = burn_fuel_step(s.fuel_l, s.fuel_burn_lph, dt_s)
-        s.endurance_min = recompute_endurance_minutes(s)
-        updated.append(s)
-    return updated
+    def snapshot(self):
+        return BatterySnapshot(self.soc,self.soh,self.nominal_wh,self.nominal_wh*self.temperature_factor(),
+            self.nominal_wh*self.temperature_factor()*self.soh,self.usable_wh(),self.remaining_wh(),
+            self.ocv,self.terminal_v,self.current,self.current/max(.05,self.capacity_ah),self.resistance(),
+            self.rc_v,self.demanded,self.delivered,self.limit,self.limited,self.temp,self.heat,
+            self.min_cell_v,self.max_cell_v,self.min_cell_v-3.2,60-self.temp,
+            self.throughput_wh/self.nominal_wh,self.reserve,self.status)
+
+    def telemetry(self):
+        return {'battery_'+k:v for k,v in asdict(self.snapshot()).items()}
+
+# ============================================================================
+# ACTUATION, POWER CONVERSION, FLIGHT PLANT
+# ============================================================================
+@dataclass
+class Control:
+    throttle:float=.5
+    aileron:float=0.
+    elevator:float=0.
+    rudder:float=0.
+    heading_deg:float=0.
+    altitude_m:float=100.
+    speed_ms:float=15.
 
 
+@dataclass
+class FlightState:
+    time_s:float=0.
+    north_m:float=0.
+    east_m:float=0.
+    down_m:float=-100.
+    altitude_m:float=100.
+    u_ms:float=0.
+    v_ms:float=0.
+    w_ms:float=0.
+    vn_ms:float=0.
+    ve_ms:float=0.
+    vd_ms:float=0.
+    qw:float=1.
+    qx:float=0.
+    qy:float=0.
+    qz:float=0.
+    roll_deg:float=0.
+    pitch_deg:float=0.
+    yaw_deg:float=0.
+    p_rad_s:float=0.
+    q_rad_s:float=0.
+    r_rad_s:float=0.
+    airspeed_ms:float=0.
+    ground_speed_ms:float=0.
+    vertical_speed_ms:float=0.
+    alpha_deg:float=0.
+    beta_deg:float=0.
+    throttle_cmd:float=0.
+    aileron_cmd:float=0.
+    elevator_cmd:float=0.
+    rudder_cmd:float=0.
+    throttle_actual:float=0.
+    aileron_actual:float=0.
+    elevator_actual:float=0.
+    rudder_actual:float=0.
+    fx_body_n:float=0.
+    fy_body_n:float=0.
+    fz_body_n:float=0.
+    roll_moment_nm:float=0.
+    pitch_moment_nm:float=0.
+    yaw_moment_nm:float=0.
+    gust_n_ms:float=0.
+    gust_e_ms:float=0.
+    gust_d_ms:float=0.
+    envelope_active:bool=False
+    envelope_mode:str='NORMAL'
+    stall_warning:bool=False
+    alpha_margin_deg:float=999.
+    battery_wh:float=0.
+    battery_soc:float=1.
+    battery_temp_c:float=25.
+    battery_health:float=1.
+    fuel_mass_kg:float=0.
+    fuel_fraction:float=1.
+    mass_kg:float=1.
+    motor_temp_c:float=25.
+    motor_health:float=1.
+    shaft_power_w:float=0.
+    engine_shaft_w:float=0.
+    power_draw_w:float=0.
+    demanded_power_w:float=0.
+    thrust_n:float=0.
+    power_limited:bool=False
+    hotel_delivered_w:float=0.
+    actuator_delivered_w:float=0.
+    propulsive_electrical_w:float=0.
+    active_waypoint:int=0
+    wp_distance_m:float=0.
+    flight_mode:str='WAYPOINT'
+    def quaternion(self):return [self.qw,self.qx,self.qy,self.qz]
 
-def simulate_mission_phases(
-    profile: Dict[str, Any],
-    payload_weight_g: int,
-    cruise_speed_kmh: float,
-    wind_speed_kmh: float,
-    temperature_c: float,
-    cruise_altitude_m: int,
-    elevation_gain_m: int,
-    gustiness: int,
-    terrain_penalty: float,
-    stealth_drag_penalty: float,
-    battery_capacity_wh: Optional[float] = None,
-    fuel_tank_l: Optional[float] = None,
-    loiter_minutes: float = 0.0,
-    include_rtb: bool = False,
-) -> Dict[str, Any]:
-    """
-    Fleet-wide educational mission timeline:
-    climb -> cruise -> optional loiter -> descent -> optional RTB
 
-    Reserve phases are budgeted first so cruise does not consume the
-    entire mission energy/fuel budget.
-    """
+@dataclass
+class ActuatorChannel:
+    value:float=0.
+    tau:float=.15
+    rate:float=4.
+    low:float=-1.
+    high:float=1.
+    def update(self,command,dt):
+        slew=clamp((clamp(command,self.low,self.high)-self.value)/max(.001,self.tau),-self.rate,self.rate)
+        self.value=clamp(self.value+slew*dt,self.low,self.high)
+        return self.value
 
-    phases: List[MissionPhase] = []
-    warnings: List[str] = []
 
-    total_mass_kg = profile["base_weight_kg"] + (payload_weight_g / 1000.0)
-    weight_N = total_mass_kg * G0
-
-    if profile["type"] == "rotor":
-        climb_rate_mps = 2.0
-        descent_rate_mps = 2.0
-        climb_mode = "Hover"
-        cruise_mode = "Forward Flight"
-        descent_mode = "Forward Flight"
-    else:
-        climb_rate_mps = 3.0
-        descent_rate_mps = 2.5
-        climb_mode = "Forward Flight"
-        cruise_mode = "Forward Flight"
-        descent_mode = "Loiter"
-
-    climb_altitude_m = max(0.0, float(cruise_altitude_m + max(0.0, elevation_gain_m)))
-    descent_altitude_m = climb_altitude_m
-    climb_time_min = 0.0 if climb_altitude_m <= 0 else climb_altitude_m / max(0.1, climb_rate_mps) / 60.0
-    descent_time_min = 0.0 if descent_altitude_m <= 0 else descent_altitude_m / max(0.1, descent_rate_mps) / 60.0
-
-    def get_phase_result(flight_mode: str, speed_kmh: float, altitude_m: int, energy_wh: Optional[float], fuel_l: Optional[float]):
-        if profile["power_system"] == "Battery":
-            batt_wh = float(energy_wh if energy_wh is not None else battery_capacity_wh or profile.get("battery_wh", 0.0))
-            return simulate_battery_aircraft(
-                profile=profile,
-                payload_weight_g=payload_weight_g,
-                flight_speed_kmh=speed_kmh,
-                wind_speed_kmh=wind_speed_kmh,
-                temperature_c=temperature_c,
-                altitude_m=altitude_m,
-                elevation_gain_m=0,
-                flight_mode=flight_mode,
-                gustiness=gustiness,
-                terrain_penalty=terrain_penalty,
-                stealth_drag_penalty=stealth_drag_penalty,
-                battery_capacity_wh=batt_wh,
-            )
-        tank_l = float(fuel_l if fuel_l is not None else fuel_tank_l or profile.get("fuel_tank_l", 0.0))
-        return simulate_ice_aircraft(
-            profile=profile,
-            payload_weight_g=payload_weight_g,
-            flight_speed_kmh=speed_kmh,
-            wind_speed_kmh=wind_speed_kmh,
-            temperature_c=temperature_c,
-            altitude_m=altitude_m,
-            elevation_gain_m=0,
-            flight_mode=flight_mode,
-            gustiness=gustiness,
-            terrain_penalty=terrain_penalty,
-            stealth_drag_penalty=stealth_drag_penalty,
-            fuel_tank_l=tank_l,
-        )
-
-    # Starting available resources
-    if profile["power_system"] == "Battery":
-        total_available = float(battery_capacity_wh if battery_capacity_wh is not None else profile.get("battery_wh", 0.0))
-    else:
-        total_available = float(fuel_tank_l if fuel_tank_l is not None else profile.get("fuel_tank_l", 0.0))
-
-    # -------------------------
-    # CLIMB (committed first)
-    # -------------------------
-    climb_speed_kmh = max(20.0, 0.85 * cruise_speed_kmh)
-    climb_res = get_phase_result(climb_mode, climb_speed_kmh, int(max(0, cruise_altitude_m)), total_available if profile["power_system"] == "Battery" else None, total_available if profile["power_system"] == "ICE" else None)
-
-    if profile["power_system"] == "Battery":
-        climb_power_W = float(climb_res["total_draw_W"])
-        climb_extra_W = weight_N * climb_rate_mps
-        climb_total_W = climb_power_W + climb_extra_W
-        climb_energy_Wh = climb_total_W * climb_time_min / 60.0
-        climb_energy_Wh = min(climb_energy_Wh, max(0.0, total_available))
-        total_available = max(0.0, total_available - climb_energy_Wh)
-        phases.append(MissionPhase("Climb", climb_time_min, climb_total_W, climb_energy_Wh, 0.0, "Steady-state power plus climb work"))
-    else:
-        climb_power_W = float(climb_res["total_power_W"])
-        climb_extra_W = weight_N * climb_rate_mps
-        climb_total_W = climb_power_W + climb_extra_W
-        climb_fuel_lph = bsfc_fuel_burn_lph(climb_total_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
-        climb_fuel_L = climb_fuel_lph * climb_time_min / 60.0
-        climb_fuel_L = min(climb_fuel_L, max(0.0, total_available))
-        total_available = max(0.0, total_available - climb_fuel_L)
-        phases.append(MissionPhase("Climb", climb_time_min, climb_total_W, 0.0, climb_fuel_L, "Steady-state power plus climb work"))
-
-    # -------------------------
-    # Reserve phases BEFORE cruise
-    # -------------------------
-    descent_speed_kmh = max(20.0, 0.75 * cruise_speed_kmh)
-    descent_res = get_phase_result(descent_mode, descent_speed_kmh, int(max(0, cruise_altitude_m // 2)), total_available if profile["power_system"] == "Battery" else None, total_available if profile["power_system"] == "ICE" else None)
-
-    loiter_minutes_requested = max(0.0, float(loiter_minutes))
-    rtb_minutes_est = 20.0 if include_rtb else 0.0
-
-    if profile["power_system"] == "Battery":
-        descent_power_W = 0.60 * float(descent_res["total_draw_W"])
-        descent_reserve = descent_power_W * descent_time_min / 60.0
-
-        loiter_power_W = 0.0
-        loiter_reserve = 0.0
-        if loiter_minutes_requested > 0:
-            loiter_res = get_phase_result("Loiter", max(20.0, 0.70 * cruise_speed_kmh), int(max(0, cruise_altitude_m)), total_available, None)
-            loiter_power_W = float(loiter_res["total_draw_W"])
-            loiter_reserve = loiter_power_W * loiter_minutes_requested / 60.0
-
-        rtb_power_W = 0.0
-        rtb_reserve = 0.0
-        if include_rtb:
-            rtb_res = get_phase_result("Forward Flight", cruise_speed_kmh, int(max(0, cruise_altitude_m // 2)), total_available, None)
-            rtb_power_W = float(rtb_res["total_draw_W"])
-            rtb_reserve = rtb_power_W * rtb_minutes_est / 60.0
-
-        mandatory_reserve = descent_reserve + rtb_reserve
-        if mandatory_reserve > total_available:
-            warnings.append("Insufficient energy for full descent + RTB reserve. Mission is not fully recoverable.")
-            if mandatory_reserve > 0:
-                scale = total_available / mandatory_reserve
-                descent_reserve *= scale
-                rtb_reserve *= scale
-                rtb_minutes_est *= scale
-
-        remaining_after_mandatory = max(0.0, total_available - (descent_reserve + rtb_reserve))
-
-        loiter_minutes_eff = loiter_minutes_requested
-        if loiter_reserve > remaining_after_mandatory:
-            if loiter_minutes_requested > 0:
-                loiter_minutes_eff = (remaining_after_mandatory / max(1.0, loiter_power_W)) * 60.0
-                warnings.append("Requested loiter time is not fully achievable. Loiter was reduced to fit reserve constraints.")
-                loiter_reserve = loiter_power_W * loiter_minutes_eff / 60.0
-            else:
-                loiter_reserve = 0.0
-
-        cruise_budget = max(0.0, total_available - descent_reserve - rtb_reserve - loiter_reserve)
-        cruise_res = get_phase_result(cruise_mode, cruise_speed_kmh, int(max(0, cruise_altitude_m)), cruise_budget, None)
-        cruise_power_W = float(cruise_res["total_draw_W"])
-        cruise_time_min = (cruise_budget / max(1.0, cruise_power_W)) * 60.0 if cruise_power_W > 0 else 0.0
-
-        phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, cruise_budget, 0.0, "Cruise budgeted after descent / loiter / RTB reserve"))
-
-        if loiter_minutes_eff > 0:
-            phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, loiter_reserve, 0.0, "Optional loiter phase"))
-
-        phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, descent_reserve, 0.0, "Reduced thrust descent approximation"))
-
-        if include_rtb:
-            phases.append(MissionPhase("RTB", rtb_minutes_est, rtb_power_W, rtb_reserve, 0.0, "Return-to-base reserve estimate"))
-
-        remaining_energy_Wh = max(0.0, total_available - (cruise_budget + loiter_reserve + descent_reserve + rtb_reserve))
-
-        return {
-            "phases": phases,
-            "total_time_min": sum(p.duration_min for p in phases),
-            "total_energy_Wh": sum(p.energy_Wh for p in phases),
-            "total_fuel_L": 0.0,
-            "remaining_energy_Wh": remaining_energy_Wh,
-            "remaining_fuel_L": None,
-            "warnings": warnings,
-            "mission_feasible": len([w for w in warnings if "not fully recoverable" in w]) == 0,
+class Actuators:
+    def __init__(self,kind,trim):
+        self.channels={
+            'throttle':ActuatorChannel(trim.throttle,.35 if kind=='fixed' else .18,1.2 if kind=='fixed' else 2.,0.,1.),
+            'aileron':ActuatorChannel(0.,.10 if kind=='fixed' else .08,4.5 if kind=='fixed' else 6.),
+            'elevator':ActuatorChannel(trim.elevator if kind=='fixed' else 0.,.12 if kind=='fixed' else .08,4.),
+            'rudder':ActuatorChannel(0.,.15 if kind=='fixed' else .10,3. if kind=='fixed' else 5.),
         }
+    def update(self,c,dt):
+        vals={name:channel.update(getattr(c,name),dt) for name,channel in self.channels.items()}
+        return Control(**vals,heading_deg=c.heading_deg,altitude_m=c.altitude_m,speed_ms=c.speed_ms)
 
-    # ICE branch
-    descent_power_W = 0.60 * float(descent_res["total_power_W"])
-    descent_fuel_lph = bsfc_fuel_burn_lph(descent_power_W, profile["bsfc_gpkwh"], profile["fuel_density_kgpl"])
-    descent_reserve = descent_fuel_lph * descent_time_min / 60.0
 
-    loiter_power_W = 0.0
-    loiter_reserve = 0.0
-    if loiter_minutes_requested > 0:
-        loiter_res = get_phase_result("Loiter", max(20.0, 0.70 * cruise_speed_kmh), int(max(0, cruise_altitude_m)), None, total_available)
-        loiter_power_W = float(loiter_res["total_power_W"])
-        loiter_fuel_lph = float(loiter_res["fuel_burn_L_per_hr"])
-        loiter_reserve = loiter_fuel_lph * loiter_minutes_requested / 60.0
+@dataclass
+class PropulsionResult:
+    thrust_n:float=0.
+    demanded_w:float=0.
+    electrical_w:float=0.
+    propulsion_electric_w:float=0.
+    shaft_w:float=0.
+    hotel_w:float=0.
+    actuator_w:float=0.
+    fuel_kg_s:float=0.
+    limited:bool=False
+    authority:float=1.
+    engine_shaft_w:float=0.
 
-    rtb_power_W = 0.0
-    rtb_reserve = 0.0
-    if include_rtb:
-        rtb_res = get_phase_result("Forward Flight", cruise_speed_kmh, int(max(0, cruise_altitude_m // 2)), None, total_available)
-        rtb_power_W = float(rtb_res["total_power_W"])
-        rtb_fuel_lph = float(rtb_res["fuel_burn_L_per_hr"])
-        rtb_reserve = rtb_fuel_lph * rtb_minutes_est / 60.0
 
-    mandatory_reserve = descent_reserve + rtb_reserve
-    if mandatory_reserve > total_available:
-        warnings.append("Insufficient fuel for full descent + RTB reserve. Mission is not fully recoverable.")
-        if mandatory_reserve > 0:
-            scale = total_available / mandatory_reserve
-            descent_reserve *= scale
-            rtb_reserve *= scale
-            rtb_minutes_est *= scale
-
-    remaining_after_mandatory = max(0.0, total_available - (descent_reserve + rtb_reserve))
-
-    loiter_minutes_eff = loiter_minutes_requested
-    if loiter_reserve > remaining_after_mandatory:
-        if loiter_minutes_requested > 0:
-            loiter_minutes_eff = (remaining_after_mandatory / max(1e-6, loiter_fuel_lph)) * 60.0 if loiter_power_W > 0 else 0.0
-            warnings.append("Requested loiter time is not fully achievable. Loiter was reduced to fit reserve constraints.")
-            loiter_reserve = loiter_fuel_lph * loiter_minutes_eff / 60.0
+class Propulsion:
+    def __init__(self,profile,p,battery=None):
+        self.profile=profile;self.p=p;self.battery=battery
+        self.esc_eff=.96;self.motor_eff=.90;self.figure_merit=.72
+        self.hotel=float(profile.get('hotel_W',15.))
+        self.kind=profile['power_system']
+        if self.kind=='Battery':
+            reference=float(profile.get('draw_watt',180.))
+            self.max_electrical=max(1.8*reference,1.5*reference) if p.kind=='rotor' else max(2.8*reference,250.)
+            self.max_shaft=self.max_electrical*self.esc_eff*self.motor_eff
         else:
-            loiter_reserve = 0.0
+            self.max_electrical=0.
+            self.max_shaft=float(profile.get('max_shaft_power_w',50000.))
 
-    cruise_budget = max(0.0, total_available - descent_reserve - rtb_reserve - loiter_reserve)
-    cruise_res = get_phase_result(cruise_mode, cruise_speed_kmh, int(max(0, cruise_altitude_m)), None, cruise_budget)
-    cruise_power_W = float(cruise_res["total_power_W"])
-    cruise_fuel_lph = float(cruise_res["fuel_burn_L_per_hr"])
-    cruise_time_min = (cruise_budget / max(1e-6, cruise_fuel_lph)) * 60.0 if cruise_fuel_lph > 0 else 0.0
+    def _fixed_thrust(self,shaft,airspeed):
+        efficiency=clamp(self.profile.get('prop_eff',.72),.3,.9)
+        # Not a manufacturer propeller map; avoid P/V singularity.
+        cap=.95*self.p.mass_reference*G
+        return min(cap,efficiency*shaft/max(4.,airspeed))
 
-    phases.append(MissionPhase("Cruise", cruise_time_min, cruise_power_W, 0.0, cruise_budget, "Cruise budgeted after descent / loiter / RTB reserve"))
+    def _rotor_thrust(self,shaft,density,airspeed):
+        rho=max(.2,density);area=max(.03,self.p.rotor_disk_area)
+        # Fuselage drag is accounted for in the rigid-body force balance.
+        # Do not deduct it again from shaft power (double counting).
+        available=max(0.,shaft)
+        thrust=(available*self.figure_merit*math.sqrt(2*rho*area))**(2/3) if available>0 else 0.
+        return min(2.4*self.p.mass_reference*G,thrust)
 
-    if loiter_minutes_eff > 0:
-        phases.append(MissionPhase("Loiter", loiter_minutes_eff, loiter_power_W, 0.0, loiter_reserve, "Optional loiter phase"))
+    def step(self,act,airspeed,env,dt,fuel,motor_health):
+        actuator_demand=(4. if self.p.kind=='fixed' else 8.)*(abs(act.aileron)+abs(act.elevator)+abs(act.rudder))
+        health=clamp(motor_health,.35,1.)
+        if self.kind=='Battery':
+            prop_demand=act.throttle*self.max_electrical
+            demand=self.hotel+actuator_demand+prop_demand
+            delivered=self.battery.step(demand,env.temperature_c,dt).delivered_w if self.battery else demand
+            # Priority ordering: essential hotel loads, then actuators, then
+            # propulsion. A low-power pack cannot silently satisfy all loads.
+            hotel_received=min(self.hotel,delivered)
+            actuator_received=min(actuator_demand,max(0.,delivered-hotel_received))
+            prop_received=max(0.,delivered-hotel_received-actuator_received)
+            shaft=prop_received*self.esc_eff*self.motor_eff*health
+            limited=delivered+1e-6<demand
+            authority=clamp(shaft/max(1.,self.max_shaft),0.,1.)
+            thrust=(self._fixed_thrust(shaft,airspeed) if self.p.kind=='fixed'
+                    else self._rotor_thrust(shaft,env.density,airspeed))
+            return PropulsionResult(thrust,demand,delivered,prop_received,shaft,
+                                    hotel_received,actuator_received,0.,limited,authority)
+        engine_shaft=act.throttle*self.max_shaft*health if fuel>0 else 0.
+        # Electrical hotel + servo power on an ICE aircraft requires an
+        # engine-driven alternator. Approximate alternator efficiency at 80%.
+        aux_shaft=(self.hotel+actuator_demand)/.80 if fuel>0 else 0.
+        propeller_shaft=max(0.,engine_shaft-aux_shaft)
+        bsfc=max(100.,float(self.profile.get('bsfc_gpkwh',300.)))
+        fuel_rate=bsfc*(engine_shaft/1000.)/1000./3600.
+        thrust=self._fixed_thrust(propeller_shaft,airspeed)
+        return PropulsionResult(thrust,0.,0.,0.,propeller_shaft,
+                                self.hotel if fuel>0 else 0.,
+                                actuator_demand if fuel>0 else 0.,
+                                fuel_rate,fuel<=0.,propeller_shaft/max(1.,self.max_shaft),
+                                engine_shaft_w=engine_shaft)
 
-    phases.append(MissionPhase("Descent", descent_time_min, descent_power_W, 0.0, descent_reserve, "Reduced thrust descent approximation"))
 
-    if include_rtb:
-        phases.append(MissionPhase("RTB", rtb_minutes_est, rtb_power_W, 0.0, rtb_reserve, "Return-to-base reserve estimate"))
-
-    remaining_fuel_L = max(0.0, total_available - (cruise_budget + loiter_reserve + descent_reserve + rtb_reserve))
-
-    return {
-        "phases": phases,
-        "total_time_min": sum(p.duration_min for p in phases),
-        "total_energy_Wh": 0.0,
-        "total_fuel_L": sum(p.fuel_L for p in phases),
-        "remaining_energy_Wh": None,
-        "remaining_fuel_L": remaining_fuel_L,
-        "warnings": warnings,
-        "mission_feasible": len([w for w in warnings if "not fully recoverable" in w]) == 0,
-    }
+@dataclass
+class PID:
+    kp:float
+    ki:float
+    kd:float
+    ilim:float=1.
+    integral:float=0.
+    previous:float=0.
+    initialized:bool=False
+    def step(self,error,dt):
+        derivative=(error-self.previous)/max(.001,dt) if self.initialized else 0.
+        self.initialized=True;self.previous=error
+        self.integral=clamp(self.integral+error*dt,-self.ilim,self.ilim)
+        return self.kp*error+self.ki*self.integral+self.kd*derivative
 
 
-def render_mission_phase_panel(mission_profile: Dict[str, Any], power_system: str):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Mission Phase Simulation</div>"
-        "<div class='section-note'>Climb, cruise, loiter, descent, and optional return-to-base timeline.</div></div>",
-        unsafe_allow_html=True,
-    )
+def heading_error(target,current):return (target-current+180)%360-180
 
-    if mission_profile.get('mission_feasible', True):
-        st.success('Mission reserve check: PASS')
+
+def waypoint_command(state,waypoints,capture):
+    ix=max(0,min(state.active_waypoint,len(waypoints)-1))
+    n,e,h=waypoints[ix]
+    dist=math.hypot(n-state.north_m,e-state.east_m)
+    if dist<=capture and ix<len(waypoints)-1:
+        ix+=1;n,e,h=waypoints[ix];dist=math.hypot(n-state.north_m,e-state.east_m)
+    angle=math.degrees(math.atan2(e-state.east_m,n-state.north_m))%360.
+    return ix,angle,dist,h,ix==len(waypoints)-1 and dist<=capture
+
+
+class Autopilot:
+    """Uses SIMULATED TRUTH STATE, not INS/EKF, by architecture design."""
+    def __init__(self,p,trim):
+        self.p=p;self.trim=trim
+        if p.kind=='fixed':
+            self.roll=PID(.035,.003,.008,6.);self.pitch=PID(.070,.005,.012,8.)
+            self.speed=PID(.085,.015,.010,8.)
+        else:
+            self.roll=PID(.09,.008,.018,6.);self.pitch=PID(.09,.008,.018,6.)
+            self.altitude=PID(.035,.008,.018,20.)
+    def command(self,s,heading,altitude,speed,dt):
+        herror=heading_error(heading,s.yaw_deg)
+        if self.p.kind=='fixed':
+            roll_target=clamp(.28*herror,-15.,15.)
+            pitch_target=clamp(self.trim.alpha_deg+.045*(altitude-s.altitude_m)-
+                .40*s.vertical_speed_ms+.015*abs(s.roll_deg),
+                self.trim.alpha_deg-6.,self.trim.alpha_deg+8.)
+            # Rate-damped attitude loops; actuators and aerodynamic moments
+            # are already dynamic. Avoid differentiating noisy angle error.
+            a=clamp(.017*(roll_target-s.roll_deg)-.42*s.p_rad_s,-.40,.40)
+            e=clamp(self.trim.elevator-.018*(pitch_target-s.pitch_deg)+
+                    .45*s.q_rad_s,-.40,.40)
+            t=clamp(self.trim.throttle+.045*(speed-s.airspeed_ms)+
+                    .002*self.speed.step(speed-s.airspeed_ms,dt),.05,1.)
+            r=clamp(.010*s.beta_deg-.18*s.r_rad_s,-.20,.20)
+        else:
+            roll_target=clamp(.38*herror,-18.,18.)
+            pitch_target=clamp(-1.10*(speed-s.ground_speed_ms),-15.,10.)
+            a=clamp(.30*math.radians(roll_target-s.roll_deg)-
+                    .75*s.p_rad_s,-.65,.65)
+            e=clamp(.30*math.radians(pitch_target-s.pitch_deg)-
+                    .75*s.q_rad_s,-.65,.65)
+            t=clamp(self.trim.throttle+self.altitude.step((altitude-s.altitude_m)-
+                1.20*s.vertical_speed_ms,dt),.10,1.)
+            r=clamp(.24*math.radians(herror)-.65*s.r_rad_s,-.60,.60)
+        return Control(t,a,e,r,heading,altitude,speed)
+
+
+@dataclass
+class EnvelopeStatus:
+    active:bool=False
+    mode:str='NORMAL'
+    stall:bool=False
+    overspeed:bool=False
+    bank:bool=False
+    alpha_margin_deg:float=999.
+
+
+class EnvelopeProtection:
+    def __init__(self,p,bank=35.,overspeed=32.):
+        self.p=p;self.bank=bank;self.overspeed=overspeed
+    def apply(self,s,c):
+        if self.p.kind!='fixed':return c,EnvelopeStatus()
+        alpha=abs(s.alpha_deg);stall=alpha>=.82*self.p.alpha_stall_deg
+        deep=alpha>=self.p.alpha_stall_deg
+        over=s.airspeed_ms>=self.overspeed
+        bank=abs(s.roll_deg)>=self.bank
+        t,a,e,r=c.throttle,c.aileron,c.elevator,c.rudder
+        modes=[]
+        if abs(s.p_rad_s)>.75:modes.append('ROLL_RATE');a=clamp(-.28*s.p_rad_s,-.45,.45)
+        if abs(s.q_rad_s)>.65:modes.append('PITCH_RATE');e=clamp(.30*s.q_rad_s,-.45,.45)
+        if abs(s.r_rad_s)>.75:modes.append('YAW_RATE');r=clamp(.22*s.r_rad_s,-.20,.20)
+        if bank:modes.append('BANK_LIMIT');a=clamp(-.018*s.roll_deg-.22*s.p_rad_s,-.55,.55)
+        if s.pitch_deg>24:modes.append('PITCH_HIGH');e=max(e,clamp(.025*(s.pitch_deg-10)+.12*s.q_rad_s,.10,.45))
+        elif s.pitch_deg< -18:modes.append('PITCH_LOW');e=min(e,clamp(.025*(s.pitch_deg+6)+.12*s.q_rad_s,-.45,-.10))
+        if over:modes.append('OVERSPEED');t=min(t,.12);e=min(e,-.08)
+        if stall:
+            modes.append('STALL_PREVENTION');t=max(t,.95)
+            # Positive elevator generates nose-down moment with cm_de < 0.
+            e=(max(e,.24 if deep else .12) if s.alpha_deg>=0
+               else min(e,-.24 if deep else -.12))
+            a=clamp(-.15*s.p_rad_s,-.25,.25)
+            r=clamp(.12*s.r_rad_s,-.15,.15)
+        if s.altitude_m<25 and s.vertical_speed_ms< -2 and not deep:
+            modes.append('GROUND_PROX');t=max(t,.90)
+            e=min(e,-.18);a=clamp(-.02*s.roll_deg,-.3,.3)
+        return Control(clamp01(t),clamp(a,-.65,.65),clamp(e,-.65,.65),
+            clamp(r,-.25,.25),c.heading_deg,c.altitude_m,c.speed_ms),EnvelopeStatus(
+                bool(modes),'+'.join(dict.fromkeys(modes)) if modes else 'NORMAL',
+                stall,over,bank,self.p.alpha_stall_deg-alpha)
+
+
+@dataclass
+class GustState:
+    n:float=0.
+    e:float=0.
+    d:float=0.
+
+
+class DrydenStyleTurbulence:
+    """Correlated first-order gust proxy. NOT a full Dryden spectral filter."""
+    SIGMAS={'None':(0.,0.,0.),'Light':(.8,.8,.45),'Moderate':(1.8,1.8,1.),
+            'Severe':(3.2,3.2,1.8)}
+    def __init__(self,intensity='Light',seed=1234):
+        self.intensity=intensity;self.rng=np.random.default_rng(seed)
+        self.state=GustState()
+    def step(self,base,airspeed,dt):
+        sigmas=self.SIGMAS[self.intensity]
+        def advance(old,sigma,length):
+            if sigma==0:return 0.
+            factor=math.exp(-dt/max(.05,length/max(3.,airspeed)))
+            return factor*old+sigma*math.sqrt(max(0.,1-factor*factor))*self.rng.normal()
+        self.state.n=advance(self.state.n,sigmas[0],80.)
+        self.state.e=advance(self.state.e,sigmas[1],80.)
+        self.state.d=advance(self.state.d,sigmas[2],40.)
+        return Environment(base.density,base.temperature_c,base.pressure_pa,
+            base.wind_n+self.state.n,base.wind_e+self.state.e,base.wind_d+self.state.d)
+
+
+def forces_moments(s,env,p,c,prop):
+    rotation=body_to_ned(s.quaternion())
+    wind_body=rotation.T@np.array([env.wind_n,env.wind_e,env.wind_d])
+    u,v,w=np.array([s.u_ms,s.v_ms,s.w_ms])-wind_body
+    airspeed=max(.1,float(math.sqrt(u*u+v*v+w*w)))
+    alpha=math.atan2(w,max(.1,u))
+    beta=math.asin(clamp(v/airspeed,-.99,.99))
+    qbar=.5*env.density*airspeed**2
+    if p.kind=='fixed':
+        ph=s.p_rad_s*p.span/(2*airspeed)
+        qh=s.q_rad_s*p.chord/(2*airspeed)
+        rh=s.r_rad_s*p.span/(2*airspeed)
+        cl,cd,cm=aero_coefficients(math.degrees(alpha),p)
+        cl+=p.cl_q*qh+p.cl_de*c.elevator
+        cd+=.012*c.elevator**2
+        cy=p.cy_beta*beta+p.cy_da*c.aileron+p.cy_dr*c.rudder
+        lift,drag,side=qbar*p.area*cl,qbar*p.area*cd,qbar*p.area*cy
+        fx=-drag*math.cos(alpha)+lift*math.sin(alpha)+prop.thrust_n
+        fy=side;fz=-drag*math.sin(alpha)-lift*math.cos(alpha)
+        cmroll=p.cl_beta*beta+p.cl_p*ph+p.cl_r*rh+p.cl_da*c.aileron+p.cl_dr*c.rudder
+        cmpitch=cm+p.cm_q*qh+p.cm_de*c.elevator
+        cmyaw=p.cn_beta*beta+p.cn_p*ph+p.cn_r*rh+p.cn_da*c.aileron+p.cn_dr*c.rudder
+        lm=qbar*p.area*p.span*cmroll
+        mm=qbar*p.area*p.chord*cmpitch
+        nm=qbar*p.area*p.span*cmyaw
     else:
-        st.error('Mission reserve check: FAIL')
+        drag_coeff=.5*max(.2,env.density)*p.rotor_drag_area
+        fx=-drag_coeff*u*abs(u)
+        fy=-drag_coeff*v*abs(v)
+        fz=-prop.thrust_n-drag_coeff*w*abs(w)
+        lm=c.aileron*p.max_roll_moment*prop.authority-.16*s.p_rad_s
+        mm=c.elevator*p.max_pitch_moment*prop.authority-.16*s.q_rad_s
+        nm=c.rudder*p.max_yaw_moment*prop.authority-.12*s.r_rad_s
+    return dict(fx=fx,fy=fy,fz=fz,lm=lm,mm=mm,nm=nm,rotation=rotation,
+                airspeed=airspeed,alpha=alpha,beta=beta)
 
-    for warning in mission_profile.get('warnings', []):
-        st.warning(warning)
 
-    rows = []
-    for p in mission_profile["phases"]:
-        row = {
-            "Phase": p.name,
-            "Time (min)": round(p.duration_min, 2),
-            "Power (W)": round(p.power_W, 1),
-            "Notes": p.notes,
-        }
-        if power_system == "Battery":
-            row["Energy (Wh)"] = round(p.energy_Wh, 2)
+def dynamics_derivatives(s,env,p,c,prop):
+    fm=forces_moments(s,env,p,c,prop)
+    mass=max(.05,s.mass_kg)
+    scale=mass/max(.05,p.mass_reference)
+    ix,iy,iz=p.ix*scale,p.iy*scale,p.iz*scale
+    gravity_body=fm['rotation'].T@np.array([0.,0.,G])
+    u,v,w=s.u_ms,s.v_ms,s.w_ms
+    pp,qq,rr=s.p_rad_s,s.q_rad_s,s.r_rad_s
+    un=rr*v-qq*w+fm['fx']/mass+gravity_body[0]
+    vn=pp*w-rr*u+fm['fy']/mass+gravity_body[1]
+    wn=qq*u-pp*v+fm['fz']/mass+gravity_body[2]
+    pd=(fm['lm']+(iy-iz)*qq*rr)/ix
+    qd=(fm['mm']+(iz-ix)*pp*rr)/iy
+    rd=(fm['nm']+(ix-iy)*pp*qq)/iz
+    vel_ned=fm['rotation']@np.array([u,v,w])
+    return fm,(un,vn,wn,pd,qd,rd),vel_ned
+
+
+class DigitalTwinEngine:
+    def __init__(self,p,profile,propulsion,initial_mass,altitude,speed,trim,fuel=0.):
+        self.p=p;self.profile=profile;self.propulsion=propulsion
+        self.actuators=Actuators(p.kind,trim)
+        pitch=math.radians(trim.alpha_deg if p.kind=='fixed' else 0.)
+        q=q_from_euler(0.,pitch,0.)
+        soc=propulsion.battery.soc if propulsion.battery else 1.
+        self.initial_fuel=max(0.,fuel)
+        self.state=FlightState(down_m=-altitude,altitude_m=altitude,
+            u_ms=speed*math.cos(pitch),w_ms=speed*math.sin(pitch),
+            qw=q[0],qx=q[1],qy=q[2],qz=q[3],pitch_deg=math.degrees(pitch),
+            airspeed_ms=speed,alpha_deg=math.degrees(pitch),
+            battery_wh=propulsion.battery.remaining_wh() if propulsion.battery else 0.,
+            battery_soc=soc, fuel_mass_kg=self.initial_fuel,mass_kg=initial_mass)
+
+    def step(self,command,environment,dt):
+        s=self.state
+        act=self.actuators.update(command,dt)
+        prop=self.propulsion.step(act,max(1.,s.airspeed_ms),environment,dt,s.fuel_mass_kg,s.motor_health)
+        fm,delta,vel_ned=dynamics_derivatives(s,environment,self.p,act,prop)
+        for field,change,low,high in zip(
+            ('u_ms','v_ms','w_ms','p_rad_s','q_rad_s','r_rad_s'),delta,
+            (-100.,-160.,-160.,-8.,-8.,-8.),(350.,160.,160.,8.,8.,8.)):
+            setattr(s,field,clamp(getattr(s,field)+change*dt,low,high))
+        q=q_integrate(s.quaternion(),s.p_rad_s,s.q_rad_s,s.r_rad_s,dt)
+        s.qw,s.qx,s.qy,s.qz=map(float,q)
+        roll,pitch,yaw=euler_from_q(q)
+        s.roll_deg=math.degrees(roll);s.pitch_deg=math.degrees(pitch);s.yaw_deg=math.degrees(yaw)%360
+        s.north_m+=vel_ned[0]*dt;s.east_m+=vel_ned[1]*dt;s.down_m+=vel_ned[2]*dt
+        if s.down_m>0:s.down_m=0.;s.w_ms=min(0.,s.w_ms)
+        s.altitude_m=-s.down_m
+        s.vn_ms,s.ve_ms,s.vd_ms=map(float,vel_ned)
+        s.ground_speed_ms=math.hypot(s.vn_ms,s.ve_ms)
+        s.vertical_speed_ms=-s.vd_ms
+        s.airspeed_ms=fm['airspeed'];s.alpha_deg=math.degrees(fm['alpha'])
+        s.beta_deg=math.degrees(fm['beta'])
+        s.fx_body_n=fm['fx'];s.fy_body_n=fm['fy'];s.fz_body_n=fm['fz']
+        s.roll_moment_nm=fm['lm'];s.pitch_moment_nm=fm['mm'];s.yaw_moment_nm=fm['nm']
+        s.throttle_cmd=command.throttle;s.aileron_cmd=command.aileron
+        s.elevator_cmd=command.elevator;s.rudder_cmd=command.rudder
+        s.throttle_actual=act.throttle;s.aileron_actual=act.aileron
+        s.elevator_actual=act.elevator;s.rudder_actual=act.rudder
+        s.shaft_power_w=prop.shaft_w;s.engine_shaft_w=prop.engine_shaft_w
+        s.thrust_n=prop.thrust_n
+        s.power_draw_w=(prop.electrical_w if self.propulsion.kind=='Battery'
+                        else prop.engine_shaft_w)
+        s.demanded_power_w=prop.demanded_w;s.power_limited=prop.limited
+        s.hotel_delivered_w=prop.hotel_w;s.actuator_delivered_w=prop.actuator_w
+        s.propulsive_electrical_w=prop.propulsion_electric_w
+        if self.propulsion.battery:
+            b=self.propulsion.battery
+            s.battery_wh=b.remaining_wh();s.battery_soc=b.soc
+            s.battery_health=b.soh;s.battery_temp_c=b.temp
+        if self.propulsion.kind=='ICE':
+            burned=min(s.fuel_mass_kg,prop.fuel_kg_s*dt)
+            s.fuel_mass_kg-=burned
+            s.mass_kg=max(.1,s.mass_kg-burned)
+            s.fuel_fraction=s.fuel_mass_kg/max(1e-9,self.initial_fuel)
+            s.battery_soc=s.fuel_fraction
+        if self.propulsion.kind=='Battery':
+            target_heat=.08*prop.shaft_w
+            thermal_cap=max(150.,120*self.p.mass_reference)
+            cooling=(s.motor_temp_c-environment.temperature_c)/.35
+            s.motor_temp_c+=(target_heat-cooling)*dt/thermal_cap
         else:
-            row["Fuel (L)"] = round(p.fuel_L, 3)
+            target=environment.temperature_c+55+120*clamp01(prop.shaft_w/max(1.,self.propulsion.max_shaft))
+            s.motor_temp_c+=(target-s.motor_temp_c)*(1-math.exp(-dt/45.))
+        s.time_s+=dt
+        return s
+
+# ============================================================================
+# SENSOR EMULATION AND SEPARATE INS / NAVIGATION EKF
+# ============================================================================
+@dataclass
+class FaultConfig:
+    gps_dropout:bool=True
+    gps_start:float=90.
+    gps_duration:float=45.
+    imu_bias:bool=True
+    baro_bias:bool=True
+    motor_degradation:bool=False
+    motor_start:float=150.
+    degraded_health:float=.75
+    def gps_available(self,t):
+        return not (self.gps_dropout and self.gps_start<=t<self.gps_start+self.gps_duration)
+    def motor_health(self,t):
+        return clamp(self.degraded_health,.35,1.) if self.motor_degradation and t>=self.motor_start else 1.
+
+
+@dataclass
+class SensorPacket:
+    time_s:float
+    imu_new:bool=False
+    gps_new:bool=False
+    baro_new:bool=False
+    airspeed_new:bool=False
+    gps_valid:bool=False
+    gps_north_m:Optional[float]=None
+    gps_east_m:Optional[float]=None
+    gps_altitude_m:Optional[float]=None
+    gps_vn_ms:Optional[float]=None
+    gps_ve_ms:Optional[float]=None
+    baro_altitude_m:float=0.
+    indicated_airspeed_ms:float=0.
+    imu_fx_ms2:float=0.
+    imu_fy_ms2:float=0.
+    imu_fz_ms2:float=0.
+    gyro_p_rad_s:float=0.
+    gyro_q_rad_s:float=0.
+    gyro_r_rad_s:float=0.
+
+
+class SensorSuite:
+    RATES={'imu':50.,'gps':5.,'baro':20.,'airspeed':20.}
+    def __init__(self,seed=42):
+        self.rng=np.random.default_rng(seed)
+        self.next_t={name:0. for name in self.RATES}
+        self.cache={'gps':(None,None,None,None,None,False),
+                    'imu':(0.,0.,0.,0.,0.,0.),'baro':0.,'airspeed':0.}
+    def due(self,name,t):
+        if t+1e-9<self.next_t[name]:return False
+        while self.next_t[name]<=t+1e-9:self.next_t[name]+=1./self.RATES[name]
+        return True
+    def measure(self,s,faults):
+        t=s.time_s
+        i,g,b,a=(self.due(name,t) for name in ('imu','gps','baro','airspeed'))
+        if i:
+            accel=np.array([s.fx_body_n,s.fy_body_n,s.fz_body_n])/max(.05,s.mass_kg)
+            ab=.03 if faults.imu_bias else 0.
+            gb=.002 if faults.imu_bias else 0.
+            self.cache['imu']=tuple(float(x) for x in [
+                accel[0]+ab+self.rng.normal(0,.08),
+                accel[1]+ab+self.rng.normal(0,.08),
+                accel[2]+ab+self.rng.normal(0,.08),
+                s.p_rad_s+gb+self.rng.normal(0,.004),
+                s.q_rad_s+gb+self.rng.normal(0,.004),
+                s.r_rad_s+gb+self.rng.normal(0,.004)])
+        if b:self.cache['baro']=s.altitude_m+(5. if faults.baro_bias else 0.)+self.rng.normal(0,1.2)
+        if a:self.cache['airspeed']=max(0.,s.airspeed_ms+self.rng.normal(0,.35))
+        if g:
+            if faults.gps_available(t):
+                self.cache['gps']=(s.north_m+self.rng.normal(0,2.5),
+                    s.east_m+self.rng.normal(0,2.5),s.altitude_m+self.rng.normal(0,4.),
+                    s.vn_ms+self.rng.normal(0,.25),s.ve_ms+self.rng.normal(0,.25),True)
+            else:self.cache['gps']=(None,None,None,None,None,False)
+        return SensorPacket(t,i,g,b,a,self.cache['gps'][5],*self.cache['gps'][:5],
+                            float(self.cache['baro']),float(self.cache['airspeed']),
+                            *self.cache['imu'])
+
+
+class StrapdownINS:
+    def __init__(self,q):self.q=qnormalize(q)
+    def integrate(self,packet,dt):
+        # Zero-order held gyro measurement integrates at EVERY internal step.
+        # Avoids lost time if the simulation dt and IMU period differ.
+        self.q=q_integrate(self.q,packet.gyro_p_rad_s,
+            packet.gyro_q_rad_s,packet.gyro_r_rad_s,dt)
+        body_specific=np.array([packet.imu_fx_ms2,packet.imu_fy_ms2,packet.imu_fz_ms2])
+        return body_to_ned(self.q)@body_specific+np.array([0.,0.,G])
+
+
+class BiasAwareEKF:
+    """9-state N/E/h, Vn/Ve/Vh, horizontal acceleration biases, baro bias."""
+    def __init__(self,altitude=100.,speed_n=0.):
+        self.x=np.zeros((9,1));self.x[2,0]=altitude;self.x[3,0]=speed_n
+        self.P=np.diag([25.,25.,16.,4.,4.,2.,.05**2,.05**2,9.])
+    def predict(self,dt,acc_n,acc_e,acc_up):
+        x=self.x
+        ax=acc_n-x[6,0];ay=acc_e-x[7,0]
+        x[0,0]+=x[3,0]*dt+.5*ax*dt*dt
+        x[1,0]+=x[4,0]*dt+.5*ay*dt*dt
+        x[2,0]+=x[5,0]*dt+.5*acc_up*dt*dt
+        x[3,0]+=ax*dt;x[4,0]+=ay*dt;x[5,0]+=acc_up*dt
+        F=np.eye(9)
+        for pos,vel in [(0,3),(1,4),(2,5)]:F[pos,vel]=dt
+        F[0,6]=F[1,7]=-.5*dt*dt
+        F[3,6]=F[4,7]=-dt
+        Q=np.diag([.06*dt,.06*dt,.06*dt,.22*dt,.22*dt,.18*dt,
+                   2e-5*dt,2e-5*dt,4e-4*dt])
+        self.P=F@self.P@F.T+Q
+    def update(self,z,H,R):
+        z=np.asarray(z,float).reshape(-1,1)
+        H=np.asarray(H,float);R=np.asarray(R,float)
+        innovation=z-H@self.x
+        S=H@self.P@H.T+R
+        # Cholesky not essential at this small dimension, solve avoids explicit inv.
+        K=np.linalg.solve(S,(self.P@H.T).T).T
+        self.x+=K@innovation
+        I=np.eye(9);A=I-K@H
+        self.P=A@self.P@A.T+K@R@K.T
+        self.P=.5*(self.P+self.P.T)
+    def update_gps(self,packet):
+        H=np.zeros((5,9))
+        for i in range(5):H[i,i]=1.
+        self.update([packet.gps_north_m,packet.gps_east_m,packet.gps_altitude_m,
+            packet.gps_vn_ms,packet.gps_ve_ms],H,
+            np.diag([2.5**2,2.5**2,4.**2,.25**2,.25**2]))
+    def update_baro(self,altitude):
+        H=np.zeros((1,9));H[0,2]=1;H[0,8]=1
+        self.update([altitude],H,np.array([[1.2**2]]))
+    def telemetry(self):
+        x=self.x[:,0];variances=np.maximum(0.,np.diag(self.P))
+        return dict(est_north_m=float(x[0]),est_east_m=float(x[1]),
+            est_altitude_m=float(x[2]),est_vn_ms=float(x[3]),
+            est_ve_ms=float(x[4]),est_vertical_speed_ms=float(x[5]),
+            est_accel_bias_n_ms2=float(x[6]),est_accel_bias_e_ms2=float(x[7]),
+            est_baro_bias_m=float(x[8]),sigma_north_m=math.sqrt(variances[0]),
+            sigma_east_m=math.sqrt(variances[1]),sigma_altitude_m=math.sqrt(variances[2]))
+
+
+# ============================================================================
+# SECONDARY LOW-ORDER HEURISTICS (NOT CERTIFIED DETECTION/NETWORK MODELS)
+# ============================================================================
+def compute_observability(delta_temp,alt,speed_kmh,clouds,gust_level,stealth_factor,
+                          kind,power,visual_size,background,humidity):
+    size=clamp01(visual_size/3.)
+    altterm=1-min(.8,alt/1200.)
+    speedterm=clamp01(speed_kmh/90.)
+    motion=.18 if kind=='rotor' else .08
+    reduction=1-max(0.,(stealth_factor-1.)*.18)
+    visual=100*clamp01((.36*size+.30*altterm+.16*speedterm+.10*motion)*
+             (1-.35*clamp01(background))*(1-.18*clouds/100.)*
+             (1-.10*clamp01(humidity))*reduction)
+    infrared=100*clamp01((.56*clamp01(delta_temp/25)+.18*clamp01(visual_size/2.5)+
+             (.12 if power=='ICE' else .03)+.06*clamp01(speed_kmh/120.))*
+             (1-min(.5,alt/2000.))*max(.45,(1-.22*clouds/100.)*
+             (1-.18*clamp01(humidity)))*(1-.04*gust_level/10.)*reduction)
+    confidence=clamp(1-(.20*clouds/100.+.18*background+.10*gust_level/10.),.45,.95)
+    blend=(.4*visual+.6*infrared if power=='ICE' else
+           (.55*visual+.45*infrared if kind=='rotor' else .5*(visual+infrared)))
+    return {'visual_score':round(visual,1),'thermal_score':round(infrared,1),
+            'overall_score':round(blend,1),'confidence':round(100*confidence,1)}
+
+
+ROLES=['LEAD','SCOUT','RELAY','OBSERVER','TRACKER']
+
+
+def simulate_swarm(config,waypoints,final,observability):
+    """Separate low-order mission layer, not multiple 6-DOF twins."""
+    rng=np.random.default_rng(config['swarm_seed'])
+    count=config['swarm_size'];rounds=config['swarm_rounds']
+    formation=config['swarm_spacing_m'];lead_energy=final.battery_soc*100.
+    vehicles=[];history=[];log=[]
+    for i in range(count):
+        theta=2*math.pi*i/max(1,count)
+        radius=formation*(.8+.35*rng.random()) if i else 0.
+        vehicles.append(dict(vehicle_id=f'UAV-{i+1:02d}',role=ROLES[i%len(ROLES)],
+            north_m=float(final.north_m+radius*math.cos(theta)),
+            east_m=float(final.east_m+radius*math.sin(theta)),
+            altitude_m=float(max(5.,final.altitude_m+rng.normal(0,5))),
+            speed_kmh=float(max(5.,final.airspeed_ms*3.6*(.92+.16*rng.random()))),
+            energy_pct=clamp(lead_energy-2*i/max(1,count-1),0,100),
+            health_pct=clamp(100-abs(rng.normal(0,1.5)),75,100),
+            observability_score=clamp(observability+rng.normal(0,2),0,100),
+            current_waypoint=i%len(waypoints),action='STANDBY',status_note='Nominal'))
+    for rnd in range(rounds):
+        for v in vehicles:
+            tn,te,ta=waypoints[v['current_waypoint']]
+            threat_distance=math.hypot(v['north_m']-config['threat_n'],v['east_m']-config['threat_e'])
+            in_zone=(config['threat_radius_km']>0 and
+                     threat_distance<=1000*config['threat_radius_km'])
+            if v['energy_pct']<=config['swarm_reserve']:
+                action,reason='RTB','Energy reserve reached';tn,te=0.,0.
+            elif in_zone:
+                action,reason=('RELAY_COMMS','Maintain relay geometry') if v['role']=='RELAY' else ('RELOCATE','Limit zone dwell')
+            elif config['swarm_coordination']:
+                action,reason={'RELAY':('RELAY_COMMS','Communications relay'),
+                    'TRACKER':('HANDOFF_TRACK','Maintain track continuity'),
+                    'SCOUT':('RELOCATE','Advance survey position'),
+                    'OBSERVER':('LOITER','Hold observation position')}.get(
+                        v['role'],('SPEED_CHANGE','Coordinate formation speed'))
+            else:action,reason='LOITER','Independent mission hold'
+            speedscale={'RTB':.9,'LOITER':.55,'RELOCATE':1.05,
+                        'SPEED_CHANGE':.88,'RELAY_COMMS':.60,'HANDOFF_TRACK':.82}.get(action,1.)
+            if action=='RELAY_COMMS':ta=max(ta,final.altitude_m+40.)
+            dist=math.hypot(tn-v['north_m'],te-v['east_m'])
+            travel=min(dist,v['speed_kmh']*speedscale/3.6*45.*(.2 if action=='LOITER' else 1.))
+            if dist>1e-6:
+                v['north_m']+=travel*(tn-v['north_m'])/dist
+                v['east_m']+=travel*(te-v['east_m'])/dist
+            v['altitude_m']+=clamp(ta-v['altitude_m'],-20.,20.)
+            if dist<=max(25.,travel+10.) and action!='RTB':
+                v['current_waypoint']=(v['current_waypoint']+1)%len(waypoints)
+            burn=(.45*(.55+v['speed_kmh']/max(25.,final.airspeed_ms*3.6))*
+                  (1+.7*max(0.,config['stealth_drag']-1.)))
+            burn*= {'LEAD':1.,'SCOUT':1.08,'RELAY':.9,'OBSERVER':.82,'TRACKER':.96}[v['role']]
+            if action=='RTB':burn*=.88
+            if action=='LOITER':burn*=.72
+            v['energy_pct']=max(0.,v['energy_pct']-burn)
+            v['action']=action;v['status_note']=reason
+            v['observability_score']=clamp(observability-min(12.,v['altitude_m']/150.)-
+                22*max(0.,config['stealth_drag']-1.)/.5+(8 if in_zone else 0)+
+                rng.normal(0,1),0.,100.)
+            history.append(dict(round=rnd+1,inside_threat_zone=in_zone,**v))
+            log.append(dict(round=rnd+1,vehicle_id=v['vehicle_id'],action=action,reason=reason))
+    df=pd.DataFrame(vehicles);energy=float(df.energy_pct.mean());health=float(df.health_pct.mean())
+    observability=float(df.observability_score.mean())
+    resilience=clamp(.40*health+35*clamp01((energy-config['swarm_reserve'])/
+        max(1.,100.-config['swarm_reserve']))+5*min(5,len(set(df.role))),0,100)
+    score=clamp(.38*energy+.32*resilience+.30*(100-observability),0,100)
+    summary=dict(swarm_size=count,rounds=rounds,mean_energy_pct=energy,
+        mean_health_pct=health,mean_observability_score=observability,
+        resilience_score=resilience,swarm_score=score,
+        rtb_count=int((df.action=='RTB').sum()))
+    return dict(final=df,history=pd.DataFrame(history),coordination_log=log,summary=summary)
+
+
+# ============================================================================
+# SIMULATION ORCHESTRATION / INVARIANTS / ARTIFACTS
+# ============================================================================
+def parse_waypoints(text,default_alt):
+    points=[]
+    for item in text.split(';'):
+        if not item.strip():continue
+        numbers=[float(v.strip()) for v in item.split(',')]
+        if len(numbers)==2:n,e=numbers;h=default_alt
+        elif len(numbers)==3:n,e,h=numbers
+        else:raise ValueError('Waypoints require north,east[,altitude], separated by semicolons.')
+        if not all(math.isfinite(x) for x in (n,e,h)) or h<0:
+            raise ValueError('Waypoints must have finite coordinates and non-negative altitudes.')
+        points.append((n,e,h))
+    if not points:raise ValueError('Specify at least one waypoint.')
+    return points
+
+
+def scenario_setup(config):
+    name=config['aircraft']
+    profile=dict(UAV_PROFILES[name])
+    stealth=float(config['stealth_drag'])
+    if profile['type']=='fixed':profile['cd0']*=stealth
+    else:profile['parasitic_area_m2']*=stealth
+    payload=config['payload_g']/1000.
+    if profile['power_system']=='Battery':
+        reference_battery=battery_mass_kg(profile['battery_wh'],220.)
+        selected_battery=battery_mass_kg(config['battery_wh'],config['specific_energy'])
+        mass=max(.1,profile['base_weight_kg']+payload+selected_battery-reference_battery)
+        fuel=0.
+    else:
+        selected_battery=0.
+        fuel=profile['fuel_tank_l']*config['fuel_fill']/100.*profile['fuel_density_kgpl']
+        mass=max(.1,profile['base_weight_kg']+payload+fuel)
+    atmosphere=atmosphere_state(config['altitude_m'],config['temp_c'])
+    params=build_dynamics_params(profile,mass)
+    battery=None
+    if profile['power_system']=='Battery':
+        battery=BatteryTwin(config['battery_wh'],config['series_cells'],
+            config['battery_soc']/100.,config['battery_soh']/100.,
+            config['battery_temp'],config['max_c_rate'],config['resistance_scale'],
+            config['cell_imbalance_mv'],config['degraded_cell'],
+            config['reserve_soc']/100.,ideal=not config['battery_twin'])
+    prop=Propulsion(profile,params,battery)
+    speed=config['speed_kmh']/3.6
+    trim=solve_trim(params,profile,atmosphere[0],speed,mass,prop.max_shaft)
+    return profile,mass,selected_battery,fuel,params,battery,prop,trim
+
+
+def run_physics(config):
+    waypoints=parse_waypoints(config['waypoints'],config['altitude_m'])
+    profile,mass,batt_mass,fuel,params,battery,prop,trim=scenario_setup(config)
+    speed=config['speed_kmh']/3.6
+    # Multicopter initializes at rest. Fixed wing initializes near trim.
+    engine=DigitalTwinEngine(params,profile,prop,mass,config['altitude_m'],
+                             speed if params.kind=='fixed' else 0.,trim,fuel)
+    autopilot=Autopilot(params,trim)
+    envelope=EnvelopeProtection(params,config['max_bank'],config['overspeed'])
+    wind_to=math.radians((config['wind_from']+180)%360.)
+    steady_n=config['wind_kmh']/3.6*math.cos(wind_to)
+    steady_e=config['wind_kmh']/3.6*math.sin(wind_to)
+    turbulence=DrydenStyleTurbulence(config['turbulence'],config['turb_seed'])
+    sensors=SensorSuite(config['sensor_seed'])
+    ekf=BiasAwareEKF(config['altitude_m'],speed if params.kind=='fixed' else 0.)
+    ins=StrapdownINS(engine.state.quaternion())
+    faults=FaultConfig(config['gps_dropout'],config['gps_start'],config['gps_duration'],
+                       config['imu_bias'],config['baro_bias'],config['motor_fault'],
+                       config['motor_start'],config['motor_health'])
+    # 50-Hz IMU and 20-Hz barometer: substeps <= 0.02 s.
+    output_dt=float(config['dt'])
+    substeps=math.ceil(output_dt/.02)
+    dt=output_dt/substeps
+    total_steps=int(config['duration_min']*60/output_dt)
+    rows=[];status='DURATION_LIMIT';last_packet=None
+    previous_position=None
+    for _ in range(total_steps):
+        s=engine.state;s.motor_health=faults.motor_health(s.time_s)
+        ix,heading,dist,command_alt,complete=waypoint_command(s,waypoints,config['capture_radius'])
+        s.active_waypoint=ix;s.wp_distance_m=dist
+        raw=autopilot.command(s,heading,command_alt,speed,output_dt)
+        protected,envelope_status=(envelope.apply(s,raw) if config['envelope'] else
+            (raw,EnvelopeStatus(alpha_margin_deg=params.alpha_stall_deg-abs(s.alpha_deg)
+                                if params.kind=='fixed' else 999.)))
+        for _inner in range(substeps):
+            rho,t,p=atmosphere_state(s.altitude_m,config['temp_c'])
+            ambient=Environment(rho,t,p,steady_n,steady_e,0.)
+            env=turbulence.step(ambient,max(3.,s.airspeed_ms),dt)
+            s=engine.step(protected,env,dt)
+            s.gust_n_ms=env.wind_n-steady_n;s.gust_e_ms=env.wind_e-steady_e
+            s.gust_d_ms=env.wind_d
+            s.envelope_active=envelope_status.active
+            s.envelope_mode=envelope_status.mode
+            s.stall_warning=envelope_status.stall
+            s.alpha_margin_deg=envelope_status.alpha_margin_deg
+            last_packet=sensors.measure(s,faults)
+            # IMU sample is held until the next sample, but propagated on every
+            # integration substep. GPS/barometer updates remain event-driven.
+            acceleration=ins.integrate(last_packet,dt)
+            ekf.predict(dt,acceleration[0],acceleration[1],-acceleration[2])
+            if last_packet.gps_new and last_packet.gps_valid:ekf.update_gps(last_packet)
+            if last_packet.baro_new:ekf.update_baro(last_packet.baro_altitude_m)
+            if s.altitude_m<=.05 and s.time_s>2.:
+                status='GROUND_CONTACT';break
+        row=asdict(s)
+        row.update(asdict(last_packet))
+        row.update(ekf.telemetry())
+        if battery:row.update(battery.telemetry())
+        row.update(dict(command_heading_deg=heading,command_altitude_m=command_alt,
+            command_speed_ms=speed,raw_throttle_cmd=raw.throttle,
+            raw_aileron_cmd=raw.aileron,raw_elevator_cmd=raw.elevator,
+            raw_rudder_cmd=raw.rudder,rho_kgm3=rho,ambient_temperature_c=t,
+            pressure_pa=p))
+        row['horizontal_error_m']=math.hypot(row['est_north_m']-row['north_m'],
+                                               row['est_east_m']-row['east_m'])
+        row['vertical_error_m']=row['est_altitude_m']-row['altitude_m']
+        row['position_error_m']=math.hypot(row['horizontal_error_m'],row['vertical_error_m'])
+        row['quaternion_norm']=math.sqrt(sum(getattr(s,k)**2 for k in ('qw','qx','qy','qz')))
+        row['power_accounting_residual_w']=(row['power_draw_w']-row['hotel_delivered_w']-
+            row['actuator_delivered_w']-row['propulsive_electrical_w']) if battery else 0.
         rows.append(row)
+        if not all(math.isfinite(row[key]) for key in ('north_m','east_m','altitude_m',
+                            'u_ms','v_ms','w_ms','qw','qx','qy','qz')):
+            status='DYNAMICS_NONFINITE';break
+        if status=='GROUND_CONTACT':break
+        if battery and s.battery_soc<=.001:status='ENERGY_EXHAUSTED';break
+        if profile['power_system']=='ICE' and s.fuel_fraction<=.001:
+            status='ENERGY_EXHAUSTED';break
+        if complete:status='WAYPOINTS_COMPLETE';break
+        previous_position=(s.north_m,s.east_m)
+    telemetry=pd.DataFrame(rows)
+    if telemetry.empty:raise RuntimeError('No telemetry was generated.')
+    final=telemetry.iloc[-1]
+    gust=np.sqrt(telemetry.gust_n_ms**2+telemetry.gust_e_ms**2+telemetry.gust_d_ms**2)
+    metrics=dict(status=status,sim_time_s=float(final.time_s),initial_mass_kg=mass,
+        final_mass_kg=float(final.mass_kg),gps_availability_pct=float(100*telemetry.gps_valid.mean()),
+        rms_nav_error_m=math.sqrt(float(np.mean(telemetry.position_error_m**2))),
+        max_nav_error_m=float(telemetry.position_error_m.max()),
+        envelope_intervention_pct=float(100*telemetry.envelope_active.mean()),
+        max_abs_alpha_deg=float(telemetry.alpha_deg.abs().max()),
+        max_gust_ms=float(gust.max()),
+        max_quaternion_norm_error=float(np.max(np.abs(telemetry.quaternion_norm-1.))),
+        max_power_residual_w=float(np.max(np.abs(telemetry.power_accounting_residual_w))),
+        trim_converged=bool(trim.converged),trim_power_feasible=bool(trim.power_feasible),
+        max_position_sigma_m=float(telemetry.sigma_north_m.max()),
+        final_soc_pct=float(final.battery_soc*100),
+        depleted=(status=='ENERGY_EXHAUSTED'))
+    temperature_contrast=max(0.,float(final.motor_temp_c-final.ambient_temperature_c),
+                             float(final.battery_temp_c-final.ambient_temperature_c))
+    observability=compute_observability(temperature_contrast,float(final.altitude_m),
+        float(final.airspeed_ms*3.6),config['cloud_cover'],
+        {'None':0,'Light':2,'Moderate':5,'Severe':8}[config['turbulence']],
+        config['stealth_drag'],profile['type'],profile['power_system'],
+        config['effective_size'],config['background'],config['humidity'])
+    swarm=simulate_swarm(config,waypoints,final,observability['overall_score']) if config['swarm_enabled'] else None
+    config_export={k:(int(v) if isinstance(v,np.integer) else v) for k,v in config.items()}
+    scenario=dict(version=VERSION,aircraft=config['aircraft'],profile=profile,
+        config=config_export,initial_mass_kg=mass,trim=asdict(trim),metrics=metrics,
+        observability=observability,waypoints=waypoints,
+        architecture=dict(guidance_feedback='simulated truth state',
+                          ekf_role='navigation estimation and reporting only',
+                          sensor_model='held 50-Hz body-frame IMU, 5-Hz GNSS, 20-Hz baro and airspeed',
+                          turbulence='first-order correlated Dryden-style gust proxy',
+                          flight_interface='not implemented',gpt_guidance='not implemented'))
+    if battery:
+        scenario['battery_model']=dict(name='idealized reservoir' if battery.ideal else '1-RC Thevenin proxy',
+            mass_kg=batt_mass,initial_usable_wh=battery.initial_usable_wh,
+            delivered_electrical_energy_wh=battery.throughput_wh,
+            estimated_usable_energy_change_wh=battery.initial_usable_wh-battery.remaining_wh(),
+            final_state=battery.telemetry())
+    else:
+        scenario['fuel_model']=dict(initial_fuel_kg=fuel,
+            remaining_fuel_kg=float(final.fuel_mass_kg),
+            bsfc_gpkwh=float(profile['bsfc_gpkwh']))
+    if swarm:scenario['swarm']=dict(summary=swarm['summary'],
+        vehicles=swarm['final'].to_dict('records'),coordination_log=swarm['coordination_log'])
+    return dict(telemetry=telemetry,final=final,metrics=metrics,
+        trim=trim,params=params,profile=profile,observability=observability,
+        waypoints=waypoints,swarm=swarm,scenario=scenario)
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+# ============================================================================
+# INTERACTIVE 3D BATTERY PACK REPLAY
+# ============================================================================
+# This is a visualization of the existing pack-level battery digital twin.
+# Series-group voltages interpolate between the model's pack-level min/max
+# estimates while preserving the model's terminal pack voltage. Parallel
+# cells share series-group voltage. Temperature gradients are illustrative,
+# not independently solved cell thermal states. The geometry/topology is not
+# an assertion about the manufacturer's actual battery-pack construction.
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Total Mission Time", f"{mission_profile['total_time_min']:.1f} min")
-    with c2:
-        if power_system == "Battery":
-            st.metric("Total Mission Energy", f"{mission_profile['total_energy_Wh']:.1f} Wh")
-        else:
-            st.metric("Total Mission Fuel", f"{mission_profile['total_fuel_L']:.2f} L")
-    with c3:
-        st.metric("Phase Count", f"{len(mission_profile['phases'])}")
+BATTERY_3D_SCALES = {
+    'Cell voltage (V)': (3.0, 4.2, [
+        [0, '#ad233c'], [.16, '#fb8549'], [.33, '#ffe07a'],
+        [.58, '#3bc6d2'], [1, '#20f59e']]),
+    'Temperature proxy (°C)': (-20., 70., [
+        [0, '#2855cf'], [.29, '#49bfff'], [.52, '#27d6ad'],
+        [.70, '#ffd76a'], [1, '#ef4a5e']]),
+    'Pack SOC (%)': (0., 100., [
+        [0, '#a62648'], [.30, '#f3ae4c'], [.65, '#47bbae'], [1, '#21f59c']]),
+    'Cell voltage margin (V)': (-.2, 1., [
+        [0, '#a62648'], [.17, '#f16852'], [.4, '#e9cd5d'],
+        [.7, '#27c9b8'], [1, '#19f196']]),
+}
 
-def plot_swarm_map(swarm: List[VehicleState], threat_zone_km: float, show_threat_zone: bool, waypoints: Optional[List[tuple]] = None):
-    fig, ax = make_themed_figure(figsize=(5, 5))
 
-    if show_threat_zone:
-        circle = plt.Circle((0, 0), threat_zone_km, color=ACTIVE_THEME["danger"], alpha=0.16, label="Threat Zone")
-        ax.add_patch(circle)
+def inferred_parallel_count(wh, series_cells, assumed_cell_ah=5.):
+    """Display-only topology estimate based on an explicitly assumed cell Ah."""
+    denom=max(1.,int(series_cells))*3.7*max(.1,float(assumed_cell_ah))
+    return int(clamp(round(float(wh)/denom),1,6))
 
-    if waypoints:
-        xs, ys = zip(*waypoints)
-        ax.plot(xs, ys, linestyle="--", linewidth=1.4, color=ACTIVE_THEME["path"], label="Mission Path")
-        ax.scatter(xs, ys, color=ACTIVE_THEME["warning"], marker="x", s=80, label="Waypoints")
 
-    for s in swarm:
-        marker = "o" if s.power_system == "Battery" else "s"
-        if s.inside_threat_zone:
-            color = ACTIVE_THEME["danger"]
-        elif s.power_system == "ICE":
-            color = ACTIVE_THEME["accent2"]
-        else:
-            color = ACTIVE_THEME["accent"]
+def representative_battery_cells(frame, series_cells, parallel_cells,
+                                 thermal_spread_c=0., nominal_wh=None):
+    """Derive a pack-voltage-consistent *visual* cell array from telemetry.
 
-        ax.scatter(s.x_km, s.y_km, marker=marker, s=110, color=color, edgecolors=ACTIVE_THEME["panel"], linewidths=0.7, zorder=3)
-        ax.text(
-            s.x_km + 0.08,
-            s.y_km + 0.08,
-            f"{s.id}\n{s.role}\nEnd {s.endurance_min:.1f}m",
-            fontsize=7,
-            color=ACTIVE_THEME["text"],
-            bbox=dict(boxstyle="round,pad=0.22", facecolor=ACTIVE_THEME["panel"], edgecolor=ACTIVE_THEME["grid"], alpha=0.92),
+    This is not a multi-cell electrochemical solver or a thermal FEM model.
+    It yields one terminal voltage per series-connected parallel group.
+    """
+    series=int(clamp(series_cells,1,48))
+    parallel=int(clamp(parallel_cells,1,8))
+    vpack=float(frame['battery_terminal_v'])
+    vmean=vpack/series
+    vlo=float(frame['battery_min_cell_v'])
+    vhi=float(frame['battery_max_cell_v'])
+    # The pack model provides symmetric end points around the mean except
+    # for floating-point differences. Rescale to enforce pack-voltage closure.
+    spread=max(0.,(vhi-vlo)*.5)
+    voltage_levels=vmean+np.linspace(-spread,spread,series)
+    # Constrain any endpoint roundoff while keeping the string sum exact.
+    voltage_levels+= (vpack-float(voltage_levels.sum()))/series
+    assert abs(float(voltage_levels.sum())-vpack)<1e-7
+    group_columns=int(math.ceil(math.sqrt(series)))
+    pp_cols=int(math.ceil(math.sqrt(parallel)))
+    pp_rows=int(math.ceil(parallel/pp_cols))
+    group_rows=int(math.ceil(series/group_columns))
+    cell_soc=float(frame['battery_soc'])*100.
+    pack_temp=float(frame['battery_temperature_c'])
+    wh=float(nominal_wh if nominal_wh is not None else frame['battery_nominal_wh'])
+    implied_cell_ah=wh/max(1e-6,3.7*series*parallel)
+    rows=[]
+    for group in range(series):
+        gx,gy=group%group_columns,group//group_columns
+        # Zero-mean, user-controlled visual offset; not derived from the
+        # pack's thermal ODE or from measured individual cell temperatures.
+        thermal_offset=(group-(series-1)/2.)/max(1.,series-1)*float(thermal_spread_c)
+        for index in range(parallel):
+            px,py=index%pp_cols,index//pp_cols
+            x=gx*(pp_cols*1.43+1.3)+px*1.43
+            y=gy*(pp_rows*1.43+1.3)+py*1.43
+            rows.append(dict(
+                cell_id=f'S{group+1:02d}-P{index+1:02d}',
+                series_group=group+1,parallel_cell=index+1,
+                x=float(x),y=float(y),z=0.72,
+                voltage_v=float(voltage_levels[group]),
+                voltage_margin_v=float(voltage_levels[group]-3.2),
+                temperature_proxy_c=float(pack_temp+thermal_offset),
+                soc_pct=cell_soc,
+                soh_pct=float(frame['battery_soh'])*100.,
+                implied_cell_capacity_ah=implied_cell_ah,
+                pack_time_s=float(frame['time_s']),
+            ))
+    return pd.DataFrame(rows)
+
+
+def battery_cylinder_mesh(cx,cy,r=.53,height=1.44,segments=12):
+    theta=np.linspace(0.,2.*math.pi,int(segments),endpoint=False)
+    ring_x=cx+r*np.cos(theta);ring_y=cy+r*np.sin(theta)
+    x=np.concatenate([ring_x,ring_x,[cx,cx]])
+    y=np.concatenate([ring_y,ring_y,[cy,cy]])
+    z=np.concatenate([np.zeros(segments),np.full(segments,height),[0.,height]])
+    faces_i=[];faces_j=[];faces_k=[]
+    for k in range(segments):
+        nxt=(k+1)%segments
+        # 2 triangles per lateral face and one triangle on each end cap.
+        faces_i.extend([k,nxt,2*segments,2*segments+1])
+        faces_j.extend([nxt,segments+nxt,k,segments+k])
+        faces_k.extend([segments+k,segments+k,nxt,segments+nxt])
+    return x,y,z,faces_i,faces_j,faces_k
+
+
+def build_battery_pack_3d(cells,metric='Cell voltage (V)',selected_cell=None):
+    """Plotly WebGL model with orbit/zoom/hover and a highlighted cell."""
+    if cells.empty:raise ValueError('Cannot render a battery pack without cells.')
+    if metric not in BATTERY_3D_SCALES:raise ValueError('Unknown 3D battery metric.')
+    lo,hi,colorscale=BATTERY_3D_SCALES[metric]
+    field={
+        'Cell voltage (V)':'voltage_v',
+        'Temperature proxy (°C)':'temperature_proxy_c',
+        'Pack SOC (%)':'soc_pct',
+        'Cell voltage margin (V)':'voltage_margin_v',
+    }[metric]
+    fig=go.Figure()
+    for j,r in enumerate(cells.itertuples(index=False)):
+        val=float(getattr(r,field))
+        x,y,z,ii,jj,kk=battery_cylinder_mesh(r.x,r.y)
+        tooltip=(
+            f'<b>{r.cell_id}</b><br>'
+            f'Series group {r.series_group} | Parallel {r.parallel_cell}<br>'
+            f'Group voltage estimate: {r.voltage_v:.3f} V<br>'
+            f'Pack SOC: {r.soc_pct:.1f}%<br>'
+            f'Illustrative cell temperature: {r.temperature_proxy_c:.1f} °C<br>'
+            f'Voltage margin to 3.20 V: {r.voltage_margin_v:+.3f} V<br>'
+            f't = {r.pack_time_s:.1f} s'
         )
-
-    ax.set_title("Swarm Mission Map")
-    ax.set_xlabel("X (km)")
-    ax.set_ylabel("Y (km)")
-    ax.axhline(0, color=ACTIVE_THEME["grid"], linewidth=0.8)
-    ax.axvline(0, color=ACTIVE_THEME["grid"], linewidth=0.8)
-    ax.set_aspect("equal", adjustable="datalim")
-    style_axes(ax)
-
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        legend = ax.legend(handles, labels, facecolor=ACTIVE_THEME["panel"], edgecolor=ACTIVE_THEME["grid"], fontsize=8, loc="upper right")
-        for txt in legend.get_texts():
-            txt.set_color(ACTIVE_THEME["text"])
-
+        fig.add_trace(go.Mesh3d(
+            x=x,y=y,z=z,i=ii,j=jj,k=kk,
+            intensity=[val]*len(x),intensitymode='vertex',
+            colorscale=colorscale,cmin=lo,cmax=hi,
+            flatshading=False,opacity=.96,
+            showscale=(j==0),
+            colorbar=dict(title=dict(text=metric),len=.70,thickness=13,
+                          x=1.01,tickfont=dict(size=10,color='#d8ffe9')) if j==0 else None,
+            lighting=dict(ambient=.68,diffuse=.75,specular=.35,roughness=.45,fresnel=.06),
+            lightposition=dict(x=75,y=30,z=120),
+            name=r.cell_id,hovertemplate=tooltip+'<extra></extra>',showlegend=False,
+        ))
+    # Selected cell has a prominent top-ring and pointer; the selection is
+    # controlled by the UI, since Mesh3d point-selection is not reliable in
+    # Streamlit/Plotly across desktop and mobile versions.
+    selected=cells[cells.cell_id==selected_cell]
+    if not selected.empty:
+        chosen=selected.iloc[0]
+        theta=np.linspace(0,2*math.pi,49)
+        fig.add_trace(go.Scatter3d(
+            x=chosen.x+.62*np.cos(theta),y=chosen.y+.62*np.sin(theta),
+            z=np.full(theta.shape,1.48),mode='lines',
+            line=dict(color='#ffffff',width=8),showlegend=False,
+            name='Selected cell',hoverinfo='skip'))
+        fig.add_trace(go.Scatter3d(
+            x=[chosen.x],y=[chosen.y],z=[1.75],mode='markers+text',
+            marker=dict(size=6,color='#e6faff',symbol='diamond'),
+            text=[chosen.cell_id],textposition='top center',
+            textfont=dict(color='#ffffff',size=12),hoverinfo='skip',showlegend=False))
+    # A simple mounting-tray wireframe gives 3D depth cues. It does not
+    # claim to be a battery casing designed to any aircraft dimensions.
+    xmin,xmax=float(cells.x.min())-.8,float(cells.x.max())+.8
+    ymin,ymax=float(cells.y.min())-.8,float(cells.y.max())+.8
+    bx=[xmin,xmax,xmax,xmin,xmin,None,xmin,xmax,xmax,xmin,xmin]
+    by=[ymin,ymin,ymax,ymax,ymin,None,ymin,ymin,ymax,ymax,ymin]
+    bz=[-.13]*5+[None]+[1.62]*5
+    fig.add_trace(go.Scatter3d(x=bx,y=by,z=bz,mode='lines',
+        line=dict(color='#5c9f8e',width=3),name='Illustrative enclosure',
+        hoverinfo='skip',showlegend=False))
+    for xx,yy in [(xmin,ymin),(xmin,ymax),(xmax,ymin),(xmax,ymax)]:
+        fig.add_trace(go.Scatter3d(x=[xx,xx],y=[yy,yy],z=[-.13,1.62],
+            mode='lines',line=dict(color='#5c9f8e',width=3),
+            showlegend=False,hoverinfo='skip'))
+    fig.update_layout(
+        height=590,margin=dict(l=0,r=15,t=35,b=5),
+        title=dict(text='INTERACTIVE BATTERY PACK | REPLAY-DRIVEN',
+                   font=dict(color='#caffdf',size=15)),
+        paper_bgcolor='#06140f',font=dict(color='#d8ffe9'),
+        showlegend=False,uirevision='battery_pack_camera',
+        scene=dict(
+            bgcolor='#06140f',dragmode='orbit',aspectmode='data',
+            xaxis=dict(visible=False,showbackground=False),
+            yaxis=dict(visible=False,showbackground=False),
+            zaxis=dict(visible=False,showbackground=False),
+            camera=dict(eye=dict(x=1.45,y=1.55,z=1.18)),
+        ),
+    )
     return fig
 
 
-def render_mission_visualization(
-    waypoints: List[tuple],
-    threat_zone_km: float,
-    show_threat_zone: bool,
-    nav_estimated_path: Optional[List[tuple]] = None,
-):
-    st.markdown(
-        "<div class='section-card'><div class='section-title'>Mission Visualization</div>"
-        "<div class='section-note'>2D route view with waypoints, threat-zone overlay, and optional GNSS-estimated path.</div></div>",
-        unsafe_allow_html=True,
-    )
-
-    fig, ax = make_themed_figure(figsize=(6, 5))
-
-    if show_threat_zone:
-        circle = plt.Circle((0, 0), threat_zone_km, color=ACTIVE_THEME["danger"], alpha=0.14, label="Threat Zone")
-        ax.add_patch(circle)
-
-    if waypoints:
-        xs, ys = zip(*waypoints)
-        ax.plot(xs, ys, linestyle="--", linewidth=1.8, color=ACTIVE_THEME["path"], label="Mission Route")
-        ax.scatter(xs, ys, color=ACTIVE_THEME["warning"], marker="x", s=90, label="Waypoints")
-
-    ax.scatter([0], [0], color=ACTIVE_THEME["accent"], s=90, marker="o", label="Launch / Origin")
-
-    if nav_estimated_path:
-        nx, ny = zip(*nav_estimated_path)
-        ax.plot(nx, ny, linewidth=2.0, color=ACTIVE_THEME["accent2"], alpha=0.95, label="GNSS-Denied Estimated Path")
-
-    ax.set_title("Mission Route Overview")
-    ax.set_xlabel("X (km)")
-    ax.set_ylabel("Y (km)")
-    ax.axhline(0, color=ACTIVE_THEME["grid"], linewidth=0.8)
-    ax.axvline(0, color=ACTIVE_THEME["grid"], linewidth=0.8)
-    ax.set_aspect("equal", adjustable="datalim")
-    style_axes(ax)
-
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        legend = ax.legend(handles, labels, facecolor=ACTIVE_THEME["panel"], edgecolor=ACTIVE_THEME["grid"], fontsize=8, loc="upper right")
-        for txt in legend.get_texts():
-            txt.set_color(ACTIVE_THEME["text"])
-
-    st.pyplot(fig)
-    plt.close(fig)
-
-
-
-st.sidebar.header('Operator Control Panel')
-st.sidebar.caption('Grouped mission controls for platform setup, autonomy, sensing, threats, navigation, performance, and outputs. System Mode now changes workflow emphasis, not whether preserved production modules are available.')
-
-with st.sidebar.expander('Platform & Mission Mode', expanded=True):
-    drone_model = st.selectbox('Drone Model', list(UAV_PROFILES.keys()))
-    system_mode = st.radio(
-        'System Mode',
-        ['Engineering Mode', 'Swarm / Mission Ops Mode'],
-        index=0,
-    )
-    compact_layout = st.toggle('Compact Layout', value=False)
-
-with st.sidebar.expander('Operator Display & Output Panels', expanded=False):
-    show_advanced = st.toggle('Show Advanced Metrics', value=True)
-    show_validation = st.toggle('Show Validation Panel', value=True)
-    show_detectability = st.toggle('Show Detectability Panel', value=True)
-    show_live_simulation = st.toggle('Enable Live Simulation', value=True)
-    show_json_preview = st.toggle('Show JSON Export Preview', value=True)
-    mission_visualization = st.toggle('Enable 2D/3D Mission Visualization', value=True)
-    scenario_comparison_engine = st.toggle('Enable Scenario Comparison Engine', value=True)
-
-with st.sidebar.expander('Autonomy & Tactical Logic', expanded=False):
-    detectability_autopilot = st.toggle('Enable Detectability Autopilot', value=True)
-    route_optimization = st.toggle('Enable Route Optimization', value=True)
-    llm_tactical_mode = st.toggle('Enable LLM Tactical Mode', value=True)
-    swarm_intelligence_upgrade = st.toggle('Enable Swarm Intelligence Upgrade', value=True)
-
-with st.sidebar.expander('Swarm / Mission Ops Visibility', expanded=False):
-    show_swarm_ops_module = st.toggle(
-        'Show Swarm / Mission Ops Module',
-        value=True
-    )
-
-with st.sidebar.expander('Sensing, Detectability & Threats', expanded=False):
-    sensor_modeling = st.toggle('Enable Sensor Modeling', value=True)
-    terrain_masking = st.toggle('Enable Terrain Masking', value=True)
-    terrain_masking_v2 = st.toggle('Enable Terrain Masking v2', value=True)
-    adversary_simulation = st.toggle('Enable Adversary Simulation', value=True)
-
-with st.sidebar.expander('Navigation & Contested Environment', expanded=False):
-    gnss_denied_navigation = st.toggle('Enable Legacy GNSS Nav (compatibility)', value=False)
-    gnss_denied_navigation_v2 = st.toggle('Enable GNSS-Denied Navigation v2', value=True)
-
-with st.sidebar.expander('Performance & Envelope', expanded=False):
-    flight_envelope_enforcement = st.toggle('Enable Flight Envelope Enforcement', value=True)
-    degradation_modeling = st.toggle('Enable Battery + Fuel Degradation Modeling', value=True)
-
-with st.sidebar.expander('Debug & Validation Controls', expanded=False):
-    debug_mode = st.toggle('Enable Debug Mode', value=False)
-    allow_pack_override = st.toggle('Allow Battery Override (debug)', value=False) if debug_mode else False
-
-st.sidebar.markdown('---')
-st.sidebar.caption(
-    'Active upgrades: '
-    f"{sum(bool(x) for x in [detectability_autopilot, route_optimization, swarm_intelligence_upgrade, terrain_masking, sensor_modeling, mission_visualization, llm_tactical_mode, adversary_simulation, gnss_denied_navigation, flight_envelope_enforcement, degradation_modeling, terrain_masking_v2, scenario_comparison_engine, gnss_denied_navigation_v2])}/14"
-)
-profile = UAV_PROFILES[drone_model]
-st.info(f"**AI Capabilities:** {profile.get('ai_capabilities', '—')}")
-st.caption(f"Base weight: {profile['base_weight_kg']} kg — Max payload: {profile['max_payload_g']} g")
-st.caption(f"Power system: `{profile['power_system']}` | Type: `{profile['type']}`")
-
-st.markdown(
-    f"""
-<div class="section-card">
-  <div class="section-title">Operator Console Status</div>
-  <div class="section-note">
-    Mode: <b>{system_mode}</b> |
-    Visualization: <b>{'ON' if mission_visualization else 'OFF'}</b> |
-    Tactical Briefing: <b>{'ON' if llm_tactical_mode else 'OFF'}</b> |
-    Threat Modeling: <b>{'ON' if adversary_simulation else 'OFF'}</b> |
-    GNSS v2: <b>{'PRIMARY' if gnss_denied_navigation_v2 else 'OFF'}</b>
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-initial_caution = "Nominal"
-initial_caution_class = "status-ok"
-if profile['power_system'] == 'ICE':
-    initial_caution = "Higher thermal load"
-    initial_caution_class = "status-warn"
-if profile['type'] == 'rotor':
-    initial_caution = "Hover-heavy mission"
-    initial_caution_class = "status-warn"
-
-st.markdown(
-    render_status_strip(
-        platform_type=profile['type'],
-        power_system=profile['power_system'],
-        theme_name=theme_mode,
-        caution_label=initial_caution,
-        caution_class=initial_caution_class,
-    ),
-    unsafe_allow_html=True,
-)
-
-flight_mode_options = ['Forward Flight', 'Loiter', 'Waypoint Mission'] if profile['type'] == 'fixed' else ['Hover', 'Forward Flight', 'Loiter', 'Waypoint Mission']
-
-with st.form('uav_form'):
-    left, right = st.columns(2)
+def render_battery_pack_view(df,config):
+    """Streamlit controls are kept independent of the physics time stepping."""
+    st.markdown('#### Interactive 3D Battery Pack')
+    st.caption('Rotate, zoom and hover to inspect a cell. Choose a cell below to highlight it. '
+        'Changing the replay time uses stored battery telemetry, without rerunning the physics simulation.')
+    index=st.slider('Flight and battery replay frame',0,len(df)-1,len(df)-1,
+                    key='replay_frame')
+    frame=df.iloc[index]
+    left,right=st.columns(2)
     with left:
-        st.subheader('Flight Parameters')
-        battery_capacity_wh = numeric_input('Battery Capacity (Wh)', float(profile.get('battery_wh', 100.0)))
-        default_payload = min(max(0, int(profile['max_payload_g'] * 0.5)), profile['max_payload_g'])
-        payload_weight_g = int(numeric_input('Payload (g)', default_payload))
-        flight_speed_kmh = numeric_input('Speed (km/h)', 30.0)
-        wind_speed_kmh = numeric_input('Wind (km/h)', 10.0)
-        temperature_c = numeric_input('Temperature (°C)', 25.0)
-        altitude_m = int(numeric_input('Altitude (m)', 0))
-        elevation_gain_m = int(numeric_input('Elevation Gain (m)', 0))
-        flight_mode = st.selectbox('Flight Mode', flight_mode_options)
+        metric=st.selectbox('Color battery geometry by',list(BATTERY_3D_SCALES),
+                            key='battery_3d_metric')
     with right:
-        st.subheader('Mission / Environment')
-        cloud_cover = st.slider('Cloud Cover (%)', 0, 100, 50)
-        gustiness = st.slider('Gust Factor', 0, 10, 2)
-        terrain_penalty = st.slider('Terrain Complexity', 1.0, 1.5, 1.1)
-        stealth_drag_penalty = st.slider('Stealth Drag Factor', 1.0, 1.5, 1.0)
-        effective_size_default = float(DEFAULT_SIZE_M.get(drone_model, 1.0))
-        effective_size_m = st.slider('Effective Visual Size (m)', 0.2, 20.0, min(20.0, effective_size_default))
-        background_complexity = st.slider('Background Complexity', 0.0, 1.0, 0.5)
-        humidity_factor = st.slider('Humidity / Haze Factor', 0.0, 1.0, 0.5)
-        sensor_band = st.selectbox('Sensor Band', ['EO', 'MWIR', 'LWIR'])
-        sensor_quality = st.slider('Sensor Quality Factor', 0.5, 1.5, 1.0, 0.05)
-        loiter_minutes = st.slider('Loiter Duration (min)', 0, 60, 0)
-        include_rtb = st.checkbox('Include RTB Phase', value=False)
-        adversary_radar_density = st.slider('Radar Zone Density', 0.0, 1.0, 0.3, 0.05)
-        adversary_ir_density = st.slider('IR Tracker Density', 0.0, 1.0, 0.3, 0.05)
-        adversary_jammer_density = st.slider('Jammer Density', 0.0, 1.0, 0.2, 0.05)
-        radar_frequency_ghz = st.slider('Radar Frequency (GHz)', 1.0, 18.0, 10.0, 0.5)
-        radar_tx_power_kw = st.slider('Radar TX Power (kW)', 1.0, 200.0, 40.0, 1.0)
-        fusion_quality = st.slider('Sensor Fusion Quality', 0.5, 1.5, 1.0, 0.05)
-        drift_sensitivity = st.slider('Drift Sensitivity', 0.5, 1.5, 1.0, 0.05)
-        map_uncertainty_factor = st.slider('Map Uncertainty Factor', 0.0, 1.0, 0.25, 0.05)
-        gnss_update_gain = st.slider('GNSS v2 Update Gain', 0.2, 0.9, 0.55, 0.05)
-        battery_cycle_count = st.slider('Battery Cycle Count', 0, 1000, 120, 10)
-        battery_internal_resistance_mohm = st.slider('Battery Internal Resistance (mΩ)', 5.0, 120.0, 28.0, 1.0)
-        battery_nominal_voltage_v = st.slider('Battery Nominal Voltage (V)', 12.0, 60.0, 22.2, 0.1)
-        engine_wear_factor = st.slider('Engine Wear Factor', 0.8, 1.2, 1.0, 0.05)
-        fuel_tank_l = None
-        if profile['power_system'] == 'ICE':
-            st.markdown('### ICE Configuration')
-            fuel_tank_l = numeric_input('Fuel Tank (L)', float(profile.get('fuel_tank_l', 300.0)))
-    st.markdown('### Mission Waypoints')
-    waypoint_str = st.text_area('Waypoints (e.g., 2,2; 5,0; 8,-3)', '2,2; 5,0; 8,-3')
-    submitted = st.form_submit_button('Estimate')
+        p=inferred_parallel_count(config['battery_wh'],config['series_cells'])
+        parallel=st.slider('Illustrative cells in parallel (P)',1,6,p,
+                           key='battery_3d_parallel')
+    gradient=st.slider('Illustrative pack temperature spread (°C)',0.,8.,0.,.5,
+                       key='battery_3d_temp_spread')
+    cells=representative_battery_cells(frame,config['series_cells'],parallel,
+        thermal_spread_c=gradient,nominal_wh=config['battery_wh'])
+    chosen=st.selectbox('Highlight / inspect cell',cells.cell_id.tolist(),
+                        key='battery_3d_selected')
+    fig=build_battery_pack_3d(cells,metric,chosen)
+    st.plotly_chart(fig,use_container_width=True,
+        config={'displaylogo':False,'responsive':True,'scrollZoom':True})
+    c=cells.loc[cells.cell_id==chosen].iloc[0]
+    st.caption(f'Replay t = {frame.time_s:.2f} s | {config["series_cells"]}S{parallel}P illustrative geometry | '
+        f'{len(cells)} visual cells | implied cell capacity {c.implied_cell_capacity_ah:.2f} Ah '
+        'at nominal 3.7 V/cell.')
+    metrics_grid([
+        ('Pack SOC',f'{frame.battery_soc*100:.1f}%'),
+        ('Pack current',f'{frame.battery_current_a:.2f} A'),
+        ('Pack voltage',f'{frame.battery_terminal_v:.2f} V'),
+        ('Pack thermal state',f'{frame.battery_temperature_c:.1f} °C'),
+    ])
+    st.markdown(f'**Selected {chosen}** | Series group {int(c.series_group)} | '
+        f'Voltage {c.voltage_v:.3f} V | Margin {c.voltage_margin_v:+.3f} V | '
+        f'Illustrative cell temperature {c.temperature_proxy_c:.1f} °C')
+    if bool(frame.battery_limited) or c.voltage_margin_v<=.05:
+        st.warning('Power limiting or low-voltage margin is present in this battery-pack frame.')
+    if 'DEGRADED_CELL' in str(frame.battery_status):
+        st.warning('Degraded-cell fault enabled. The existing pack model does not identify '
+                   'a specific failed cell or simulate independent cell aging.')
+    st.info('Model fidelity: pack-level 1-RC Thevenin or ideal-energy simulation. '
+        'Displayed series-group voltages are constrained interpolations between the '
+        'pack-level estimated minimum and maximum cell voltages. Parallel cells '
+        'share group voltage. All cells show pack SOC and SOH. Any nonzero temperature '
+        'spread is display-only, not computed heat transfer. Cell geometry and '
+        'series/parallel topology are illustrative, not manufacturer-verified.')
+    st.download_button('Download representative 3D cell-state table (CSV)',
+        cells.drop(columns=['x','y','z']).to_csv(index=False).encode('utf-8'),
+        f'battery_pack_replay_{frame.time_s:.1f}s.csv','text/csv')
+    return index
 
-waypoints = []
-try:
-    for pair in waypoint_str.split(';'):
-        x_str, y_str = pair.split(',')
-        waypoints.append((float(x_str.strip()), float(y_str.strip())))
-except Exception:
-    st.error('Invalid waypoint format. Using default waypoint at origin.')
-    waypoints = [(0.0, 0.0)]
 
-if submitted:
-    try:
-        if payload_weight_g > profile['max_payload_g']:
-            st.error('Payload exceeds lift capacity.')
-            st.stop()
+# ============================================================================
+# QUATERNION-DRIVEN AIRCRAFT GEOMETRY / PLOTLY WEBGL REPLAY
+# ============================================================================
+# Procedural illustration, not manufacturer CAD. Body axes: +x forward,
+# +y right, +z DOWN. q rotates body -> NED; Plotly scene is East/North/UP.
+# Control surface and propeller motion are visualization proxies, not
+# independently simulated hinge dynamics or blade RPM measurements.
 
-        if profile['power_system'] == 'Battery':
-            battery_capacity_wh = clamp_battery(profile, battery_capacity_wh, allow_pack_override)
-            result = simulate_battery_aircraft(profile, payload_weight_g, flight_speed_kmh, wind_speed_kmh, temperature_c, altitude_m, elevation_gain_m, flight_mode, gustiness, terrain_penalty, stealth_drag_penalty, battery_capacity_wh)
+AIRCRAFT_PALETTE = {
+    'fuselage': '#d1e4e6', 'canopy': '#3caeec', 'wing': '#8eb1c0',
+    'aileron': '#17e3ad', 'tail': '#79a6b7', 'elevator': '#eea955',
+    'fin': '#829aa7', 'rudder': '#f18db4', 'motor': '#c8d8dc',
+}
+
+
+def aircraft_body_to_scene(quaternion):
+    """Rotation for column vectors in (east, north, up) coordinates."""
+    ned_to_enu = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
+    return ned_to_enu @ body_to_ned(qnormalize(quaternion))
+
+
+def transform_aircraft_points(body_xyz, row, scale=1.):
+    points = np.asarray(body_xyz, dtype=float).reshape(-1, 3)
+    q = [float(row.qw), float(row.qx), float(row.qy), float(row.qz)]
+    center = np.array([float(row.east_m), float(row.north_m), float(row.altitude_m)])
+    return center + (float(scale) * points) @ aircraft_body_to_scene(q).T
+
+
+def make_aircraft_part(name, vertices, faces, color, **extras):
+    return dict(name=name, v=np.asarray(vertices, float),
+                f=np.asarray(faces, int), color=color, **extras)
+
+
+def wing_slab(name, root_front, root_rear, tip_front, tip_rear,
+              y_root, y_tip, z_root, z_tip, thickness, color,
+              hinge=None, hinge_deflection_rad=0.):
+    """Tapered low-order slab. Optional hinge rotation about local span axis."""
+    points=np.array([
+        [root_front,y_root,z_root-thickness/2],
+        [root_rear,y_root,z_root-thickness/2],
+        [tip_rear,y_tip,z_tip-thickness/2],
+        [tip_front,y_tip,z_tip-thickness/2],
+        [root_front,y_root,z_root+thickness/2],
+        [root_rear,y_root,z_root+thickness/2],
+        [tip_rear,y_tip,z_tip+thickness/2],
+        [tip_front,y_tip,z_tip+thickness/2],
+    ],dtype=float)
+    if hinge is not None and abs(hinge_deflection_rad)>1e-12:
+        # Hinge x varies linearly over the tapered panel's span.
+        h_root,h_tip=hinge
+        t=np.clip((points[:,1]-y_root)/(y_tip-y_root),0.,1.)
+        hx=h_root+(h_tip-h_root)*t
+        dz=points[:,2]-(z_root+(z_tip-z_root)*t)
+        dx=points[:,0]-hx
+        c,s=math.cos(hinge_deflection_rad),math.sin(hinge_deflection_rad)
+        points[:,0]=hx+c*dx+s*dz
+        points[:,2]=(z_root+(z_tip-z_root)*t)-s*dx+c*dz
+    faces=np.array([
+        [0,1,2],[0,2,3],[4,6,5],[4,7,6],
+        [0,4,5],[0,5,1],[1,5,6],[1,6,2],
+        [2,6,7],[2,7,3],[3,7,4],[3,4,0]
+    ],dtype=int)
+    return make_aircraft_part(name,points,faces,color)
+
+
+def lofted_hull(name, x_rings, ry_rings, rz_rings, color, sides=10, z_offset=0.):
+    rings=[]
+    for x,ry,rz in zip(x_rings,ry_rings,rz_rings):
+        for a in np.linspace(0,2*math.pi,sides,endpoint=False):
+            rings.append((x,ry*math.cos(a),z_offset+rz*math.sin(a)))
+    faces=[]
+    for k in range(len(x_rings)-1):
+        for j in range(sides):
+            a=k*sides+j;b=k*sides+(j+1)%sides
+            c=(k+1)*sides+j;d=(k+1)*sides+(j+1)%sides
+            faces.extend([(a,b,c),(b,d,c)])
+    return make_aircraft_part(name,rings,faces,color)
+
+
+def cylinder_z(name,cx,cy,z0,z1,r,color,sides=9):
+    vertices=[]
+    for z in (z0,z1):
+        for a in np.linspace(0,2*math.pi,sides,endpoint=False):
+            vertices.append((cx+r*math.cos(a),cy+r*math.sin(a),z))
+    faces=[]
+    for j in range(sides):
+        nj=(j+1)%sides
+        faces += [(j,nj,sides+j),(nj,sides+nj,sides+j)]
+    return make_aircraft_part(name,vertices,faces,color)
+
+
+def vertical_fin(name, x_front, x_rear, x_front_tip, x_rear_tip,
+                 z_root, z_tip, thickness, color,
+                 hinge=None, rudder_rad=0.):
+    vertices=np.array([
+        [x_front,-thickness/2,z_root],[x_rear,-thickness/2,z_root],
+        [x_rear_tip,-thickness/2,z_tip],[x_front_tip,-thickness/2,z_tip],
+        [x_front,thickness/2,z_root],[x_rear,thickness/2,z_root],
+        [x_rear_tip,thickness/2,z_tip],[x_front_tip,thickness/2,z_tip]],float)
+    if hinge is not None and abs(rudder_rad)>1e-12:
+        h0,h1=hinge
+        t=np.clip((vertices[:,2]-z_root)/(z_tip-z_root),0.,1.)
+        hx=h0+(h1-h0)*t
+        dx=vertices[:,0]-hx;dy=vertices[:,1]
+        c,s=math.cos(rudder_rad),math.sin(rudder_rad)
+        vertices[:,0]=hx+c*dx-s*dy
+        vertices[:,1]=s*dx+c*dy
+    faces=[(0,1,2),(0,2,3),(4,6,5),(4,7,6),
+           (0,4,5),(0,5,1),(1,5,6),(1,6,2),
+           (2,6,7),(2,7,3),(3,7,4),(3,4,0)]
+    return make_aircraft_part(name,vertices,faces,color)
+
+
+def aircraft_3d_parts(profile, row, aircraft_name=''):
+    """Procedural mesh set plus line segments, all in aircraft body frame."""
+    span=float(profile.get('wingspan_m',DEFAULT_SIZE_M.get(aircraft_name,1.)))
+    if profile['type']=='rotor':
+        span=max(.30, float(DEFAULT_SIZE_M.get(aircraft_name,.8)))
+    length=max(.20,span*(.70 if profile['type']=='fixed' else .40))
+    parts=[]; extra=[]
+    aileron=clamp(float(row.aileron_actual),-.65,.65)
+    elevator=clamp(float(row.elevator_actual),-.65,.65)
+    rudder=clamp(float(row.rudder_actual),-.65,.65)
+    phase=float(row.time_s)*3.17  # apparent rotation, not actual rotor RPM
+    if profile['type']=='fixed':
+        parts.append(lofted_hull('Fuselage',
+            [-.55*length,-.38*length,-.06*length,.25*length,.53*length],
+            [.018,.095,.125,.092,.005],
+            [.018,.093,.108,.082,.005],AIRCRAFT_PALETTE['fuselage']))
+        parts.append(lofted_hull('Cockpit fairing',
+            [.07*length,.19*length,.36*length,.42*length],
+            [.040,.072,.047,.002],[.03,.055,.033,.002],
+            AIRCRAFT_PALETTE['canopy'],z_offset=-.078*length))
+        half=.5*span
+        for side in (-1,1):
+            yr=side*.09*span;ym=side*.34*span;yt=side*.49*span
+            z0=-.018*span;zm=-.045*span;zt=-.056*span
+            # Main wing has a separate outer trailing-edge aileron.
+            parts.append(wing_slab('Main wing',.15*length,-.15*length,
+                .015*length,-.095*length,yr,ym,z0,zm,.018*span,
+                AIRCRAFT_PALETTE['wing']))
+            parts.append(wing_slab('Outer wing',.015*length,-.056*length,
+                -.075*length,-.116*length,ym,yt,zm,zt,.014*span,
+                AIRCRAFT_PALETTE['wing']))
+            # Hinged at the rear of the fixed outer-wing section.
+            parts.append(wing_slab('Aileron',-.056*length,-.095*length,
+                -.116*length,-.144*length,ym,yt,zm,zt,.010*span,
+                AIRCRAFT_PALETTE['aileron'],hinge=(-.056*length,-.116*length),
+                hinge_deflection_rad=.48*aileron*(1 if side>0 else -1)))
+            yr=side*.038*span;yt=side*.205*span
+            parts.append(wing_slab('Horizontal stabilizer',-.33*length,-.45*length,
+                -.41*length,-.485*length,yr,yt,0.,-.006*span,
+                .012*span,AIRCRAFT_PALETTE['tail']))
+            parts.append(wing_slab('Elevator',-.45*length,-.50*length,
+                -.485*length,-.52*length,yr,yt,0.,-.006*span,
+                .008*span,AIRCRAFT_PALETTE['elevator'],
+                hinge=(-.45*length,-.485*length),
+                hinge_deflection_rad=.40*elevator))
+        parts.append(vertical_fin('Vertical stabilizer',
+            -.32*length,-.47*length,-.43*length,-.48*length,
+            -.01*span,-.17*span,.016*span,AIRCRAFT_PALETTE['fin']))
+        parts.append(vertical_fin('Rudder',-.47*length,-.53*length,
+            -.48*length,-.515*length,-.01*span,-.17*span,
+            .010*span,AIRCRAFT_PALETTE['rudder'],
+            hinge=(-.47*length,-.48*length),rudder_rad=.4*rudder))
+        prop_x=(-.56 if 'MQ-' in aircraft_name else .55)*length
+        blade_r=.13*span
+        for k in range(2):
+            a=phase+k*math.pi
+            extra.append([(prop_x,0.,0.),(prop_x,blade_r*math.cos(a),blade_r*math.sin(a))])
+        extra.append([(prop_x-.025*length,0.,0.),(prop_x+.025*length,0.,0.)])
+    else:
+        parts.append(lofted_hull('Central avionics body',
+            [-.50*length,-.32*length,.15*length,.49*length],
+            [.01,.18*span,.16*span,.01],
+            [.01,.11*span,.13*span,.01],AIRCRAFT_PALETTE['fuselage']))
+        count=8 if 'Alta 8' in aircraft_name else 4
+        radius=.41*span
+        zhub=-.10*span
+        for k in range(count):
+            a=2*math.pi*(k+.5)/count
+            cx=radius*math.cos(a);cy=radius*math.sin(a)
+            extra.append([(0.,0.,-.025*span),(cx,cy,zhub)])
+            parts.append(cylinder_z('Rotor motor',cx,cy,zhub-.035*span,
+                                    zhub+.02*span,.038*span,
+                                    AIRCRAFT_PALETTE['motor']))
+            blade_radius=(.23 if count==4 else .14)*span
+            for blade in range(2):
+                theta=phase*(1 if k%2 else -1)+blade*math.pi
+                extra.append([(cx,cy,zhub-.045*span),
+                    (cx+blade_radius*math.cos(theta),
+                     cy+blade_radius*math.sin(theta),zhub-.045*span)])
+        # Landing skids are fixed visualization geometry.
+        for sgn in (-1,1):
+            y=sgn*.17*span
+            extra.extend([[( -.22*span,y,.11*span),(.22*span,y,.11*span)],
+                          [(-.14*span,y,.00*span),(-.14*span,y,.11*span)],
+                          [(.14*span,y,.00*span),(.14*span,y,.11*span)]])
+    return parts,extra,span
+
+
+def aircraft_dynamic_traces(profile, row, aircraft_name, visual_scale=1.,
+                            show_axes=True,show_thrust=True):
+    parts,segments,span=aircraft_3d_parts(profile,row,aircraft_name)
+    traces=[]
+    for part in parts:
+        verts=transform_aircraft_points(part['v'],row,visual_scale)
+        tri=part['f']
+        traces.append(go.Mesh3d(x=verts[:,0],y=verts[:,1],z=verts[:,2],
+            i=tri[:,0],j=tri[:,1],k=tri[:,2],name=part['name'],
+            color=part['color'],flatshading=True,opacity=.97,
+            lighting=dict(ambient=.66,diffuse=.7,roughness=.65,specular=.18),
+            showlegend=False,hovertemplate=part['name']+'<extra></extra>'))
+    def scene_lines(body_segments,name,color,width=6):
+        flat=[]
+        for segment in body_segments:
+            flat.extend([*segment,[np.nan,np.nan,np.nan]])
+        coords=transform_aircraft_points(flat,row,visual_scale)
+        return go.Scatter3d(x=coords[:,0],y=coords[:,1],z=coords[:,2],
+            mode='lines',line=dict(width=width,color=color),name=name,
+            showlegend=False,hoverinfo='skip')
+    traces.append(scene_lines(segments,'Propellers / rotor arms (illustrative)','#d5fafa',6))
+    if show_axes:
+        for name,axis,color in [('+X forward',[1,0,0],'#2de5be'),
+                                ('+Y right',[0,1,0],'#ffb65c'),
+                                ('+Z down',[0,0,1],'#f185ac')]:
+            end=np.asarray(axis,float)*span*.65
+            traces.append(scene_lines([[[0.,0.,0.],end]],name,color,4))
+    if show_thrust:
+        direction=np.array([1,0,0] if profile['type']=='fixed' else [0,0,-1],float)
+        thrust_ratio=clamp(float(row.thrust_n)/max(1.,float(row.mass_kg)*G),0.,2.5)
+        endpoint=direction*span*(.25+.40*thrust_ratio)
+        traces.append(scene_lines([[[0,0,0],endpoint]],'Thrust vector (magnitude scaled)','#f5d06b',9))
+    # Fixed trace count for any given aircraft and visualization toggles.
+    return traces,span
+
+
+def aircraft_follow_eye(row, camera_mode):
+    """Camera relative to heading, with a stable world-up horizon.
+
+    Chase sits aft/above/port; inspection looks from front-port above.
+    Roll and pitch still rotate the airframe but do not spin the camera.
+    Plotly eye is a dimensionless vector relative to the scene center.
+    """
+    yaw=math.radians(float(row.yaw_deg))
+    heading_quat=q_from_euler(0.,0.,yaw)
+    relative=(np.array([-1.65,-0.60,-0.80]) if camera_mode=='Chase follow'
+              else np.array([1.25,-1.65,-1.25]))
+    world=aircraft_body_to_scene(heading_quat) @ relative
+    world=2.05*world/max(1e-12,float(np.linalg.norm(world)))
+    return dict(x=float(world[0]),y=float(world[1]),z=float(world[2]))
+
+
+def aircraft_scene_axes(df, row, waypoints, span, scale, camera_mode,
+                        camera_zoom=1.,compact=True):
+    """Follow-camera axes stay centered on the current aircraft location."""
+    center=np.array([float(row.east_m),float(row.north_m),float(row.altitude_m)])
+    overview=camera_mode=='Mission overview'
+    if not overview:
+        # Airframe span occupies ~35-55% of the viewport, even on mobile.
+        width=max(1.,span*scale*(1.62 if camera_mode=='Chase follow' else 1.12)
+                  *clamp(camera_zoom,.6,3.))
+        low=center-width; high=center+width
+        # Do NOT clip at altitude zero: it would move the camera center.
+        xlo,ylo,zlo=low; xhi,yhi,zhi=high
+        eye=aircraft_follow_eye(row,camera_mode)
+    else:
+        arrays=[(df.east_m.to_numpy(),df.north_m.to_numpy(),df.altitude_m.to_numpy())]
+        if waypoints:
+            arrays.append(tuple(np.array([w[j] for w in waypoints])
+                                for j in (1,0,2)))
+        pts=np.concatenate([np.column_stack(a) for a in arrays],axis=0)
+        lo=np.min(pts,axis=0);hi=np.max(pts,axis=0)
+        margin=max(15.,span*scale*.75)
+        xlo,ylo,zlo=lo-margin
+        xhi,yhi,zhi=hi+margin
+        eye=dict(x=1.50,y=-1.85,z=1.30)
+    rng=np.array([xhi-xlo,yhi-ylo,zhi-zlo]);denom=max(float(np.max(rng)),.001)
+    def axis(title,low,high):
+        return dict(title=title,range=[float(low),float(high)],color='#a7c5bc',
+                    gridcolor='#1b483b',backgroundcolor='#081a14',
+                    showbackground=bool(overview),
+                    showticklabels=bool(overview and not compact),
+                    showgrid=bool(overview),zeroline=False)
+    return dict(
+        xaxis=axis('East (m)',xlo,xhi),
+        yaxis=axis('North (m)',ylo,yhi),
+        zaxis=axis('Altitude (m)',zlo,zhi),
+        aspectmode='manual',
+        aspectratio=dict(x=float(rng[0]/denom),y=float(rng[1]/denom),
+                         z=float(rng[2]/denom)),
+        camera=dict(eye=eye,up=dict(x=0,y=0,z=1),
+                    center=dict(x=0,y=0,z=0),
+                    projection=dict(type='perspective')),
+        bgcolor='#061610',
+        dragmode='orbit',
+    )
+
+
+def aircraft_plotly_twin(df, waypoints, frame_index, profile,
+                         aircraft_name='',camera_mode='Chase follow',
+                         show_ekf=True,show_axes=True,show_thrust=True,
+                         animate=False,max_animation_frames=32,
+                         scene_content='Aircraft + trail',camera_zoom=1.,
+                         overview_aircraft_pct=17.,compact=True):
+    """Procedural quaternion-driven airframe, not manufacturer CAD geometry.
+
+    All mesh geometry is generated from recorded six-DOF telemetry. Close
+    views use 1:1 physical scale. The explicit overview scaling is display-
+    only and never changes aircraft physics, navigation, or exported data.
+    """
+    if len(df)==0: raise ValueError('Aircraft replay requires telemetry rows.')
+    legacy={'Aircraft focus':'Aircraft inspection'}
+    camera_mode=legacy.get(camera_mode,camera_mode)
+    if camera_mode not in ('Chase follow','Aircraft inspection','Mission overview'):
+        raise ValueError('Unknown 3D camera mode.')
+    if scene_content not in ('Aircraft only','Aircraft + trail','Full mission'):
+        raise ValueError('Unknown aircraft scene content.')
+    frame_index=int(clamp(frame_index,0,len(df)-1))
+    row=df.iloc[frame_index]
+    _,_,span=aircraft_3d_parts(profile,row,aircraft_name)
+    path_extent=max(float(np.ptp(df.east_m)),float(np.ptp(df.north_m)),
+                    float(np.ptp(df.altitude_m)),span)
+    scale=(clamp((overview_aircraft_pct/100.)*path_extent/span,1.,180.)
+           if camera_mode=='Mission overview' else 1.)
+    fig=go.Figure()
+    # Geometry + historical trajectories. The stride reduces mobile payload;
+    # telemetry and mission physics remain untouched.
+    render_stride=max(1,math.ceil(len(df)/1100))
+    route=df.iloc[::render_stride]
+    if route.index[-1]!=df.index[-1]:
+        route=pd.concat([route,df.iloc[[-1]]])
+    def replay_trail(k):
+        sample=df.iloc[:k+1:render_stride]
+        if sample.index[-1]!=df.index[k]:
+            sample=pd.concat([sample,df.iloc[[k]]])
+        return sample
+    show_full=scene_content=='Full mission'
+    show_trail=scene_content!='Aircraft only'
+    full_index=trail_index=ekf_index=None
+    if show_full:
+        full_index=len(fig.data)
+        fig.add_trace(go.Scatter3d(x=route.east_m,y=route.north_m,z=route.altitude_m,
+            mode='lines',name='Recorded truth (full run)',
+            line=dict(color='#286048',width=3),hoverinfo='skip'))
+    if show_trail:
+        hist=replay_trail(frame_index)
+        trail_index=len(fig.data)
+        fig.add_trace(go.Scatter3d(x=hist.east_m,y=hist.north_m,z=hist.altitude_m,
+            mode='lines',name='Truth through replay',line=dict(color='#27ff9c',width=8)))
+        if show_ekf:
+            ekf_index=len(fig.data)
+            fig.add_trace(go.Scatter3d(x=hist.est_east_m,y=hist.est_north_m,
+                z=hist.est_altitude_m,mode='lines',name='EKF estimated path',
+                line=dict(color='#59bfff',width=5,dash='dash')))
+    if show_full and waypoints:
+        fig.add_trace(go.Scatter3d(x=[w[1] for w in waypoints],
+            y=[w[0] for w in waypoints],z=[w[2] for w in waypoints],
+            mode='markers+text+lines',
+            text=[f'WP-{i+1}' for i in range(len(waypoints))],
+            textposition='top center',name='Mission waypoints',
+            marker=dict(color='#f6a3d5',size=5),
+            line=dict(color='#845d85',width=2,dash='dot')))
+    dynamic_offset=len(fig.data)
+    dynamic,_=aircraft_dynamic_traces(profile,row,aircraft_name,scale,
+                                      show_axes,show_thrust)
+    fig.add_traces(dynamic)
+    scene=aircraft_scene_axes(df,row,waypoints,span,scale,camera_mode,
+                              camera_zoom,compact)
+    height=550 if compact else 690
+    if animate: height+=75
+    fig.update_layout(height=height,
+        margin=dict(l=0,r=0,t=2,b=2),
+        paper_bgcolor='#061610',font=dict(color='#cbf6e1'),
+        scene=scene,showlegend=False,
+        uirevision=('overview_orbit' if camera_mode=='Mission overview' else None),
+        meta=dict(geometry='Generic illustrative 3D airframe',
+            camera_mode=camera_mode,scene_content=scene_content,
+            airframe_scale_factor=float(scale),
+            scale_is_visual_only=bool(camera_mode=='Mission overview'),
+            control_surface_positions='From simulated actuator telemetry',
+            propeller_rotation='Illustrative only, no blade RPM model',
+            playback='Plotly animation independent of Streamlit shared battery replay'))
+    if animate and len(df)>1:
+        sample=np.unique(np.r_[np.linspace(0,len(df)-1,
+            min(max_animation_frames,len(df)),dtype=int),frame_index])
+        # Frame trace indices are derived from actual optional trace positions.
+        frame_traces=[i for i in (trail_index,ekf_index) if i is not None]
+        frame_traces+=list(range(dynamic_offset,dynamic_offset+len(dynamic)))
+        frames=[]
+        for k in sample:
+            instant=df.iloc[int(k)]
+            update=[]
+            if trail_index is not None:
+                h=replay_trail(int(k))
+                update.append(go.Scatter3d(x=h.east_m,y=h.north_m,z=h.altitude_m))
+                if ekf_index is not None:
+                    update.append(go.Scatter3d(x=h.est_east_m,y=h.est_north_m,
+                                               z=h.est_altitude_m))
+            moving,_=aircraft_dynamic_traces(profile,instant,aircraft_name,scale,
+                                              show_axes,show_thrust)
+            update.extend(moving)
+            # The chase / inspection camera moves with each animated frame.
+            animated_scene=(aircraft_scene_axes(df,instant,waypoints,span,scale,
+                                camera_mode,camera_zoom,compact)
+                            if camera_mode!='Mission overview' else None)
+            frames.append(go.Frame(name=f'f{k}',data=update,traces=frame_traces,
+                layout=go.Layout(scene=animated_scene)))
+        fig.frames=frames
+        steps=[dict(method='animate',label=f'{df.iloc[k].time_s:.0f}s',
+                    args=[[f'f{k}'],dict(mode='immediate',
+                        frame=dict(duration=0,redraw=True),
+                        transition=dict(duration=0))]) for k in sample]
+        # Reserve a lower strip for buttons and slider; no overlapping legend.
+        fig.update_layout(
+            scene_domain=dict(x=[0,1],y=[.24,1.]),
+            updatemenus=[dict(type='buttons',direction='left',x=.02,y=.12,
+                xanchor='left',yanchor='middle',showactive=False,
+                font=dict(size=12),bgcolor='#0e3426',
+                buttons=[dict(label='▶ Play',method='animate',args=[None,
+                  dict(frame=dict(duration=180,redraw=True),fromcurrent=True,
+                       transition=dict(duration=0),mode='immediate')]),
+                         dict(label='❚❚ Pause',method='animate',args=[[None],
+                  dict(frame=dict(duration=0,redraw=False),
+                       transition=dict(duration=0),mode='immediate')])])],
+            sliders=[dict(active=int(np.argmin(abs(sample-frame_index))),
+                x=.02,y=.035,len=.96,pad=dict(t=1,b=0),steps=steps,
+                currentvalue=dict(prefix='Replay ',font=dict(size=12)))],
+        )
+    return fig
+
+
+# ============================================================================
+# REPLAY / REPORTING
+# ============================================================================
+def plot_series(telemetry,series,title,yaxis=None,height=290,max_points=1300):
+    cols=[k for k in series if k in telemetry.columns]
+    if not cols:return
+    slim=telemetry[['time_s']+cols].iloc[::max(1,math.ceil(len(telemetry)/max_points))]
+    fig=go.Figure()
+    palette=['#20f59e','#5bbcff','#ffca68','#e197ff','#ff7777']
+    for idx,col in enumerate(cols):
+        fig.add_trace(go.Scatter(x=slim.time_s,y=slim[col],mode='lines',
+            name=series[col],line=dict(color=palette[idx%len(palette)],width=2)))
+    fig.update_layout(height=height,title=title,margin=dict(l=15,r=15,t=45,b=15),
+        xaxis_title='Time (s)',yaxis_title=yaxis or '',
+        paper_bgcolor='#091811',plot_bgcolor='#091811',font=dict(color='#c3e7d6'),
+        legend=dict(orientation='h',y=-.28))
+    fig.update_xaxes(gridcolor='#17372a');fig.update_yaxes(gridcolor='#17372a')
+    st.plotly_chart(fig,use_container_width=True,config={'displaylogo':False})
+
+
+def hud_figure(row):
+    roll=math.radians(float(row.roll_deg));pitch=float(row.pitch_deg)
+    fig=go.Figure()
+    fig.update_xaxes(range=[-100,100],visible=False,fixedrange=True)
+    fig.update_yaxes(range=[-65,65],visible=False,fixedrange=True,
+                     scaleanchor='x',scaleratio=1)
+    offset=-pitch*1.25
+    dx=95*math.cos(roll);dy=95*math.sin(roll)
+    fig.add_shape(type='line',x0=-dx,y0=offset+dy,x1=dx,y1=offset-dy,
+                  line=dict(color='#21ff86',width=3))
+    for x0,x1 in [(-12,-3),(3,12)]:
+        fig.add_shape(type='line',x0=x0,y0=0,x1=x1,y1=0,
+                      line=dict(color='#d7fff0',width=3))
+    fig.add_shape(type='circle',x0=-2,y0=-2,x1=2,y1=2,
+                  line=dict(color='#d7fff0',width=2))
+    anno=dict(showarrow=False,font=dict(size=14,color='#21ff86'))
+    fig.add_annotation(x=-75,y=47,text=f'IAS<br><b>{row.airspeed_ms:.1f} m/s</b>',**anno)
+    fig.add_annotation(x=75,y=47,text=f'ALT<br><b>{row.altitude_m:.0f} m</b>',**anno)
+    fig.add_annotation(x=0,y=58,text=f'HEADING <b>{row.yaw_deg:03.0f}°</b>',**anno)
+    fig.add_annotation(x=-72,y=-43,text=f'α {row.alpha_deg:+.1f}°<br>ENERGY {row.battery_soc*100:.0f}%',**anno)
+    fig.add_annotation(x=0,y=-58,text=f"{'GNSS' if row.gps_valid else 'GNSS LOST'} | "
+                       f'NAV {row.position_error_m:.1f} m | {row.envelope_mode}',**anno)
+    fig.update_layout(height=440,margin=dict(l=0,r=0,t=2,b=2),
+        paper_bgcolor='#06100b',plot_bgcolor='#06100b',showlegend=False)
+    return fig
+
+
+def project_xyz(east,north,altitude,azimuth_deg=42.,elevation_deg=24.):
+    az=math.radians(azimuth_deg);el=math.radians(elevation_deg)
+    east=np.asarray(east,float);north=np.asarray(north,float);alt=np.asarray(altitude,float)
+    depth=math.sin(az)*east+math.cos(az)*north
+    return math.cos(az)*east-math.sin(az)*north,math.cos(el)*alt+math.sin(el)*depth
+
+
+def projected_replay(df,waypoints,frame_index):
+    hist=df.iloc[:frame_index+1];cur=df.iloc[frame_index]
+    fig=go.Figure()
+    ex,ey=project_xyz(hist.east_m,hist.north_m,hist.altitude_m)
+    nx,ny=project_xyz(hist.est_east_m,hist.est_north_m,hist.est_altitude_m)
+    fig.add_trace(go.Scatter(x=ex,y=ey,name='Truth',mode='lines',line=dict(color='#20f59e',width=4)))
+    fig.add_trace(go.Scatter(x=nx,y=ny,name='EKF estimate',mode='lines',
+                             line=dict(color='#5bbcff',dash='dash',width=2)))
+    if waypoints:
+        x,y=project_xyz([p[1] for p in waypoints],[p[0] for p in waypoints],
+                        [p[2] for p in waypoints])
+        fig.add_trace(go.Scatter(x=x,y=y,mode='markers+lines+text',
+             name='Waypoints',text=[f'WP-{i+1}' for i in range(len(waypoints))],
+             marker=dict(size=8,color='#f9a8db')))
+    x,y=project_xyz([cur.east_m],[cur.north_m],[cur.altitude_m])
+    fig.add_trace(go.Scatter(x=x,y=y,mode='markers+text',name='UAV',text=['UAV'],
+                             marker=dict(color='#ff7474',size=13,symbol='diamond')))
+    fig.update_layout(height=495,paper_bgcolor='#07140d',plot_bgcolor='#07140d',
+        font=dict(color='#d8ffe9'),margin=dict(l=0,r=0,t=10,b=5),
+        legend=dict(orientation='h',y=-.15))
+    return fig
+
+
+def webgl_replay(df,waypoints,frame_index):
+    hist=df.iloc[:frame_index+1];cur=df.iloc[frame_index]
+    fig=go.Figure()
+    fig.add_trace(go.Scatter3d(x=hist.east_m,y=hist.north_m,z=hist.altitude_m,
+        mode='lines',name='Truth',line=dict(color='#20f59e',width=6)))
+    fig.add_trace(go.Scatter3d(x=hist.est_east_m,y=hist.est_north_m,z=hist.est_altitude_m,
+        mode='lines',name='EKF estimate',line=dict(color='#5bbcff',width=4,dash='dash')))
+    if waypoints:
+        fig.add_trace(go.Scatter3d(x=[p[1] for p in waypoints],y=[p[0] for p in waypoints],
+            z=[p[2] for p in waypoints],mode='lines+markers+text',
+            name='Waypoints',text=[f'WP-{i+1}' for i in range(len(waypoints))]))
+    fig.add_trace(go.Scatter3d(x=[cur.east_m],y=[cur.north_m],z=[cur.altitude_m],
+        mode='markers+text',name='UAV',text=['UAV'],marker=dict(size=7,color='#ff7474')))
+    fig.update_layout(height=580,margin=dict(l=0,r=0,t=0,b=0),
+        scene=dict(xaxis_title='East (m)',yaxis_title='North (m)',
+                   zaxis_title='Altitude (m)',aspectmode='data',
+                   bgcolor='#091811'),paper_bgcolor='#091811',font=dict(color='#d8ffe9'))
+    return fig
+
+
+def bundle_zip(result):
+    memory=io.BytesIO()
+    with zipfile.ZipFile(memory,'w',zipfile.ZIP_DEFLATED) as z:
+        z.writestr('flight_telemetry.csv',result['telemetry'].to_csv(index=False))
+        z.writestr('scenario.json',json.dumps(result['scenario'],indent=2,allow_nan=False))
+        if result['swarm']:
+            z.writestr('swarm_history.csv',result['swarm']['history'].to_csv(index=False))
+            z.writestr('swarm_final.csv',result['swarm']['final'].to_csv(index=False))
+        z.writestr('README.txt',
+            f'UAV Battery Efficiency Estimator {VERSION}\n'
+            'Research simulation only, not for actual aircraft control.\n'
+            'Autopilot uses simulated truth state; EKF used for separate navigation analysis.\n'
+            'GPT-based control and PX4/ArduPilot connections are not implemented.\n')
+    return memory.getvalue()
+
+
+def theme_css():
+    st.markdown('''<style>
+    .stApp { background:linear-gradient(125deg,#06100b,#0a1914 65%,#07100c); color:#d8ffe9; }
+    h1,h2,h3 { color:#caffdf!important; letter-spacing:0.015em; }
+    [data-testid="stMetric"] { background:#0c2319; border:1px solid #21543b;
+        border-radius:12px; padding:10px; }
+    [data-testid="stMetricLabel"] { color:#8bceb0; }
+    [data-testid="stSidebar"] { background:#0a1711; }
+    div.stButton > button[kind="primary"] { background:#087d52; color:white; border:1px solid #20f59e; }
+    </style>''',unsafe_allow_html=True)
+
+
+def sidebar_inputs():
+    with st.sidebar:
+        st.header('01 | Aircraft & Energy')
+        names=list(UAV_PROFILES)
+        name=st.selectbox('Aircraft profile',names,index=names.index('RQ-20 Puma'))
+        profile=UAV_PROFILES[name]
+        payload=st.number_input('Payload (g)',min_value=0,
+            max_value=int(profile['max_payload_g']),value=0,step=10,key=f'payload_{name}')
+        battery_conf=dict(battery_wh=float(profile.get('battery_wh',100.)),
+            specific_energy=220.,series_cells=infer_series_cells(float(profile.get('battery_wh',100.))),
+            battery_soc=100.,battery_soh=100.,battery_temp=25.,
+            max_c_rate=8.,resistance_scale=1.,cell_imbalance_mv=0.,
+            degraded_cell=False,reserve_soc=10.,battery_twin=False,fuel_fill=100.)
+        if profile['power_system']=='Battery':
+            wh=st.number_input('Pack capacity (Wh)',min_value=1.,
+                value=float(profile['battery_wh']),step=5.,key=f'battery_{name}')
+            battery_conf['battery_wh']=wh
+            battery_conf['specific_energy']=st.slider('Specific energy (Wh/kg)',120.,400.,220.,5.,key=f'energy_{name}')
+            battery_conf['series_cells']=st.number_input('Series cells (S)',2,24,
+                infer_series_cells(wh),step=1,key=f'series_{name}')
+            with st.expander('Battery Digital Twin',expanded=True):
+                battery_conf['battery_twin']=st.checkbox('Enable non-ideal 1-RC model',True,key=f'btwin_{name}')
+                battery_conf['battery_soc']=st.slider('Initial SOC (%)',20.,100.,100.,1.,key=f'soc_{name}')
+                battery_conf['battery_soh']=st.slider('Initial SOH (%)',50.,100.,100.,1.,key=f'soh_{name}')
+                battery_conf['battery_temp']=st.slider('Initial pack temperature (°C)',-20.,60.,25.,1.,key=f'btemp_{name}')
+                battery_conf['max_c_rate']=st.slider('Max continuous C-rate',1.,20.,8. if profile['type']=='rotor' else 6.,.5,key=f'crate_{name}')
+                battery_conf['resistance_scale']=st.slider('Resistance multiplier',.5,3.,1.,.1,key=f'rs_{name}')
+                battery_conf['cell_imbalance_mv']=st.slider('Cell imbalance (mV)',0.,250.,0.,5.,key=f'imb_{name}')
+                battery_conf['degraded_cell']=st.checkbox('Inject degraded cell',False,key=f'cellfault_{name}')
+                battery_conf['reserve_soc']=st.slider('Reserve SOC (%)',5.,30.,10.,1.,key=f'reserve_{name}')
         else:
-            result = simulate_ice_aircraft(profile, payload_weight_g, flight_speed_kmh, wind_speed_kmh, temperature_c, altitude_m, elevation_gain_m, flight_mode, gustiness, terrain_penalty, stealth_drag_penalty, fuel_tank_l)
+            battery_conf['fuel_fill']=st.slider('Initial fuel load (%)',10.,100.,100.,5.,key=f'fuel_{name}')
+            st.caption(f"Fuel {profile['fuel_tank_l']:.0f} L; BSFC {profile['bsfc_gpkwh']:.0f} g/kWh")
+        st.caption(f"{profile['power_system']} | {profile['type']} | reference mass {profile['base_weight_kg']:,.2f} kg")
+        st.caption(f"Autonomy concept: {profile['ai_capabilities']}")
 
-        rho = result['rho']
-        rho_ratio = result['rho_ratio']
-        total_weight_kg = result['total_mass_kg']
-        weight_N = result['weight_N']
-        flight_time_minutes = result['dispatch_endurance_min']
-        best_km = result['best_heading_range_km']
-        worst_km = result['upwind_range_km']
-        delta_T = result['thermal_load_deltaT_estimate_C']
-        wind_penalty_frac = result['wind_penalty_frac']
-        wind_penalty_pct = wind_penalty_frac * 100.0
-        V_ms = max(1.0, flight_speed_kmh / 3.6)
-        W_ms = max(0.0, wind_speed_kmh / 3.6)
-        effective_speed_kmh = result.get('V_effective_ms', V_ms) * 3.6
-        total_distance_km = (effective_speed_kmh * flight_time_minutes) / 60.0
+        st.header('02 | Mission Guidance')
+        speed=st.number_input('Commanded airspeed (km/h)',min_value=7.2,
+            value=float(DEFAULT_SPEED_KMH[name]),step=1.,key=f'speed_{name}')
+        alt=st.number_input('Initial altitude (m)',min_value=5.,value=100.,step=10.)
+        duration=st.slider('Simulation duration (min)',1,20,5)
+        dt=st.select_slider('Control / telemetry Δt (s)',[.02,.05,.1],value=.05)
+        capture=st.slider('Waypoint capture radius (m)',10,120,35)
+        waypoints=st.text_area('Waypoint list: north,east,altitude (m)',
+            '400,0,120; 700,300,140; 400,650,110; 0,350,100; 0,0,100',height=105)
 
-        st.markdown("<div class='section-card'><div class='section-title'>Atmospheric Conditions</div><div class='section-note'>Ambient density and standard-atmosphere context for the selected mission.</div></div>", unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric('Air Density ρ', f'{rho:.3f} kg/m³')
-        with c2:
-            st.metric('Density Ratio ρ/ρ₀', f'{rho_ratio:.3f}')
+        st.header('03 | Environment & Disturbances')
+        temp=st.number_input('Sea-level temperature (°C)',value=25.,step=1.)
+        wind=st.number_input('Wind speed (km/h)',min_value=0.,value=8.,step=1.)
+        wind_dir=st.slider('Wind FROM (degrees)',0,359,270)
+        turbulence=st.selectbox('Turbulence (correlated gust proxy)',
+                                ['None','Light','Moderate','Severe'],index=1)
+        turb_seed=st.number_input('Turbulence seed',0,100000,1234)
+        clouds=st.slider('Cloud cover (%)',0,100,50)
+        humidity=st.slider('Humidity / haze factor',0.,1.,.5,.05)
+        background=st.slider('Background complexity',0.,1.,.5,.05)
+        stealth=st.checkbox('Apply signature-management drag proxy',True)
+        stealth_drag=st.slider('Added drag multiplier',1.,1.5,1.10,.05,disabled=not stealth)
+        stealth_drag=stealth_drag if stealth else 1.
+        effective_size=st.slider('Visual / IR size (m)',.2,20.,
+                                 min(20.,float(DEFAULT_SIZE_M[name])),.1,key=f'size_{name}')
 
-        st.markdown("<div class='section-card'><div class='section-title'>Applied Environment Factors</div><div class='section-note'>How air density, gust loading, terrain complexity, and drag penalties are influencing the estimate.</div></div>", unsafe_allow_html=True)
-        if profile['type'] == 'rotor':
-            st.markdown(f"**Rotorcraft Air Density Scaling:** `1/sqrt(ρ/ρ₀)` applied to the rotor power estimate.  \nCurrent density ratio ρ/ρ₀ = `{rho_ratio:.3f}`")
+        st.header('04 | Envelope / Safety')
+        envelope=st.checkbox('Enable envelope protection',True)
+        max_bank=st.slider('Bank angle limit (deg)',20.,55.,35.,1.)
+        overspeed_default=float(math.ceil(max(32.,1.4*DEFAULT_SPEED_KMH[name]/3.6)))
+        overspeed=st.slider('Overspeed limit (m/s)',15.,200.,overspeed_default,1.,key=f'overspeed_{name}')
+
+        st.header('05 | Sensors / Injected Faults')
+        sensor_seed=st.number_input('Sensor seed',0,100000,42)
+        gps_dropout=st.checkbox('GNSS dropout',True)
+        gps_start=st.number_input('Dropout start (s)',0.,value=90.,step=10.)
+        gps_duration=st.number_input('Dropout length (s)',0.,value=45.,step=5.)
+        imu_bias=st.checkbox('IMU bias',True)
+        baro_bias=st.checkbox('Barometer bias',True)
+        motor_fault=st.checkbox('Motor degradation',False)
+        motor_start=st.number_input('Motor fault start (s)',0.,value=150.,step=10.,disabled=not motor_fault)
+        motor_health=st.slider('Degraded motor health',.35,1.,.75,.05,disabled=not motor_fault)
+
+        st.header('06 | Swarm (Low-order)')
+        swarm_enabled=st.checkbox('Enable secondary swarm model',True)
+        swarm_size=st.slider('Number of vehicles',1,12,4,disabled=not swarm_enabled)
+        swarm_rounds=st.slider('Coordination rounds',1,8,4,disabled=not swarm_enabled)
+        swarm_coord=st.checkbox('Role-aware coordination',True,disabled=not swarm_enabled)
+        spacing=st.slider('Formation spacing (m)',25.,500.,125.,25.,disabled=not swarm_enabled)
+        zone=st.slider('Threat-zone radius (km)',0.,5.,.75,.05,disabled=not swarm_enabled)
+        threat_n=st.number_input('Threat-zone North (m)',value=400.,step=50.,disabled=not swarm_enabled)
+        threat_e=st.number_input('Threat-zone East (m)',value=300.,step=50.,disabled=not swarm_enabled)
+        swarm_reserve=st.slider('Swarm RTB reserve (%)',5.,40.,15.,1.,disabled=not swarm_enabled)
+        swarm_seed=st.number_input('Swarm seed',0,100000,2026,disabled=not swarm_enabled)
+
+        run=st.button('Run v0.8.4 Simulation',type='primary',use_container_width=True)
+        reset=st.button('Clear Previous Run',use_container_width=True)
+    config=dict(aircraft=name,payload_g=payload,speed_kmh=speed,altitude_m=alt,
+        duration_min=duration,dt=dt,capture_radius=capture,waypoints=waypoints,
+        temp_c=temp,wind_kmh=wind,wind_from=wind_dir,turbulence=turbulence,
+        turb_seed=turb_seed,cloud_cover=clouds,humidity=humidity,
+        background=background,stealth_drag=stealth_drag,effective_size=effective_size,
+        envelope=envelope,max_bank=max_bank,overspeed=overspeed,sensor_seed=sensor_seed,
+        gps_dropout=gps_dropout,gps_start=gps_start,gps_duration=gps_duration,
+        imu_bias=imu_bias,baro_bias=baro_bias,motor_fault=motor_fault,
+        motor_start=motor_start,motor_health=motor_health,swarm_enabled=swarm_enabled,
+        swarm_size=swarm_size,swarm_rounds=swarm_rounds,swarm_coordination=swarm_coord,
+        swarm_spacing_m=spacing,threat_radius_km=zone,threat_n=threat_n,threat_e=threat_e,
+        swarm_reserve=swarm_reserve,swarm_seed=swarm_seed,**battery_conf)
+    return config,run,reset
+
+
+def metrics_grid(entries,per_row=4):
+    for offset in range(0,len(entries),per_row):
+        columns=st.columns(min(per_row,len(entries)-offset))
+        for col,(title,value) in zip(columns,entries[offset:offset+per_row]):
+            col.metric(title,value)
+
+
+def display_report(result):
+    df=result['telemetry'];final=result['final'];metrics=result['metrics']
+    profile=result['profile'];trim=result['trim'];obs=result['observability']
+    scenario=result['scenario'];config=scenario['config']
+    st.subheader('Simulation Executive Overview')
+    messages=dict(WAYPOINTS_COMPLETE=('success','Waypoint mission completed.'),
+        DURATION_LIMIT=('warning','Configured simulation duration reached.'),
+        ENERGY_EXHAUSTED=('error','Simulation terminated due to energy exhaustion.'),
+        GROUND_CONTACT=('error','Simulation terminated at ground contact.'),
+        DYNAMICS_NONFINITE=('error','Simulation terminated: nonfinite dynamics values.'))
+    severity,message=messages.get(metrics['status'],('warning',metrics['status']))
+    getattr(st,severity)(message)
+    if not metrics['trim_converged']:
+        st.warning('Trim lift equilibrium not bracketed. Do not interpret this case as a feasible steady flight condition.')
+    if not metrics['trim_power_feasible']:
+        st.warning('Required trim shaft power exceeds available propulsion power. Results are a power-limited scenario.')
+    metrics_grid([
+        ('Time',f"{final.time_s/60:.2f} min"),
+        ('Energy remaining',f"{final.battery_soc*100:.1f}%"),
+        ('Airspeed',f"{final.airspeed_ms:.1f} m/s"),
+        ('Altitude',f"{final.altitude_m:.1f} m"),
+        ('RMS navigation error',f"{metrics['rms_nav_error_m']:.2f} m"),
+        ('Maximum |α|',f"{metrics['max_abs_alpha_deg']:.1f}°"),
+        ('Maximum gust',f"{metrics['max_gust_ms']:.1f} m/s"),
+        ('Envelope intervention',f"{metrics['envelope_intervention_pct']:.1f}%"),
+    ])
+    st.subheader('Physics Integrity and Trim')
+    metrics_grid([
+        ('Initial mass',f"{metrics['initial_mass_kg']:.2f} kg"),
+        ('Final mass',f"{metrics['final_mass_kg']:.2f} kg"),
+        ('Trim α',f'{trim.alpha_deg:.2f}°'),
+        ('Trim elevator',f'{trim.elevator:+.3f}'),
+        ('Trim throttle',f'{trim.throttle:.3f}'),
+        ('Final thrust',f'{final.thrust_n:.1f} N'),
+        ('Max |‖q‖−1|',f"{metrics['max_quaternion_norm_error']:.2e}"),
+        ('Power-balance residual',f"{metrics['max_power_residual_w']:.2e} W"),
+    ])
+    st.caption('Power accounting residual tests delivered electrical terminal power allocation. ' 
+        'Airframe aerodynamic parameters, inertia, trim, propulsion, and faults remain generalized assumptions.')
+    if profile['power_system']=='Battery':
+        st.subheader('Battery Digital Twin')
+        b=result['telemetry'].iloc[-1]
+        metrics_grid([
+            ('Nominal capacity',f'{b.battery_nominal_wh:.1f} Wh'),
+            ('Temperature-adjusted',f'{b.battery_temp_adjusted_wh:.1f} Wh'),
+            ('SOH-adjusted',f'{b.battery_soh_adjusted_wh:.1f} Wh'),
+            ('Usable capacity',f'{b.battery_usable_capacity_wh:.1f} Wh'),
+            ('Remaining usable',f'{b.battery_remaining_wh:.1f} Wh'),
+            ('SOC',f'{b.battery_soc*100:.1f}%'),
+            ('SOH',f'{b.battery_soh*100:.2f}%'),
+            ('Terminal voltage',f'{b.battery_terminal_v:.2f} V'),
+            ('Current',f'{b.battery_current_a:.1f} A'),
+            ('C-rate',f'{b.battery_c_rate:.2f} C'),
+            ('Pack temperature',f'{b.battery_temperature_c:.1f} °C'),
+            ('Battery status',str(b.battery_status)),
+        ])
+        replay_index=render_battery_pack_view(df,config)
+        tab_energy,tab_voltage,tab_thermal=st.tabs(['Capacity and Power','Voltage and Current','Temperature and Cell Margins'])
+        with tab_energy:
+            plot_series(df,{'battery_remaining_wh':'Remaining usable energy'},'Capacity depletion','Wh')
+            plot_series(df,{'battery_demanded_w':'Demanded','battery_delivered_w':'Delivered',
+                            'battery_limit_w':'Available limit'},'Electrical power','W')
+            plot_series(df,{'battery_soc':'SOC','battery_soh':'SOH'},'Charge and Health','Fraction')
+        with tab_voltage:
+            plot_series(df,{'battery_ocv_v':'OCV','battery_terminal_v':'Terminal voltage'},'Voltage sag','V')
+            plot_series(df,{'battery_current_a':'Current'},'Pack current','A')
+            plot_series(df,{'battery_c_rate':'Discharge rate'},'C-rate','C')
+        with tab_thermal:
+            plot_series(df,{'battery_temperature_c':'Pack temperature',
+                            'ambient_temperature_c':'Ambient'},'Battery thermal state','°C')
+            plot_series(df,{'battery_min_cell_v':'Lowest cell','battery_max_cell_v':'Highest cell'},
+                        'Simplified cell-voltage envelope','V')
+        st.caption('Thermal capacity derating is a reporting proxy; the SOC integrator is charge-based. ' 
+            'Remaining usable Wh is not a strict electrical energy-integral balance or a measured BMS estimate.')
+    else:
+        st.subheader('Fuel / ICE Propulsion')
+        metrics_grid([
+            ('Fuel remaining',f'{final.fuel_mass_kg:.1f} kg'),
+            ('Fuel fraction',f'{final.fuel_fraction*100:.1f}%'),
+            ('Shaft power',f'{final.shaft_power_w/1000:.1f} kW'),
+            ('Aircraft mass',f'{final.mass_kg:.1f} kg')])
+        plot_series(df,{'fuel_mass_kg':'Fuel remaining'},'Fuel depletion','kg')
+        plot_series(df,{'engine_shaft_w':'Engine shaft including auxiliaries',
+                        'shaft_power_w':'Propeller shaft'},'ICE shaft-power allocation','W')
+    st.subheader('Propulsion and Airframe State')
+    plot_series(df,{'shaft_power_w':'Propeller / rotor shaft',
+                    'power_draw_w':'Battery terminal / ICE engine shaft'},
+                'Power conversion','W')
+    plot_series(df,{'thrust_n':'Propulsive thrust'},'Thrust time history','N')
+
+    st.subheader('Visual / Infrared Observability Heuristics')
+    st.caption('Comparative, unvalidated scores. Not detection probabilities and not based on sensor range, ' 
+        'aperture, NETD, radiance propagation, or actual adversary sensor specifications.')
+    metrics_grid([
+        ('Visual score',f"{obs['visual_score']:.0f}/100"),
+        ('IR score',f"{obs['thermal_score']:.0f}/100"),
+        ('Blended score',f"{obs['overall_score']:.0f}/100"),
+        ('Confidence heuristic',f"{obs['confidence']:.0f}/100"),
+    ])
+    if result['swarm']:
+        st.subheader('Swarm Mission-Layer Study')
+        swarm=result['swarm'];sm=swarm['summary']
+        metrics_grid([('Vehicles',str(sm['swarm_size'])),('Coordination rounds',str(sm['rounds'])),
+            ('Heuristic swarm score',f"{sm['swarm_score']:.1f}/100"),
+            ('Energy remaining',f"{sm['mean_energy_pct']:.1f}%"),
+            ('Resilience heuristic',f"{sm['resilience_score']:.1f}/100"),
+            ('RTB ordered',str(sm['rtb_count']))])
+        st.caption('Only the lead vehicle has a full six-DOF and energy model. Others use heuristic propagation.')
+        st.dataframe(swarm['final'].round(2),use_container_width=True,hide_index=True)
+
+    st.subheader('Quaternion Aircraft Digital Twin | Plotly 3D')
+    # Saved replay index drives the battery visualization, aircraft and HUD.
+    if profile['power_system']=='Battery':
+        index=replay_index
+        st.caption('The battery-pack frame slider also controls the aircraft attitude, control surfaces and HUD.')
+    else:
+        index=st.slider('Flight / aircraft replay frame',0,len(df)-1,len(df)-1,
+                        key='replay_frame')
+    frame=df.iloc[index]
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric('Roll',f'{frame.roll_deg:+.1f}°')
+    c2.metric('Pitch',f'{frame.pitch_deg:+.1f}°')
+    c3.metric('Yaw / heading',f'{frame.yaw_deg:.1f}°')
+    c4.metric('Altitude',f'{frame.altitude_m:.1f} m')
+    st.caption(f'Simulation t = {frame.time_s:.2f} s | Waypoint {int(frame.active_waypoint)+1} | '
+               f'Actual throttle {frame.throttle_actual*100:.0f}% | '
+               f'Quaternion [{frame.qw:+.3f}, {frame.qx:+.3f}, '
+               f'{frame.qy:+.3f}, {frame.qz:+.3f}]')
+    renderer=st.radio('Aircraft display',
+        ['Plotly 3D aircraft mesh (WebGL)','Mobile-safe projected 3D trajectory'],
+        horizontal=False,key='aircraft_renderer')
+    if renderer.startswith('Plotly'):
+        camera_mode=st.selectbox('3D camera',
+            ['Chase follow','Aircraft inspection','Mission overview'],
+            key='aircraft_camera_v084')
+        scene_content=st.selectbox('Scene visibility',
+            ['Aircraft only','Aircraft + trail','Full mission'],index=1,
+            key='aircraft_scene_content')
+        if camera_mode=='Mission overview':
+            aircraft_pct=st.slider('Aircraft silhouette as % of mission extent',
+                6,26,17,1,key='aircraft_size_pct')
+            camera_zoom=1.
+            st.caption(f'Overview renders the aircraft larger for readability. '
+                       'Physical mass, dimensions, dynamics and recorded route are unchanged.')
         else:
-            st.markdown(f"**Fixed-Wing Air Density Effect:** applied through dynamic pressure and required lift.  \nCurrent density ratio ρ/ρ₀ = `{rho_ratio:.3f}`")
-
-        detect = compute_detectability_scores_v3(delta_T, altitude_m, flight_speed_kmh, cloud_cover, gustiness, stealth_drag_penalty, profile['type'], profile['power_system'], effective_size_m, background_complexity, humidity_factor)
-        visual_score = detect['visual_score']
-        thermal_score = detect['thermal_score']
-        overall_score = detect['overall_score']
-        detect_confidence = detect['confidence']
-        overall_kind, badges_html = render_detectability_alert(visual_score, thermal_score)
-
-        if show_detectability:
-            st.subheader('AI/IR Detectability Alert')
-            st.caption('AI visual and IR thermal detectability scores are heuristic mission-awareness estimates.')
-            if overall_score < 33:
-                st.success('Overall detectability: LOW')
-            elif overall_score < 67:
-                st.warning('Overall detectability: MODERATE')
-            else:
-                st.error('Overall detectability: HIGH')
-            st.markdown(badges_html, unsafe_allow_html=True)
-            d1, d2, d3, d4 = st.columns(4)
-            with d1:
-                st.metric('Visual Detectability', f'{visual_score:.0f}/100')
-            with d2:
-                st.metric('IR Thermal Detectability', f'{thermal_score:.0f}/100')
-            with d3:
-                st.metric('Overall Detectability', f'{overall_score:.0f}/100')
-            with d4:
-                st.metric('Heuristic Confidence', f'{detect_confidence:.0f}/100')
-
-            autopilot_profile = run_detectability_autopilot(
-                enabled=detectability_autopilot,
-                overall_score=overall_score,
-                visual_score=visual_score,
-                thermal_score=thermal_score,
-                confidence=detect_confidence,
-                altitude_m=altitude_m,
-                speed_kmh=flight_speed_kmh,
-                power_system=profile['power_system'],
-                hybrid_assist_enabled=(profile['power_system'] == 'ICE'),
-                stealth_drag_penalty=stealth_drag_penalty,
-            )
-            render_detectability_autopilot_panel(autopilot_profile)
-
-            route_optimization_profile = optimize_route_profile(
-                enabled=route_optimization,
-                waypoints=waypoints,
-                speed_kmh=float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)),
-                altitude_m=int(autopilot_profile.get('target_altitude_m', altitude_m)),
-                overall_detectability=overall_score,
-                visual_detectability=visual_score,
-                thermal_detectability=thermal_score,
-                terrain_penalty=terrain_penalty,
-                stealth_drag_penalty=stealth_drag_penalty,
-                threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-            )
-            render_route_optimization_panel(route_optimization_profile)
-
-            terrain_masking_profile = estimate_terrain_masking(
-                enabled=(terrain_masking_v2 if 'terrain_masking_v2' in locals() else terrain_masking),
-                waypoints=waypoints,
-                altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
-                terrain_penalty=terrain_penalty,
-                cloud_cover=cloud_cover,
-                overall_detectability=overall_score,
-                visual_detectability=visual_score,
-                thermal_detectability=thermal_score,
-                threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-                terrain_ridge_amplitude_m=terrain_ridge_amplitude_m if 'terrain_ridge_amplitude_m' in locals() else 80.0,
-            )
-            render_terrain_masking_panel(terrain_masking_profile)
-
-            sensor_model_profile = compute_sensor_model(
-                enabled=sensor_modeling,
-                sensor_band=sensor_band,
-                sensor_quality=sensor_quality,
-                humidity_factor=humidity_factor,
-                cloud_cover=cloud_cover,
-                altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
-                visual_score=visual_score,
-                thermal_score=thermal_score,
-                overall_score=overall_score,
-                delta_t=delta_t,
-            )
-            render_sensor_modeling_panel(sensor_model_profile)
-
-
-            st.subheader('Detectability AI Suggestions')
-            det_suggestions = detectability_ai_suggestions(
-                visual_score=visual_score,
-                thermal_score=thermal_score,
-                overall_score=overall_score,
-                confidence=detect_confidence,
-                altitude_m=altitude_m,
-                speed_kmh=flight_speed_kmh,
-                cloud_cover=cloud_cover,
-                gustiness=gustiness,
-                stealth_factor=stealth_drag_penalty,
-                power_system=profile['power_system'],
-                delta_T=delta_T,
-            )
-            for level, msg in det_suggestions:
-                if level == 'error':
-                    st.error(msg)
-                elif level == 'warning':
-                    st.warning(msg)
-                elif level == 'success':
-                    st.success(msg)
-                else:
-                    st.info(msg)
-
-        caution_label = 'Nominal Conditions'
-        caution_class = 'status-ok'
-        if overall_score >= 33 or wind_penalty_pct >= 10 or gustiness >= 5:
-            caution_label = 'Elevated Risk'
-            caution_class = 'status-warn'
-        if overall_score >= 67 or (profile['type'] == 'fixed' and not result.get('stall_margin_ok', True)):
-            caution_label = 'High Risk'
-            caution_class = 'status-danger'
-
-        st.markdown(
-            render_status_strip(
-                platform_type=profile['type'],
-                power_system=profile['power_system'],
-                theme_name=theme_mode,
-                caution_label=caution_label,
-                caution_class=caution_class,
-            ),
-            unsafe_allow_html=True,
-        )
-
-        detectability_color = '#22c55e' if overall_score < 33 else '#f59e0b' if overall_score < 67 else '#ef4444'
-        st.markdown(
-            render_mission_hero(
-                endurance_min=flight_time_minutes,
-                total_distance_km=total_distance_km,
-                best_range_km=best_km,
-                detectability_label=('LOW' if overall_score < 33 else 'MODERATE' if overall_score < 67 else 'HIGH'),
-                detectability_color=detectability_color,
-                power_system=profile['power_system'],
-            ),
-            unsafe_allow_html=True,
-        )
-
-        # Main-flow advanced subsystem computations
-        autopilot_profile = run_detectability_autopilot(
-            enabled=detectability_autopilot if 'detectability_autopilot' in locals() else True,
-            overall_score=overall_score,
-            visual_score=visual_score,
-            thermal_score=thermal_score,
-            confidence=detect_confidence,
-            altitude_m=altitude_m,
-            speed_kmh=flight_speed_kmh,
-            power_system=profile['power_system'],
-            hybrid_assist_enabled=(profile['power_system'] == 'ICE'),
-            stealth_drag_penalty=stealth_drag_penalty,
-        )
-
-        route_optimization_profile = optimize_route_profile(
-            enabled=route_optimization if 'route_optimization' in locals() else True,
-            waypoints=waypoints,
-            speed_kmh=float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)),
-            altitude_m=int(autopilot_profile.get('target_altitude_m', altitude_m)),
-            overall_detectability=overall_score,
-            visual_detectability=visual_score,
-            thermal_detectability=thermal_score,
-            terrain_penalty=terrain_penalty,
-            stealth_drag_penalty=stealth_drag_penalty,
-            threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-            radar_threat_penalty=0.0,
-        )
-
-        terrain_masking_profile = estimate_terrain_masking(
-            enabled=(terrain_masking_v2 if 'terrain_masking_v2' in locals() else True),
-            waypoints=waypoints,
-            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
-            terrain_penalty=terrain_penalty,
-            cloud_cover=cloud_cover,
-            overall_detectability=overall_score,
-            visual_detectability=visual_score,
-            thermal_detectability=thermal_score,
-            threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-            terrain_ridge_amplitude_m=terrain_ridge_amplitude_m if 'terrain_ridge_amplitude_m' in locals() else 80.0,
-        )
-
-        sensor_model_profile = compute_sensor_model(
-            enabled=sensor_modeling if 'sensor_modeling' in locals() else True,
-            sensor_band=sensor_band if 'sensor_band' in locals() else 'EO',
-            sensor_quality=sensor_quality if 'sensor_quality' in locals() else 0.75,
-            humidity_factor=humidity_factor,
-            cloud_cover=cloud_cover,
-            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
-            effective_size_m=effective_size_m,
-            background_complexity=background_complexity,
-            visual_score=float(terrain_masking_profile.get('adjusted_visual_score', visual_score)),
-            thermal_score=thermal_score,
-        )
-
-        env_profile = compute_flight_envelope_enforcement(
-            enabled=flight_envelope_enforcement if 'flight_envelope_enforcement' in locals() else True,
-            profile=profile,
-            total_mass_kg=total_weight_kg,
-            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)),
-            flight_speed_kmh=float(route_optimization_profile.get('recommended_speed_kmh', flight_speed_kmh)),
-            elevation_gain_m=elevation_gain_m,
-            rho=rho,
-        )
-
-        deg_profile = compute_degradation_model(
-            enabled=degradation_modeling if 'degradation_modeling' in locals() else True,
-            profile=profile,
-            battery_cycle_count=battery_cycle_count if 'battery_cycle_count' in locals() else 120,
-            temperature_c=temperature_c,
-            battery_capacity_wh=battery_capacity_wh if 'battery_capacity_wh' in locals() else 0.0,
-            battery_nominal_voltage_v=battery_nominal_voltage_v if 'battery_nominal_voltage_v' in locals() else 22.2,
-            battery_internal_resistance_mohm=battery_internal_resistance_mohm if 'battery_internal_resistance_mohm' in locals() else 28.0,
-            total_draw_W=float(result.get('total_draw_W', 0.0)),
-            total_power_W=float(result.get('total_power_W', 0.0)),
-            engine_wear_factor=engine_wear_factor if 'engine_wear_factor' in locals() else 1.0,
-        )
-
-        if show_advanced and 'render_flight_envelope_panel' in globals():
-            render_flight_envelope_panel(env_profile, profile['type'])
-        if 'render_degradation_panel' in globals():
-            render_degradation_panel(deg_profile, profile['power_system'])
-        if 'render_terrain_masking_panel' in globals():
-            render_terrain_masking_panel(terrain_masking_profile)
-        if 'render_sensor_model_panel' in globals():
-            render_sensor_model_panel(sensor_model_profile)
-        if profile['type'] == 'fixed' and not result.get('stall_margin_ok', True):
-            st.error('Selected speed / weight / altitude combination exceeds configured CL_max. Result is outside valid fixed-wing trim assumptions.')
-
-        if profile['power_system'] == 'Battery':
-            st.markdown("<div class='section-card'><div class='section-title'>Thermal Signature Risk & Battery</div><div class='section-note'>Thermal burden and electrical power demand for the current mission estimate.</div></div>", unsafe_allow_html=True)
-            risk = 'Low' if delta_T < 10 else ('Moderate' if delta_T < 20 else 'High')
-            b1, b2, b3 = st.columns(3)
-            with b1:
-                st.metric('Thermal Signature Risk', f"{risk} (ΔT = {delta_T:.1f}°C)")
-            with b2:
-                st.metric('Total Draw (incl. hotel/penalties)', f"{result['total_draw_W']:.0f} W")
-            with b3:
-                st.metric('Battery Capacity (derated)', f"{result['battery_derated_Wh']:.1f} Wh")
-            if show_advanced:
-                if profile['type'] == 'fixed':
-                    d1, d2, d3, d4 = st.columns(4)
-                    with d1:
-                        st.metric('CL', f"{result['CL']:.3f}")
-                    with d2:
-                        st.metric('CD', f"{result['CD']:.4f}")
-                    with d3:
-                        st.metric('Drag', f"{result['drag_N']:.2f} N")
-                    with d4:
-                        st.metric('Prop η', f"{result['eta_prop_eff']:.2f}")
-                else:
-                    d1, d2, d3, d4 = st.columns(4)
-                    with d1:
-                        st.metric('Induced Power', f"{result['induced_W']:.0f} W")
-                    with d2:
-                        st.metric('Profile Power', f"{result['profile_W']:.0f} W")
-                    with d3:
-                        st.metric('Parasite Power', f"{result['parasite_W']:.0f} W")
-                    with d4:
-                        st.metric('Hover Ref Power', f"{result['hover_W']:.0f} W")
+            camera_zoom=st.slider('Camera distance (smaller = closer)',
+                .65,2.50,1.0,.05,key='aircraft_camera_zoom')
+            aircraft_pct=17.
+            st.caption('Airframe shown at physical 1:1 scale. The camera follows '
+                       'position and heading, with a stable world-up horizon.')
+        with st.expander('Plotly view options',expanded=False):
+            show_ekf=st.checkbox('Overlay EKF estimated path',True,
+                                 key='aircraft_show_ekf')
+            show_axes=st.checkbox('Body reference axes',False,
+                                  key='aircraft_show_axes')
+            show_thrust=st.checkbox('Thrust vector (scaled)',True,
+                                    key='aircraft_show_thrust')
+            compact=st.checkbox('Compact chart for iPhone',True,
+                                key='aircraft_compact')
+            animate=st.checkbox('Enable Plotly Play / Pause',False,
+                                 key='aircraft_animation')
+        if scene_content=='Full mission':
+            st.caption('Route key: green = simulated position, blue dashed = '
+                       'EKF estimate, pink WP markers = mission waypoints.')
+        elif scene_content=='Aircraft + trail':
+            st.caption('Green line = simulated route to current frame; '
+                       'blue dashed = EKF estimate (if enabled).')
         else:
-            st.markdown("<div class='section-card'><div class='section-title'>Fuel, Power & Thermal</div><div class='section-note'>Fuel consumption, power demand, and thermal burden for the current mission estimate.</div></div>", unsafe_allow_html=True)
-            f1, f2, f3, f4 = st.columns(4)
-            with f1:
-                st.metric('Total Shaft+Hotel Power', f"{result['total_power_W'] / 1000.0:.2f} kW")
-            with f2:
-                st.metric('Fuel Burn', f"{result['fuel_burn_L_per_hr']:.2f} L/hr")
-            with f3:
-                st.metric('Usable Fuel After Reserve', f"{result['usable_fuel_L']:.2f} L")
-            with f4:
-                st.metric('Thermal Load ΔT Estimate', f'{delta_T:.1f} °C')
-            if show_advanced:
-                d1, d2, d3, d4 = st.columns(4)
-                with d1:
-                    st.metric('CL', f"{result['CL']:.3f}")
-                with d2:
-                    st.metric('CD', f"{result['CD']:.4f}")
-                with d3:
-                    st.metric('Drag', f"{result['drag_N']:.2f} N")
-                with d4:
-                    st.metric('Prop η', f"{result['eta_prop_eff']:.2f}")
-
-        lo = flight_time_minutes * 0.90
-        hi = flight_time_minutes * 1.10
-        st.markdown("<div class='section-card'><div class='section-title'>Selected UAV — Mission Performance</div><div class='section-note'>Primary mission metrics from the current run.</div></div>", unsafe_allow_html=True)
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric('Dispatchable Endurance', f'{flight_time_minutes:.1f} minutes')
-        with m2:
-            st.metric('Total Distance', f'{total_distance_km:.1f} km')
-        with m3:
-            st.metric('Best Heading Range', f'{best_km:.1f} km')
-        with m4:
-            st.metric('Upwind Range', f'{worst_km:.1f} km')
-        st.caption(f'Uncertainty band: {lo:.1f}–{hi:.1f} min (±10%)')
-        mission_profile = {
-            'phases': [],
-            'total_time_min': 0.0,
-            'total_energy_Wh': 0.0,
-            'total_fuel_L': 0.0,
-            'remaining_energy_Wh': None,
-            'remaining_fuel_L': None,
-        }
-
+            st.caption('Isolated aircraft mesh. No route or waypoints shown.')
+        st.caption('Drag to orbit; pinch to zoom. Control surfaces follow simulated '
+                   'actuator telemetry. Propeller spin is illustrative.')
+        if animate:
+            st.info('Play/Pause runs inside the Plotly chart. It does not update '
+                    'the Streamlit battery and HUD frame slider. Use the shared '
+                    'frame slider above for synchronized inspection.')
         try:
-            mission_profile = simulate_mission_phases(
-                profile=profile,
-                payload_weight_g=payload_weight_g,
-                cruise_speed_kmh=flight_speed_kmh,
-                wind_speed_kmh=wind_speed_kmh,
-                temperature_c=temperature_c,
-                cruise_altitude_m=altitude_m,
-                elevation_gain_m=elevation_gain_m,
-                gustiness=gustiness,
-                terrain_penalty=terrain_penalty,
-                stealth_drag_penalty=stealth_drag_penalty,
-                battery_capacity_wh=(result.get('battery_derated_Wh') if profile['power_system'] == 'Battery' else None),
-                fuel_tank_l=(result.get('usable_fuel_L') if profile['power_system'] == 'ICE' else None),
-                loiter_minutes=float(loiter_minutes),
-                include_rtb=include_rtb,
-            )
-            render_mission_phase_panel(mission_profile, profile['power_system'])
-        except Exception as phase_err:
-            st.warning('Mission Phase Simulation could not be generated for this run.')
-            if debug_mode:
-                st.exception(phase_err)
+            replay=aircraft_plotly_twin(df,result['waypoints'],index,profile,
+                scenario['aircraft'],camera_mode,show_ekf,show_axes,
+                show_thrust,animate,max_animation_frames=28,
+                scene_content=scene_content,camera_zoom=camera_zoom,
+                overview_aircraft_pct=aircraft_pct,compact=compact)
+            st.plotly_chart(replay,use_container_width=True,
+                config={'displaylogo':False,'responsive':True,'scrollZoom':True})
+            actual_scale=float(replay.layout.meta['airframe_scale_factor'])
+            st.caption(f'Aircraft mesh: ×{actual_scale:.1f} visualization scale | '
+                       f'Mode: {camera_mode} | t={frame.time_s:.1f} s | '
+                       f'Roll {frame.roll_deg:+.1f}° | '
+                       f'Pitch {frame.pitch_deg:+.1f}° | Yaw {frame.yaw_deg:.1f}°')
+        except Exception as exc:
+            st.warning(f'Plotly aircraft rendering failed: {exc}. '
+                       'Showing the mobile-safe trajectory instead.')
+            st.plotly_chart(projected_replay(df,result['waypoints'],index),
+                            use_container_width=True,config={'displaylogo':False})
+    else:
+        st.plotly_chart(projected_replay(df,result['waypoints'],index),
+                        use_container_width=True,config={'displaylogo':False})
+        st.caption('Mobile-safe projected 3D displays the trajectory without a 3D aircraft mesh.')
+    with st.expander('Cockpit HUD for selected frame',expanded=False):
+        st.plotly_chart(hud_figure(frame),use_container_width=True,
+                        config={'displaylogo':False})
+    st.subheader('Flight and Navigation Telemetry')
+    tab_att,tab_nav,tab_env=st.tabs(['Attitude / envelope','INS and GNSS / EKF','Environment'])
+    with tab_att:
+        plot_series(df,{'roll_deg':'Roll','pitch_deg':'Pitch','yaw_deg':'Yaw'},'Euler attitude','degrees')
+        plot_series(df,{'alpha_deg':'Angle of attack','alpha_margin_deg':'Stall margin'},
+                    'Angle-of-attack protection','degrees')
+        plot_series(df,{'throttle_cmd':'Throttle command','throttle_actual':'Actuator'},
+                    'Throttle tracking','fraction')
+    with tab_nav:
+        plot_series(df,{'north_m':'True North','est_north_m':'EKF North'},'Navigation solution','m')
+        plot_series(df,{'horizontal_error_m':'Horizontal error',
+                        'position_error_m':'3D position error'},'Navigation error','m')
+        plot_series(df,{'sigma_north_m':'1σ North covariance',
+                        'sigma_altitude_m':'1σ Altitude covariance'},'EKF marginal uncertainties','m')
+        st.caption('The control loop uses true simulated state. This EKF output is diagnostic and does ' 
+                   'not close the flight-control loop. Gyro attitude lacks a long-term absolute correction.')
+    with tab_env:
+        plot_series(df,{'rho_kgm3':'Atmospheric density'},'Altitude-varying density','kg/m³')
+        plot_series(df,{'gust_n_ms':'North','gust_e_ms':'East',
+                        'gust_d_ms':'Down'},'Gust components','m/s')
 
-        scenario_base_inputs = {
-            'payload_weight_g': payload_weight_g,
-            'flight_speed_kmh': flight_speed_kmh,
-            'wind_speed_kmh': wind_speed_kmh,
-            'temperature_c': temperature_c,
-            'altitude_m': altitude_m,
-            'elevation_gain_m': elevation_gain_m,
-            'flight_mode': flight_mode,
-            'gustiness': gustiness,
-            'terrain_penalty': terrain_penalty,
-            'terrain_ridge_amplitude_m': terrain_ridge_amplitude_m if 'terrain_ridge_amplitude_m' in locals() else 80.0,
-            'stealth_drag_penalty': stealth_drag_penalty,
-            'battery_capacity_wh': battery_capacity_wh if 'battery_capacity_wh' in locals() else 0.0,
-            'fuel_tank_l': fuel_tank_l if 'fuel_tank_l' in locals() and fuel_tank_l is not None else profile.get('fuel_tank_l', 0.0),
-            'cloud_cover': cloud_cover,
-            'humidity_factor': humidity_factor,
-            'background_complexity': background_complexity,
-            'effective_size_m': effective_size_m,
-            'waypoints': waypoints,
-            'loiter_minutes': float(loiter_minutes),
-            'include_rtb': include_rtb,
-            'threat_zone_km': threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-            'sensor_band': sensor_band,
-            'sensor_quality': sensor_quality,
-            'adversary_radar_density': adversary_radar_density,
-            'adversary_ir_density': adversary_ir_density,
-            'adversary_jammer_density': adversary_jammer_density,
-            'radar_frequency_ghz': radar_frequency_ghz,
-            'radar_tx_power_kw': radar_tx_power_kw,
-            'fusion_quality': fusion_quality if 'fusion_quality' in locals() else 1.0,
-            'drift_sensitivity': drift_sensitivity if 'drift_sensitivity' in locals() else 1.0,
-            'map_uncertainty_factor': map_uncertainty_factor if 'map_uncertainty_factor' in locals() else 0.25,
-            'gnss_update_gain': gnss_update_gain if 'gnss_update_gain' in locals() else 0.55,
-        }
-        scenario_comparison_results = render_scenario_comparison_panel(
-            enabled=scenario_comparison_engine,
-            profile=profile,
-            base_inputs=scenario_base_inputs,
-        )
+    with st.expander('Fixed-wing Aerodynamic Coefficient Table'):
+        if profile['type']=='fixed':
+            st.dataframe(aerodynamic_table(result['params']).round(5),
+                         use_container_width=True,hide_index=True)
+        else:st.info('Only fixed-wing profiles use these coefficient tables.')
 
-        detail = {'drone_model': drone_model, 'type': profile['type'], 'power_system': profile['power_system'], 'payload_g': payload_weight_g, 'total_mass_kg': round(total_weight_kg, 3), 'weight_N': round(weight_N, 2), 'flight_speed_kmh': round(flight_speed_kmh, 2), 'effective_speed_ms': round(result.get('V_effective_ms', V_ms), 3), 'wind_speed_kmh': round(wind_speed_kmh, 2), 'wind_speed_ms': round(W_ms, 3), 'altitude_m': altitude_m, 'temperature_C': temperature_c, 'flight_mode': flight_mode, 'rho': round(rho, 4), 'rho_ratio': round(rho_ratio, 4), 'gustiness': gustiness, 'terrain_factor': round(terrain_penalty, 3), 'stealth_drag_factor': round(stealth_drag_penalty, 3), 'wind_penalty_pct': round(wind_penalty_pct, 2), 'thermal_load_deltaT_estimate_C': round(delta_T, 2), 'dispatch_endurance_min': round(flight_time_minutes, 2), 'total_distance_km': round(total_distance_km, 2), 'best_heading_range_km': round(best_km, 2), 'upwind_range_km': round(worst_km, 2), 'visual_heuristic_score_0_100': round(visual_score, 1), 'thermal_heuristic_score_0_100': round(thermal_score, 1), 'blended_detectability_score_0_100': round(overall_score, 1), 'heuristic_confidence_0_100': round(detect_confidence, 1), 'detectability_overall': 'LOW' if overall_kind == 'success' else 'MODERATE' if overall_kind == 'warning' else 'HIGH'}
+    st.subheader('Telemetry and Scenario Exports')
+    dl1,dl2,dl3=st.columns(3)
+    with dl1:st.download_button('Telemetry CSV',df.to_csv(index=False).encode(),
+                               f'uav_v{VERSION}_telemetry.csv','text/csv',use_container_width=True)
+    with dl2:st.download_button('Scenario JSON',json.dumps(scenario,indent=2,allow_nan=False),
+                               f'uav_v{VERSION}_scenario.json','application/json',use_container_width=True)
+    with dl3:st.download_button('Complete ZIP',bundle_zip(result),
+                               f'uav_v{VERSION}_research_bundle.zip','application/zip',use_container_width=True)
 
-        detail['autopilot_target_speed_kmh'] = round(float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)), 2)
-        detail['autopilot_target_altitude_m'] = int(autopilot_profile.get('target_altitude_m', altitude_m))
-        detail['autopilot_hybrid_assist_recommend'] = bool(autopilot_profile.get('hybrid_assist_recommend', False))
-        detail['autopilot_active'] = bool(autopilot_profile.get('active', False))
-        detail['route_optimization_active'] = bool(route_optimization_profile.get('active', False))
-        detail['route_base_score'] = round(float(route_optimization_profile.get('base_score', 0.0)), 2)
-        detail['route_optimized_score'] = round(float(route_optimization_profile.get('optimized_score', 0.0)), 2)
-        detail['route_recommended_speed_kmh'] = round(float(route_optimization_profile.get('recommended_speed_kmh', flight_speed_kmh)), 2)
-        detail['route_recommended_altitude_m'] = int(route_optimization_profile.get('recommended_altitude_m', altitude_m))
-        detail['terrain_masking_active'] = bool(terrain_masking_profile.get('active', False))
-        detail['terrain_masking_score'] = round(float(terrain_masking_profile.get('masking_score', 0.0)), 1)
-        detail['terrain_adjusted_visual_score'] = round(float(terrain_masking_profile.get('adjusted_visual_score', visual_score)), 1)
-        detail['terrain_adjusted_overall_score'] = round(float(terrain_masking_profile.get('adjusted_overall_score', overall_score)), 1)
-        detail['terrain_los_block_fraction'] = round(float(terrain_masking_profile.get('los_block_fraction', 0.0)), 3)
-        detail['terrain_shadowed_distance_km'] = round(float(terrain_masking_profile.get('shadowed_distance_km', 0.0)), 3)
-        detail['sensor_modeling_enabled'] = bool(sensor_modeling)
-        detail['sensor_band'] = sensor_band
-        detail['sensor_quality'] = round(float(sensor_quality), 2)
-        detail['sensor_max_likely_detection_km'] = round(float(sensor_model_profile.get('max_likely_detection_km', 0.0)), 2)
-        detail['sensor_baseline_detection_probability_pct'] = round(float(sensor_model_profile.get('baseline_probability', 0.0)), 1)
-        if 'swarm_intel_profile' in locals():
-            detail['swarm_intelligence_score'] = round(float(swarm_intel_profile.get('swarm_score', 0.0)), 1)
-            detail['swarm_resilience_score'] = round(float(swarm_intel_profile.get('resilience_score', 0.0)), 1)
-        # Mission Phase Summary (safe ordering)
-        if 'mission_profile' in locals():
-            detail.update({
-                'phase_total_time_min': round(mission_profile.get('total_time_min', 0.0), 2),
-                'phase_count': len(mission_profile.get('phases', [])),
-            })
-            if profile['power_system'] == 'Battery':
-                detail['phase_total_energy_Wh'] = round(mission_profile.get('total_energy_Wh', 0.0), 2)
-                detail['phase_remaining_energy_Wh'] = round(float(mission_profile.get('remaining_energy_Wh') or 0.0), 2)
-            else:
-                detail['phase_total_fuel_L'] = round(mission_profile.get('total_fuel_L', 0.0), 3)
-                detail['phase_remaining_fuel_L'] = round(float(mission_profile.get('remaining_fuel_L') or 0.0), 3)
+    with st.expander('Engineering Interpretation / Validation Limits',expanded=True):
+        st.markdown(f'''
+**Aircraft:** {scenario['aircraft']}  
+**Power system:** {profile['power_system']}  
+**Trim:** α {trim.alpha_deg:.2f}°, elevator {trim.elevator:+.3f}, throttle {trim.throttle:.3f}  
+**Quaternion propagation:** normalized unit quaternion with 6-DOF rigid-body proxy  
+**Navigation:** body-frame specific force, 50-Hz zero-order-held IMU, gyro strapdown, 9-state translational/bias EKF  
+**Propulsion:** battery terminal power / ICE shaft power → ESC and motor (if electric) → shaft → propeller/rotor thrust  
+**Flight-control feedback:** simulated true state, **not EKF**  
+**Battery:** {'ideal reservoir' if not config['battery_twin'] else '1-RC Thevenin-style model' if profile['power_system']=='Battery' else 'not applicable'}  
+**3D pack replay:** pack-derived interpolated series voltages and optional display-only thermal spread  
+**3D aircraft twin:** true quaternion attitude + position from physics; generic fixed-wing/multicopter Mesh3d silhouettes, actuator-driven deflections, illustrative blade spin  
+**Aircraft render modes:** chase-follow camera, close-up inspection (both 1:1 geometry) and mission overview (explicit display-only scale factor). Scene content: aircraft only, trail or complete mission. Plotly Play/Pause is independent of the Streamlit battery slider  
+**Turbulence:** first-order correlated Dryden-style approximation, not full spectral Dryden  
+**Autopilot deployment:** no onboard controller, MAVLink, PX4, or ArduPilot integration  
+**GPT-based interpretation:** conceptual only, not implemented  
 
-        if profile['power_system'] == 'Battery':
-            detail.update({'battery_derated_Wh': round(result['battery_derated_Wh'], 2), 'climb_energy_Wh': round(result['climb_energy_Wh'], 2), 'total_draw_W': round(result['total_draw_W'], 2)})
-            if profile['type'] == 'fixed':
-                detail.update({'CL': round(result['CL'], 4), 'CD': round(result['CD'], 5), 'drag_N': round(result['drag_N'], 3), 'eta_prop_eff': round(result['eta_prop_eff'], 3), 'stall_margin_ok': bool(result['stall_margin_ok'])})
-            else:
-                detail.update({'induced_W': round(result['induced_W'], 2), 'profile_W': round(result['profile_W'], 2), 'hover_W': round(result['hover_W'], 2), 'parasite_W': round(result['parasite_W'], 2)})
-        else:
-            detail.update({'total_power_W': round(result['total_power_W'], 2), 'fuel_burn_L_per_hr': round(result['fuel_burn_L_per_hr'], 3), 'climb_fuel_L': round(result['climb_fuel_L'], 3), 'usable_fuel_L': round(result['usable_fuel_L'], 3), 'CL': round(result['CL'], 4), 'CD': round(result['CD'], 5), 'drag_N': round(result['drag_N'], 3), 'eta_prop_eff': round(result['eta_prop_eff'], 3), 'stall_margin_ok': bool(result['stall_margin_ok'])})
-
-        st.markdown("<div class='section-card'><div class='section-title'>Individual UAV Detailed Results</div><div class='section-note'>Machine-readable and human-readable breakdown for the selected platform.</div></div>", unsafe_allow_html=True)
-        human = [
-            f"- **Model**: {drone_model} ({profile['type']}, {profile['power_system']})",
-            f"- **Payload used**: {payload_weight_g} g (max {profile['max_payload_g']} g)",
-            f"- **Mass**: {total_weight_kg:.3f} kg",
-            f"- **Weight**: {weight_N:.2f} N",
-            f"- **Atmosphere**: ρ={rho:.3f} kg/m³, ρ/ρ₀={rho_ratio:.3f}, T={temperature_c:.1f}°C, Alt={altitude_m} m",
-            f"- **Speed**: {flight_speed_kmh:.1f} km/h ({V_ms:.2f} m/s)",
-            f"- **Wind**: {wind_speed_kmh:.1f} km/h ({W_ms:.2f} m/s)",
-            f"- **Wind penalty**: {wind_penalty_pct:.1f}%",
-            f"- **Terrain × stealth factor**: {(terrain_penalty * stealth_drag_penalty):.3f}",
-            f"- **Thermal Signature Risk**: {'Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'} (ΔT = {delta_T:.1f} °C)",
-            f"- **Dispatchable endurance**: {flight_time_minutes:.1f} min",
-            f"- **Mission phase total time**: {mission_profile.get('total_time_min', 0.0):.1f} min across {len(mission_profile.get('phases', []))} phases",
-            f"- **Total distance**: {total_distance_km:.2f} km",
-            f"- **Best heading / Upwind ranges**: {best_km:.2f} km / {worst_km:.2f} km",
-            f"- **Detectability heuristic (Visual / Thermal / Blended)**: {visual_score:.0f}/100 / {thermal_score:.0f}/100 / {overall_score:.0f}/100",
-            f"- **Heuristic confidence**: {detect_confidence:.0f}/100",
-        ]
-        if compact_layout:
-            st.markdown('\n'.join(human[:10]))
-        else:
-            st.markdown('\n'.join(human))
-        if not compact_layout:
-            st.json(detail, expanded=False)
-
-        indiv_df = pd.DataFrame([detail])
-        safe_name = drone_model.replace(' ', '_').replace('/', '_').lower()
-        st.download_button('⬇️ Download Individual UAV Detailed Results (CSV)', data=indiv_df.to_csv(index=False).encode('utf-8'), file_name=f'{safe_name}_detailed_results.csv', mime='text/csv')
-        st.download_button('⬇️ Download Individual UAV Detailed Results (JSON)', data=json.dumps(detail, indent=2), file_name=f'{safe_name}_detailed_results.json', mime='application/json')
-
-        st.subheader('AI Mission Advisor (LLM)')
-        params = {'drone': drone_model, 'payload_g': payload_weight_g, 'mode': flight_mode, 'speed_kmh': flight_speed_kmh, 'alt_m': altitude_m, 'wind_kmh': wind_speed_kmh, 'gust': gustiness, 'endurance_min': flight_time_minutes, 'delta_T': delta_T, 'fuel_l': result.get('usable_fuel_L', 0.0)}
-        st.write(generate_llm_advice(params))
-
-        adversary_profile = compute_adversary_simulation(
-            enabled=adversary_simulation,
-            radar_density=adversary_radar_density,
-            ir_density=adversary_ir_density,
-            jammer_density=adversary_jammer_density,
-            altitude_m=int(route_optimization_profile.get('recommended_altitude_m', altitude_m)) if 'route_optimization_profile' in locals() else altitude_m,
-            speed_kmh=float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)) if 'autopilot_profile' in locals() else flight_speed_kmh,
-            overall_detectability=float(terrain_masking_profile.get('adjusted_overall_score', overall_score)) if 'terrain_masking_profile' in locals() else overall_score,
-            visual_score=float(terrain_masking_profile.get('adjusted_visual_score', visual_score)) if 'terrain_masking_profile' in locals() else visual_score,
-            thermal_score=thermal_score,
-            sensor_detection_range_km=float(sensor_model_profile.get('max_likely_detection_km', 0.0)) if 'sensor_model_profile' in locals() else 0.0,
-            terrain_masking_score=float(terrain_masking_profile.get('masking_score', 0.0)) if 'terrain_masking_profile' in locals() else 0.0,
-            route_score=float(route_optimization_profile.get('optimized_score', 0.0)) if 'route_optimization_profile' in locals() else 0.0,
-            threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-            power_system=profile['power_system'],
-            radar_frequency_ghz=radar_frequency_ghz if 'radar_frequency_ghz' in locals() else 10.0,
-            radar_tx_power_kw=radar_tx_power_kw if 'radar_tx_power_kw' in locals() else 40.0,
-            effective_size_m=effective_size_m if 'effective_size_m' in locals() else 1.0,
-        )
-        render_adversary_simulation_panel(adversary_profile)
-        route_optimization_profile = optimize_route_profile(
-            enabled=route_optimization,
-            waypoints=waypoints,
-            speed_kmh=float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)),
-            altitude_m=int(autopilot_profile.get('target_altitude_m', altitude_m)),
-            overall_detectability=overall_score,
-            visual_detectability=visual_score,
-            thermal_detectability=thermal_score,
-            terrain_penalty=terrain_penalty,
-            stealth_drag_penalty=stealth_drag_penalty,
-            threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-            radar_threat_penalty=float(adversary_profile.get('radar_risk', 0.0)) * 0.20,
-        )
-        coupled_loiter_profile = compute_coupled_loiter_feasibility(
-            requested_loiter_min=float(loiter_minutes),
-            radar_detect_probability_pct=float(adversary_profile.get('radar_detection_probability_pct', 0.0)),
-            combined_threat_score=float(adversary_profile.get('combined_threat_score', 0.0)),
-            route_mode=str(route_optimization_profile.get('recommended_route_mode', 'Direct')),
-        )
-        render_coupled_threat_panel(coupled_loiter_profile)
+Aircraft profiles, inertia, stability derivatives, propulsion maps, motor temperatures, 
+cell parameters, visual and IR scores, and swarm behaviors use generic approximations. 
+Before any real-world use, require manufacturer-characterized component data, validated 
+6-DOF plant, hardware-in-the-loop testing, independent verification, and safety analysis. 
+The model does not authorize real flight operations.
+''')
 
 
-        tactical_params = {
-            'drone': drone_model,
-            'power_system': profile['power_system'],
-            'flight_mode': flight_mode,
-            'altitude_m': altitude_m,
-            'speed_kmh': flight_speed_kmh,
-            'cloud_cover': cloud_cover,
-            'visual_score': visual_score,
-            'thermal_score': thermal_score,
-            'overall_score': overall_score,
-            'endurance_min': flight_time_minutes,
-            'loiter_minutes': float(loiter_minutes),
-            'include_rtb': bool(include_rtb),
-            'hybrid_possible': bool(profile['power_system'] == 'ICE'),
-            'autopilot_target_speed_kmh': float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)) if 'autopilot_profile' in locals() else float(flight_speed_kmh),
-            'autopilot_target_altitude_m': float(autopilot_profile.get('target_altitude_m', altitude_m)) if 'autopilot_profile' in locals() else float(altitude_m),
-            'sensor_max_likely_detection_km': float(sensor_model_profile.get('max_likely_detection_km', 0.0)) if 'sensor_model_profile' in locals() else 0.0,
-            'terrain_masking_score': float(terrain_masking_profile.get('masking_score', 0.0)) if 'terrain_masking_profile' in locals() else 0.0,
-            'mission_feasible': bool(mission_profile.get('mission_feasible', True)) if isinstance(mission_profile, dict) else True,
-            'radar_detect_probability_pct': float(adversary_profile.get('radar_detection_probability_pct', 0.0)) if 'adversary_profile' in locals() else 0.0,
-            'adversary_posture': adversary_profile.get('recommended_posture', 'Nominal') if 'adversary_profile' in locals() else 'Nominal',
-            'allowed_loiter_min': float(coupled_loiter_profile.get('allowed_loiter_min', loiter_minutes)) if 'coupled_loiter_profile' in locals() else float(loiter_minutes),
-        }
-        tactical_briefing = generate_tactical_briefing(
-            llm_enabled=OPENAI_AVAILABLE,
-            tactical_mode_enabled=llm_tactical_mode,
-            params=tactical_params,
-        )
-        render_tactical_briefing_panel(tactical_briefing)
+def main():
+    st.set_page_config(page_title='UAV Battery Efficiency Estimator',layout='wide',
+                       page_icon='🛩️')
+    theme_css()
+    st.title(f'UAV BATTERY EFFICIENCY ESTIMATOR  v{VERSION}')
+    st.caption('Fixed-wing / rotor UAV | Energy • Propulsion • Flight Dynamics • ' 
+               'Multirate Sensor Emulation • INS/EKF • 3D Battery + Quaternion Aircraft Mesh Replay')
+    st.caption('Single-file aerospace research simulator | Built by Tareq Omrani')
+    config,run,reset=sidebar_inputs()
+    if reset:
+        st.session_state.pop('completed_simulation',None)
+        st.session_state.pop('replay_frame',None)
+        st.success('Previous simulation cleared.')
+        st.stop()
+    with st.expander('Functional Systems Architecture',expanded='completed_simulation' not in st.session_state):
+        st.code('''01 Scenario input → 02 Mass / trim / parameters → 03 Disturbances
+04 Waypoint guidance → 05 PID control → 06 Envelope safety → 07 Actuator response
+08 Battery / ICE source → 09 Propulsion conversion → 10 Aero + environmental loads
+11 Quaternion six-DOF flight plant → 12 Sensor emulation → 13 INS / EKF
+14 Timestamped flight record → 15 3D battery / quaternion aircraft Mesh3d twins
+16 Flight replay, INS/EKF diagnostics, telemetry and research exports
 
-        nav_profile_v2 = compute_gnss_denied_navigation_v2(
-            enabled=(gnss_denied_navigation_v2 if 'gnss_denied_navigation_v2' in locals() else gnss_denied_navigation),
-            fusion_quality=fusion_quality,
-            drift_sensitivity=drift_sensitivity,
-            map_uncertainty_factor=map_uncertainty_factor,
-            update_gain=gnss_update_gain if 'gnss_update_gain' in locals() else 0.55,
-            flight_time_minutes=flight_time_minutes,
-            total_distance_km=total_distance_km,
-            speed_kmh=float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)) if 'autopilot_profile' in locals() else flight_speed_kmh,
-            terrain_masking_score=float(terrain_masking_profile.get('masking_score', 0.0)) if 'terrain_masking_profile' in locals() else 0.0,
-            jammer_risk=float(adversary_profile.get('jammer_risk', 0.0)) if 'adversary_profile' in locals() else 0.0,
-            route_score=float(route_optimization_profile.get('optimized_score', 0.0)) if 'route_optimization_profile' in locals() else 0.0,
-            waypoints=waypoints,
-        )
-        render_gnss_denied_navigation_v2_panel(nav_profile_v2)
+SIMULATED TRUTH STATE → AUTOPILOT (not EKF feedback)
 
-        if 'mission_visualization' not in locals() or mission_visualization:
-            render_mission_visualization(
-                waypoints=waypoints,
-                threat_zone_km=threat_zone_km if 'threat_zone_km' in locals() else 5.0,
-                show_threat_zone=True,
-                nav_estimated_path=nav_profile_v2.get('estimated_path', None) if isinstance(nav_profile_v2, dict) else None,
-            )
+FUTURE RESEARCH ONLY: Natural language → GPT interpretation → deterministic
+command gate → PX4 / ArduPilot. NOT IMPLEMENTED / NOT FLIGHT CONNECTED.''',language='text')
+    if run:
+        try:
+            with st.spinner('Executing coupled flight, propulsion, and sensor simulation...'):
+                result=run_physics(config)
+            st.session_state['completed_simulation']=result
+            st.session_state.pop('replay_frame',None)
+        except (ValueError,RuntimeError,FloatingPointError,OverflowError) as exc:
+            st.error(f'Simulation could not complete: {exc}')
+            st.stop()
+    if 'completed_simulation' not in st.session_state:
+        st.info('Choose a platform and mission in the sidebar, then select **Run v0.8.4 Simulation**.')
+        st.warning('Research use only: generic models, not a certified flight or BMS implementation.')
+        st.stop()
+    result=st.session_state['completed_simulation']
+    previous=result['scenario']['config']
+    if config!=previous:
+        st.info('Sidebar settings have changed since this run. Select **Run** to update the results.')
+    display_report(result)
 
-        if show_validation:
-            st.subheader('Model Validation')
-            st.caption('Nominal-condition comparison against reference endurance targets.')
-            st.dataframe(pd.DataFrame(validation_report()), use_container_width=True)
 
-        st.subheader('Export Scenario Summary')
-        results_summary = {'Drone Model': drone_model, 'Power System': profile['power_system'], 'Type': profile['type'], 'Flight Mode': flight_mode, 'Payload (g)': int(payload_weight_g), 'Speed (km/h)': float(flight_speed_kmh), 'Wind (km/h)': float(wind_speed_kmh), 'Gustiness (0-10)': int(gustiness), 'Altitude (m)': int(altitude_m), 'Temperature (C)': float(temperature_c), 'Air Density (kg/m^3)': round(rho, 3), 'Density Ratio (rho/rho0)': round(rho_ratio, 3), 'Wind Penalty (%)': round(wind_penalty_pct, 2), 'Dispatchable Endurance (min)': round(flight_time_minutes, 2), 'Total Distance (km)': round(total_distance_km, 2), 'Best Heading Range (km)': round(best_km, 2), 'Upwind Range (km)': round(worst_km, 2), 'Thermal Signature Risk': ('Low' if delta_T < 10 else 'Moderate' if delta_T < 20 else 'High'),
-            'ΔT (C)': round(delta_T, 2), 'Visual Heuristic Score (0-100)': round(visual_score, 1), 'Thermal Heuristic Score (0-100)': round(thermal_score, 1), 'Blended Detectability Score (0-100)': round(overall_score, 1), 'Heuristic Confidence (0-100)': round(detect_confidence, 1), 'Overall Detectability': detail['detectability_overall'], 'Mission Phase Total Time (min)': round(mission_profile.get('total_time_min', 0.0), 2), 'Mission Phase Count': len(mission_profile.get('phases', [])), 'Autopilot Active': bool(autopilot_profile.get('active', False)), 'Autopilot Target Speed (km/h)': round(float(autopilot_profile.get('target_speed_kmh', flight_speed_kmh)), 2), 'Autopilot Target Altitude (m)': int(autopilot_profile.get('target_altitude_m', altitude_m)), 'Route Optimization Active': bool(route_optimization_profile.get('active', False)), 'Route Base Score': round(float(route_optimization_profile.get('base_score', 0.0)), 2), 'Route Optimized Score': round(float(route_optimization_profile.get('optimized_score', 0.0)), 2), 'Terrain Masking Score': round(float(terrain_masking_profile.get('masking_score', 0.0)), 1), 'Terrain Adjusted Overall Score': round(float(terrain_masking_profile.get('adjusted_overall_score', overall_score)), 1), 'Terrain LOS Block Fraction': round(float(terrain_masking_profile.get('los_block_fraction', 0.0)), 3), 'Terrain Shadowed Distance (km)': round(float(terrain_masking_profile.get('shadowed_distance_km', 0.0)), 3), 'Swarm Intelligence Score': round(float(swarm_intel_profile.get('swarm_score', 0.0)), 1) if 'swarm_intel_profile' in locals() else 0.0, 'Swarm Resilience Score': round(float(swarm_intel_profile.get('resilience_score', 0.0)), 1) if 'swarm_intel_profile' in locals() else 0.0}
-        if profile['power_system'] == 'Battery':
-            results_summary['Battery Capacity (Wh)'] = round(result['battery_derated_Wh'], 2)
-            results_summary['Total Draw (W)'] = round(result['total_draw_W'], 2)
-            results_summary['Climb Energy (Wh)'] = round(result['climb_energy_Wh'], 2)
-        else:
-            results_summary['Fuel Burn (L/hr)'] = round(result['fuel_burn_L_per_hr'], 3)
-            results_summary['Climb Fuel (L)'] = round(result['climb_fuel_L'], 3)
-            results_summary['Usable Fuel (L)'] = round(result['usable_fuel_L'], 3)
-            results_summary['Total Power (W)'] = round(result['total_power_W'], 2)
-        df_res = pd.DataFrame([results_summary])
-        csv_buffer = io.BytesIO()
-        df_res.to_csv(csv_buffer, index=False)
-        st.download_button('⬇️ Download Scenario Summary (CSV)', data=csv_buffer, file_name='mission_results.csv', mime='text/csv')
-        json_str = json.dumps(results_summary, indent=2)
-        st.download_button('⬇️ Download Scenario Summary (JSON)', data=json_str, file_name='mission_results.json', mime='application/json')
-        if show_json_preview:
-            st.text_area('Scenario Summary (JSON Copy-Paste)', json_str, height=250)
-
-        st.subheader('Mission Energy Profile')
-        st.caption('Quick-look depletion profile for the current scenario.')
-
-        fig_energy, ax_energy = make_themed_figure(figsize=(6, 3))
-        duration_min_axis = [0.0, max(flight_time_minutes, 0.01)]
-        if profile['power_system'] == 'Battery':
-            start_store = float(result['battery_derated_Wh'])
-            y_vals = [start_store, 0.0]
-            ax_energy.plot(duration_min_axis, y_vals, linewidth=2.4, color=ACTIVE_THEME['accent'])
-            ax_energy.fill_between(duration_min_axis, y_vals, color=ACTIVE_THEME['accent'], alpha=0.18)
-            ax_energy.set_ylabel('Battery (Wh)')
-            ax_energy.set_title('Battery Depletion Profile')
-        else:
-            start_store = float(result['usable_fuel_L'])
-            y_vals = [start_store, 0.0]
-            ax_energy.plot(duration_min_axis, y_vals, linewidth=2.4, color=ACTIVE_THEME['accent2'])
-            ax_energy.fill_between(duration_min_axis, y_vals, color=ACTIVE_THEME['accent2'], alpha=0.18)
-            ax_energy.set_ylabel('Fuel (L)')
-            ax_energy.set_title('Fuel Depletion Profile')
-        ax_energy.set_xlabel('Mission Time (min)')
-        style_axes(ax_energy)
-        st.pyplot(fig_energy)
-        plt.close(fig_energy)
-
-        st.subheader('AI Suggestions (Heuristics)')
-        if payload_weight_g == profile['max_payload_g']:
-            st.write('**Tip:** Payload is at maximum lift capacity.')
-        if wind_speed_kmh > 15:
-            st.write('**Tip:** High wind may reduce endurance and especially upwind range.')
-        if profile['power_system'] == 'Battery' and result.get('battery_derated_Wh', 9999) < 30:
-            st.write('**Tip:** Battery is under 30 Wh after derating. Consider a larger pack.')
-        if flight_mode in ['Hover', 'Waypoint Mission', 'Loiter']:
-            st.write('**Tip:** Maneuvering or station-keeping increases mission energy demand.')
-        if stealth_drag_penalty > 1.2:
-            st.write('**Tip:** Stealth loadout penalty is materially reducing endurance.')
-        if delta_T > 15:
-            st.write('**Tip:** Thermal load estimate is high. Reduce payload, airspeed, or hotel load if possible.')
-        if altitude_m > 100:
-            st.write('**Tip:** Higher altitude changes observability tradeoffs and may reduce control margin for some platforms.')
-        if gustiness >= 5:
-            st.write('**Tip:** Gust factor above 5 can seriously degrade small-UAV performance margins.')
-        if profile['type'] == 'fixed' and not result.get('stall_margin_ok', True):
-            st.write('**Tip:** Increase speed, reduce payload, or descend to restore valid lift margin.')
-
-        if show_live_simulation:
-            st.caption('Live simulation HUD gauge preserved from the production workflow.')
-            st.subheader('Live Simulation')
-            time_step = 10
-            total_steps = min(max(1, int(flight_time_minutes * 60 / time_step)), 240)
-            progress = st.progress(0)
-            status = st.empty()
-            gauge = st.empty()
-            timer = st.empty()
-
-            if profile['power_system'] == 'Battery':
-                start_wh = result['battery_derated_Wh']
-                burn_per_step = (result['total_draw_W'] * time_step) / 3600.0
-                for step in range(total_steps + 1):
-                    elapsed = step * time_step
-                    rem_wh = max(0.0, start_wh - step * burn_per_step)
-                    pct = 0.0 if start_wh <= 0 else 100.0 * rem_wh / start_wh
-                    remain = max(0, int(flight_time_minutes * 60 - elapsed))
-                    gauge.markdown(
-                        render_hud_gauge(
-                            label="Battery Simulation",
-                            pct=pct,
-                            remaining_text=f"{rem_wh:.2f} Wh remaining",
-                            draw_text=f"Draw {result['total_draw_W']:.0f} W | V {effective_speed_kmh:.0f} km/h",
-                            accent_color=ACTIVE_THEME['accent'],
-                        ),
-                        unsafe_allow_html=True,
-                    )
-                    timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {remain} sec")
-                    status.markdown(
-                        f"**Battery Remaining:** {rem_wh:.2f} Wh  "
-                        f"**Power Draw:** {result['total_draw_W']:.0f} W  "
-                        f"**V:** {effective_speed_kmh:.0f} km/h"
-                    )
-                    progress.progress(min(step / total_steps, 1.0))
-                    if rem_wh <= 0:
-                        break
-                    time.sleep(0.02)
-            else:
-                start_fuel = result['usable_fuel_L']
-                fuel_per_sec = result['fuel_burn_L_per_hr'] / 3600.0
-                for step in range(total_steps + 1):
-                    elapsed = step * time_step
-                    rem_L = max(0.0, start_fuel - fuel_per_sec * elapsed)
-                    pct = 0.0 if start_fuel <= 0 else 100.0 * rem_L / start_fuel
-                    remain = max(0, int(flight_time_minutes * 60 - elapsed))
-                    gauge.markdown(
-                        render_hud_gauge(
-                            label="Fuel Simulation",
-                            pct=pct,
-                            remaining_text=f"{rem_L:.2f} L remaining",
-                            draw_text=f"Burn {result['fuel_burn_L_per_hr']:.2f} L/hr | V {effective_speed_kmh:.0f} km/h",
-                            accent_color=ACTIVE_THEME['accent2'],
-                        ),
-                        unsafe_allow_html=True,
-                    )
-                    timer.markdown(f"**Elapsed:** {elapsed} sec **Remaining:** {remain} sec")
-                    status.markdown(
-                        f"**Fuel Remaining:** {rem_L:.2f} L  "
-                        f"**Burn:** {result['fuel_burn_L_per_hr']:.2f} L/hr  "
-                        f"**V:** {effective_speed_kmh:.0f} km/h"
-                    )
-                    progress.progress(min(step / total_steps, 1.0))
-                    if rem_L <= 0:
-                        break
-                    time.sleep(0.02)
-
-        if ('show_swarm_ops_module' not in locals()) or show_swarm_ops_module:
-            st.header('Swarm / Mission Ops Module')
-            st.info('This preserved production module is now directly available in the live run flow.')
-            st.caption('Preserved production feature set: swarm map, playback, threat-zone overlay, and CSV exports.')
-            st.caption('Conceptual coordination layer for mission logic, delegation, and playback. This module is not part of the validated aircraft performance model.')
-            swarm_enable = st.checkbox('Enable Swarm Module', value=True)
-            swarm_size = st.slider('Swarm Size', 2, 8, 3)
-            swarm_steps = st.slider('Swarm Coordination Rounds', 1, 5, 2)
-            threat_zone_km = st.slider('Threat Zone Radius (km)', 1.0, 20.0, 5.0)
-            playback_minutes = st.slider('Playback Length (minutes)', 1, 20, 10)
-            if swarm_enable:
-                swarm = seed_swarm_from_result(drone_model, profile, result, swarm_size, altitude_m, waypoints)
-
-                st.write('**Initial Swarm State**')
-                for s in swarm:
-                    st.write(
-                        f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | "
-                        f"Batt {s.battery_wh:.1f} Wh | Fuel {s.fuel_l:.2f} L | "
-                        f"Alt {s.altitude_m} m | Pos ({s.x_km:+.1f},{s.y_km:+.1f}) km"
-                    )
-
-                env = {'mission': flight_mode, 'wind_kmh': wind_speed_kmh, 'gust': gustiness, 'threat_zone_km': threat_zone_km, 'thermal_context': round(delta_T, 2), 'platform': drone_model}
-                for round_idx in range(swarm_steps):
-                    st.subheader(f'Coordination Round {round_idx + 1}')
-                    proposals = {s.id: agent_call(env, s) for s in swarm}
-                    fused = lead_call(env, swarm, proposals)
-
-                    if fused.get('conversation'):
-                        st.markdown('**Swarm Conversation**')
-                        for m in fused['conversation']:
-                            st.write(f"**{m.get('from', 'LEAD')}:** {m.get('msg', '')}")
-
-                    actions = fused.get('actions', [])
-                    if actions:
-                        st.markdown('**LEAD Actions**')
-                        for a in actions:
-                            st.write(f"- {a.get('uav_id')} → `{a.get('action')}` — {a.get('reason', '')}")
-
-                    swarm = apply_swarm_actions(
-                        swarm,
-                        actions,
-                        threat_zone_km,
-                        profile,
-                        temperature_c,
-                        wind_speed_kmh,
-                        gustiness,
-                        terrain_penalty,
-                        stealth_drag_penalty,
-                    )
-
-                    st.markdown('**Updated Swarm State**')
-                    for s in swarm:
-                        zone_flag = '🟥 IN ZONE' if s.inside_threat_zone else ''
-                        st.write(
-                            f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | "
-                            f"Batt {s.battery_wh:.1f} Wh | Fuel {s.fuel_l:.2f} L | "
-                            f"Alt {s.altitude_m} m | Speed {s.speed_kmh:.1f} km/h | "
-                            f"Pos ({s.x_km:+.2f},{s.y_km:+.2f}) km | {s.status_note} {zone_flag}"
-                        )
-                st.subheader('Mission Playback')
-                dt_s = 60.0
-                swarm_history = []
-                current_swarm = [VehicleState(**asdict(s)) for s in swarm]
-                for _ in range(playback_minutes + 1):
-                    swarm_history.append([asdict(s) for s in current_swarm])
-                    current_swarm = simulate_swarm_step(current_swarm, dt_s, threat_zone_km)
-
-                frame = st.slider('Playback Minute', 0, playback_minutes, 0)
-                frame_swarm = [VehicleState(**data) for data in swarm_history[frame]]
-
-                for s in frame_swarm:
-                    zone_flag = '🟥 IN ZONE' if s.inside_threat_zone else ''
-                    st.write(
-                        f"- {s.id} [{s.role}] — End {s.endurance_min:.1f} min | "
-                        f"Batt {s.battery_wh:.1f} Wh | Fuel {s.fuel_l:.2f} L | "
-                        f"Alt {s.altitude_m} m | Speed {s.speed_kmh:.1f} km/h | "
-                        f"Pos ({s.x_km:+.2f},{s.y_km:+.2f}) km | {s.status_note} {zone_flag}"
-                    )
-
-                fig = plot_swarm_map(frame_swarm, threat_zone_km, True, waypoints)
-                st.pyplot(fig)
-                plt.close(fig)
-
-                rows = []
-                for t, snapshot in enumerate(swarm_history):
-                    for s in snapshot:
-                        rows.append(
-                            {
-                                'time_min': t,
-                                'uav_id': s['id'],
-                                'role': s['role'],
-                                'platform': s['platform'],
-                                'power_system': s['power_system'],
-                                'x_km': s['x_km'],
-                                'y_km': s['y_km'],
-                                'altitude_m': s['altitude_m'],
-                                'speed_kmh': s['speed_kmh'],
-                                'endurance_min': s['endurance_min'],
-                                'battery_wh': s['battery_wh'],
-                                'fuel_l': s['fuel_l'],
-                                'draw_W': s['draw_W'],
-                                'fuel_burn_lph': s['fuel_burn_lph'],
-                                'delta_T': s['delta_T'],
-                                'inside_threat_zone': s['inside_threat_zone'],
-                                'current_wp': s['current_wp'],
-                                'status_note': s['status_note'],
-                            }
-                        )
-
-                swarm_df = pd.DataFrame(rows)
-                st.download_button(
-                    'Download Swarm Playback CSV',
-                    data=swarm_df.to_csv(index=False).encode('utf-8'),
-                    file_name='swarm_mission_playback.csv',
-                    mime='text/csv',
-                )
-
-                if waypoints:
-                    wp_df = pd.DataFrame(waypoints, columns=['x_km', 'y_km'])
-                    st.download_button(
-                        'Download Mission Waypoints CSV',
-                        data=wp_df.to_csv(index=False).encode('utf-8'),
-                        file_name='mission_waypoints.csv',
-                        mime='text/csv',
-                    )
-
-        st.caption('GPT-UAV Planner | Built by Tareq Omrani | 2025')
-    except Exception as e:
-        st.error('Unexpected error during simulation.')
-        if debug_mode:
-            st.exception(e)
+if __name__=='__main__':
+    main()
