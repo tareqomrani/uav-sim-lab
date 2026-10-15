@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.23 published-data aerospace fidelity and V&V release
+# UAV Battery Efficiency Estimator | v0.8.26 electrothermal and evidence fidelity
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import copy
 import json
 import math
 import os
@@ -23,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.24"
+VERSION = "0.8.26"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -1595,7 +1596,8 @@ def fixed_wing_aerodynamic_summary(p, profile, rho=1.225, mass_kg=None,
         point=fixed_wing_performance_point(p,rho,mass,float(speed),
             profile.get('prop_eff',.72),max_shaft_w=max_shaft,
             propeller_calibration=fitted_propeller,
-            literature_propeller=literature_propeller)
+            literature_propeller=literature_propeller,
+            ambient_temperature_c=ambient_temperature_c)
         if point['valid']:
             candidates.append((float(speed),point))
         else:
@@ -1628,11 +1630,13 @@ def fixed_wing_aerodynamic_summary(p, profile, rho=1.225, mass_kg=None,
         idealized_min_power_is_trim_feasible=bool(fixed_wing_performance_point(
             p,rho,mass,v_min_power,profile.get('prop_eff',.72),max_shaft_w=max_shaft,
             propeller_calibration=fitted_propeller,
-            literature_propeller=literature_propeller)['valid']),
+            literature_propeller=literature_propeller,
+            ambient_temperature_c=ambient_temperature_c)['valid']),
         idealized_min_drag_is_trim_feasible=bool(fixed_wing_performance_point(
             p,rho,mass,v_min_drag,profile.get('prop_eff',.72),max_shaft_w=max_shaft,
             propeller_calibration=fitted_propeller,
-            literature_propeller=literature_propeller)['valid']),
+            literature_propeller=literature_propeller,
+            ambient_temperature_c=ambient_temperature_c)['valid']),
         constrained_minimum_power_speed_ms=speed_p,
         constrained_minimum_drag_speed_ms=speed_d,
         constrained_minimum_power_point=power_pt,
@@ -1671,7 +1675,8 @@ def wing_reynolds_number(rho, true_airspeed_ms, chord_m, ambient_temperature_c):
 def fixed_wing_performance_point(p, rho, mass_kg, true_airspeed_ms,
                                  propulsive_efficiency=.72, *, max_shaft_w=None,
                                  propeller_calibration=None,
-                                 literature_propeller=None):
+                                 literature_propeller=None,
+                                 ambient_temperature_c=15.):
     """Evaluate the ACTUAL trimmed polar, not a second, inconsistent polar.
 
     Only an attached-flow pitch/elevator-trim solution may receive valid=True.
@@ -1686,7 +1691,7 @@ def fixed_wing_performance_point(p, rho, mass_kg, true_airspeed_ms,
         return dict(valid=False,reason='UNSUPPORTED_PROPULSIVE_EFFICIENCY')
     qbar=.5*rho*v*v
     required_cl=mass_kg*G/(qbar*p.area)
-    re=wing_reynolds_number(rho,v,p.chord,15.)
+    re=wing_reynolds_number(rho,v,p.chord,ambient_temperature_c)
     envelope=fixed_wing_trim_lift_envelope(p,samples=101,reynolds=re)
     if not envelope.get('assessed',False):
         return dict(valid=False,reason=envelope.get('reason','NO_VALID_SECTION_LIFT_ENVELOPE'),
@@ -1702,7 +1707,8 @@ def fixed_wing_performance_point(p, rho, mass_kg, true_airspeed_ms,
         return dict(valid=False,reason='INVALID_AVAILABLE_SHAFT_POWER')
     try:
         trim=solve_trim(p,{'prop_eff':eta,'cal_propeller':propeller_calibration,
-                           'literature_propeller':literature_propeller},rho,v,mass_kg,cap)
+                           'literature_propeller':literature_propeller},rho,v,mass_kg,cap,
+                         ambient_temperature_c=ambient_temperature_c)
     except ValueError as exc:
         # Only known physical-domain rejections are ordinary infeasible points.
         # Other ValueErrors are genuine defects and must propagate.
@@ -1783,7 +1789,7 @@ class Trim:
     propulsion_status:str='UNCHARACTERIZED_PROPELLER_EFFICIENCY_ASSUMED'
 
 
-def solve_trim(p,profile,rho,speed,mass,max_shaft):
+def solve_trim(p,profile,rho,speed,mass,max_shaft,*,ambient_temperature_c=15.):
     if p.kind=='rotor':
         weight=mass*G
         shaft=weight**1.5/(float(profile.get('rotor_figure_merit',.72))*math.sqrt(2*max(.2,rho)*max(.03,p.rotor_disk_area)))
@@ -1792,7 +1798,7 @@ def solve_trim(p,profile,rho,speed,mass,max_shaft):
     v=max(4.,speed)
     qbar=.5*max(.2,rho)*v*v
     weight=mass*G
-    re=wing_reynolds_number(rho,v,p.chord,15.)
+    re=wing_reynolds_number(rho,v,p.chord,ambient_temperature_c)
     def residual(alpha_deg):
         _,_,cm=fixed_wing_polar(alpha_deg,p,reynolds=re)
         elevator=clamp(-cm/p.cm_de,-.65,.65)
@@ -1947,6 +1953,10 @@ class BatteryTwin:
         self.rc_capacitance_f=0.;self.rc_stored_energy_j=0.;self.rc_storage_delta_j=0.
         self.rc_dissipation_w=0.;self.ohmic_dissipation_w=0.
         self.rc_energy_balance_residual_j=0.
+        self.charge_limited=False
+        self.mean_terminal_voltage_v=self.terminal_v
+        self.instantaneous_terminal_power_w=0.
+        self.electrical_first_law_residual_j=0.
         self.min_cell_v=self.ocv/self.series
         self.max_cell_v=self.min_cell_v
         self.initial_usable_wh=self.remaining_wh()
@@ -1960,16 +1970,41 @@ class BatteryTwin:
     def usable_wh(self):return self.nominal_wh*self.temperature_factor()*self.soh*self.fault_factor()
     def remaining_wh(self):return self.soc*self.usable_wh()
 
-    def open_circuit_voltage(self):
+    def ocv_at_soc(self,soc):
+        """The supplied OCV(SOC) law evaluated without mutating battery state."""
+        q=clamp(float(soc),0.,1.)
         if self.ideal:return self.nominal_voltage
         if self.calibration:
             a,b,c=self.calibration['ocv_poly_v']
-            return a+b*self.soc+c*self.soc**2
+            return a+b*q+c*q*q
         socs=[0,.03,.08,.15,.30,.50,.70,.85,.95,1.]
         cells=[3.,3.2,3.4,3.52,3.66,3.76,3.86,3.98,4.12,4.2]
-        # Generic OCV curve is rescaled to the declared nominal voltage. It is
-        # NOT a chemistry-specific, experimentally characterized OCV model.
-        return self.series*self.cell_voltage_scale*float(np.interp(self.soc,socs,cells))
+        return self.series*self.cell_voltage_scale*float(np.interp(q,socs,cells))
+
+    def open_circuit_voltage(self):
+        return self.ocv_at_soc(self.soc)
+
+    def mean_ocv_over_discharge(self,soc_start,soc_end):
+        """Exact time-average OCV for constant-current coulomb counting.
+
+        A quadratic OCV fit is integrated analytically. The research lookup
+        curve is piecewise linear and integrated at all crossed SOC knots.
+        No OCV parameter is silently treated as a measured cell datum.
+        """
+        x=float(soc_start);y=float(soc_end)
+        if abs(x-y)<1.e-14:return self.ocv_at_soc(x)
+        if self.calibration:
+            a,b,c=self.calibration['ocv_poly_v']
+            return float(a+b*(x+y)*.5+c*(x*x+x*y+y*y)/3.)
+        knots=[.03,.08,.15,.30,.50,.70,.85,.95]
+        nodes=[y]+[k for k in knots if y<k<x]+[x]
+        return sum((nodes[i+1]-nodes[i])*(self.ocv_at_soc(nodes[i])+
+                   self.ocv_at_soc(nodes[i+1]))*.5 for i in range(len(nodes)-1))/(x-y)
+
+    def mean_rc_voltage_for_current(self,current,dt,r1,tau):
+        """Exact timestep mean of 1-RC Thevenin polarization voltage."""
+        fraction=-math.expm1(-dt/tau)*(tau/dt)
+        return self.rc_v*fraction+current*r1*(1.-fraction)
 
     def resistance(self):
         if self.ideal:return 0.
@@ -1996,7 +2031,15 @@ class BatteryTwin:
         return max(0.,current*(effective-current*r0))
 
     def step(self,demand_w,ambient,dt):
-        dt=max(1e-4,float(dt));self.demanded=max(0.,float(demand_w))
+        dt=float(dt)
+        if not math.isfinite(dt) or dt<=0.:
+            raise ValueError('BATTERY_INTEGRATION_TIMESTEP_INVALID')
+        dt=max(1e-4,dt)
+        if not math.isfinite(float(demand_w)) or float(demand_w)<0.:
+            raise ValueError('BATTERY_POWER_DEMAND_INVALID')
+        self.demanded=float(demand_w)
+        self.charge_limited=False
+        self.electrical_first_law_residual_j=0.
         self.ocv=self.open_circuit_voltage()
         if self.ideal:
             self.limit=self.nominal_wh*self.soc*3600./dt
@@ -2004,24 +2047,91 @@ class BatteryTwin:
             self.soc=max(0.,self.soc-self.delivered*dt/(3600.*self.nominal_wh))
             self.terminal_v=self.nominal_voltage
             self.current=self.delivered/max(.001,self.nominal_voltage)
+            self.mean_terminal_voltage_v=self.nominal_voltage
+            self.instantaneous_terminal_power_w=self.delivered
             self.temp=float(ambient);self.heat=0.;self.rc_v=0.
             self.rc_stored_energy_j=0.;self.rc_storage_delta_j=0.
             self.rc_dissipation_w=0.;self.ohmic_dissipation_w=0.
             self.rc_energy_balance_residual_j=0.
             self.min_cell_v=self.max_cell_v=self.nominal_voltage/self.series
         else:
-            self.limit=self._max_power()
-            self.delivered=min(self.demanded,self.limit)
+            # Solve demanded average terminal power against the EXACT step-
+            # average OCV and polarization voltage. The terminal instantaneous
+            # voltage at t=dt is distinct from this time-averaged power.
+            initial_soc=self.soc
+            start_charge_ah=max(.05,self.capacity_ah*self.soh*self.fault_factor())
+            available_ah=initial_soc*start_charge_ah
             r0=max(1e-6,self.resistance())
+            r1=(float(self.calibration['r1_ohm']) if self.calibration else max(1e-5,.6*r0))
+            tau=(float(self.calibration['tau_s']) if self.calibration else 18.)
+            if not (r1>0 and tau>0 and math.isfinite(r1) and math.isfinite(tau)):
+                raise ValueError('BATTERY_RC_PARAMETERS_INVALID')
             veff=max(1e-3,self.ocv-self.rc_v)
-            discriminant=max(0.,veff**2-4*r0*self.delivered)
-            self.current=min(self.max_current(),
-                (veff-math.sqrt(discriminant))/(2*r0)) if self.delivered>0 else 0.
-            self.terminal_v=max(0.,veff-r0*self.current)
-            # Coulomb counting uses charge capacity, not the temporary thermal
-            # derating factor (which is an available-energy estimate).
-            charge_ah=max(.05,self.capacity_ah*self.soh*self.fault_factor())
-            self.soc=max(0.,self.soc-self.current*dt/(3600.*charge_ah))
+            vmin=self.series*(3.2*self.cell_voltage_scale+.5*self.imbalance)
+            initial_max=self._max_power()
+            max_charge_current=available_ah*3600./dt
+            max_i=max(0.,min(self.max_current(),max_charge_current,
+                (veff-vmin)/r0 if veff>vmin else 0.,veff/(2.*r0)))
+            def step_power(i):
+                end_soc=max(0.,initial_soc-i*dt/(3600.*start_charge_ah))
+                mean_ocv=self.mean_ocv_over_discharge(initial_soc,end_soc)
+                mean_rc=self.mean_rc_voltage_for_current(i,dt,r1,tau)
+                return max(0.,i*(mean_ocv-i*r0-mean_rc))
+            # Restrict the stable current root to the ascending mean-power
+            # branch, including the average RC polarization resistance.
+            frac=-math.expm1(-dt/tau)*(tau/dt)
+            stable_cap=veff/(2.*(r0+r1*(1.-frac)))
+            high=min(max_i,stable_cap)
+            feasible_cap=step_power(high)
+            target=min(self.demanded,initial_max,feasible_cap)
+            if target<=0. or high<=0.:
+                current=0.
+            elif target>=feasible_cap-1.e-10:
+                current=high
+            else:
+                low=0.
+                for _ in range(11):
+                    mid=(low+high)*.5
+                    if step_power(mid)<target:low=mid
+                    else:high=mid
+                # Bracketed secant polish solves the nonlinear average-power
+                # relation to a stricter tolerance without 30+ evaluations.
+                flo=step_power(low)-target
+                fhi=step_power(high)-target
+                current=(low+high)*.5
+                for _ in range(7):
+                    denom=fhi-flo
+                    current=((low*fhi-high*flo)/denom if abs(denom)>1e-16
+                             else (low+high)*.5)
+                    current=max(low,min(high,current))
+                    residual=step_power(current)-target
+                    if abs(residual)<1e-9:break
+                    if residual<0.:low=current;flo=residual
+                    else:high=current;fhi=residual
+            self.current=current
+            self.charge_limited=bool(max_charge_current+1.e-10<max_i or
+                self.current>=max_charge_current-1.e-10 and self.demanded>target+1.e-8)
+            self.limit=min(initial_max,feasible_cap)
+            end_soc=max(0.,initial_soc-self.current*dt/(3600.*start_charge_ah))
+            mean_ocv=self.mean_ocv_over_discharge(initial_soc,end_soc)
+            mean_rc=self.mean_rc_voltage_for_current(self.current,dt,r1,tau)
+            self.mean_terminal_voltage_v=max(0.,mean_ocv-self.current*r0-mean_rc)
+            self.delivered=self.current*self.mean_terminal_voltage_v
+            self.soc=end_soc
+            self.ocv=self.open_circuit_voltage()
+            # End-state electrical voltage for voltage-limit telemetry.
+            ending_rc=self.current*r1+(self.rc_v-self.current*r1)*math.exp(-dt/tau)
+            self.terminal_v=max(0.,self.ocv-self.current*r0-ending_rc)
+            self.instantaneous_terminal_power_w=self.current*self.terminal_v
+            # Independent electrical first law over the timestep: source OCV
+            # work = delivered energy + R0 Joule heat + polarization input.
+            chemical_j=self.current*mean_ocv*dt
+            rc_input_j=self.current*mean_rc*dt
+            terminal_j=self.delivered*dt
+            self.electrical_first_law_residual_j=(chemical_j-terminal_j-
+                                                  self.current**2*r0*dt-rc_input_j)
+            if abs(self.electrical_first_law_residual_j)>1.e-8*max(1.,chemical_j):
+                raise ValueError('BATTERY_ELECTRICAL_FIRST_LAW_NOT_CLOSED')
             r1=(float(self.calibration['r1_ohm']) if self.calibration else max(1e-5,.6*r0))
             a=math.exp(-dt/(float(self.calibration['tau_s']) if self.calibration else 18.))
             previous_rc_v=self.rc_v
@@ -2066,6 +2176,7 @@ class BatteryTwin:
         self.limited=self.delivered+1e-5<self.demanded
         flags=[]
         if self.limited:flags.append('POWER_LIMITED')
+        if self.charge_limited:flags.append('CHARGE_LIMITED')
         if not self.ideal and self.min_cell_v<=3.25*self.cell_voltage_scale:flags.append('LOW_VOLTAGE')
         if self.temp>=BATTERY_RESEARCH_THERMAL_LIMIT_C and not self.ideal:flags.append('THERMAL_LIMIT')
         if self.soc<=self.reserve:flags.append('RESERVE')
@@ -2087,7 +2198,10 @@ class BatteryTwin:
             battery_rc_energy_change_j=self.rc_storage_delta_j,
             battery_rc_joule_heating_w=self.rc_dissipation_w,
             battery_ohmic_joule_heating_w=self.ohmic_dissipation_w,
-            battery_rc_first_law_residual_j=self.rc_energy_balance_residual_j)
+            battery_rc_first_law_residual_j=self.rc_energy_balance_residual_j,
+            battery_mean_terminal_voltage_v=self.mean_terminal_voltage_v,
+            battery_instantaneous_terminal_power_w=self.instantaneous_terminal_power_w,
+            battery_electrical_first_law_residual_j=self.electrical_first_law_residual_j)
         return out
 
 # ============================================================================
@@ -3311,32 +3425,67 @@ def project_battery_state_energy_budget(config, observed_last, demand_w,
         max_delivered_wh=min(max_delivered_wh,override)
     used=0.;seconds=0.;dt=5.
     reason='DURATION_LIMIT'
-    # fixed bounded step avoids unnecessarily expensive subsecond extrapolation
-    for _ in range(int(math.ceil(max_duration_s/dt))):
-        if pack.soc<=threshold+1e-5:
+    # A trial integrates the COMPLETE battery state, not merely reported Wh.
+    # The event search makes SOC, polarization energy, temperature, elapsed
+    # time, and delivered energy correspond to the SAME terminal instant.
+    def trial(period):
+        candidate=copy.deepcopy(pack)
+        snapshot=candidate.step(demand_w,config['temp_c'],period)
+        return candidate,snapshot,float(snapshot.delivered_w)*period/3600.
+    while seconds < max_duration_s-1.e-10:
+        if pack.soc <= threshold+1.e-9:
             reason='RESERVE_REACHED';break
-        if used>=max_delivered_wh-1e-6:
+        remaining=max_delivered_wh-used
+        if remaining<=1.e-10:
             reason='NOMINAL_ENERGY_BUDGET_REACHED';break
         if pack.temp>=BATTERY_RESEARCH_THERMAL_LIMIT_C:
             reason='RESEARCH_THERMAL_LIMIT';break
-        output=pack.step(demand_w,config['temp_c'],dt)
-        if cal is not None and (not cal['soc_bounds'][0]<=pack.soc<=cal['soc_bounds'][1] or
-            not cal['temperature_bounds_c'][0]<=pack.temp<=cal['temperature_bounds_c'][1]):
+        period=min(dt,max_duration_s-seconds)
+        candidate,output,energy=trial(period)
+        over_energy=energy>remaining+1.e-11
+        over_reserve=candidate.soc<threshold-1.e-10
+        terminal_event=over_energy or over_reserve
+        if terminal_event:
+            lo,hi=0.,period
+            accepted=None
+            # Bisection locates the earliest energy/charge boundary. Candidate
+            # snapshots are never committed until the shortened step is known.
+            for _ in range(42):
+                mid=(lo+hi)*.5
+                if mid<1.e-4:
+                    lo=mid;continue
+                c,o,e=trial(mid)
+                if e<=remaining+1.e-12 and c.soc>=threshold-1.e-11:
+                    lo=mid;accepted=(c,o,e)
+                else:hi=mid
+            if accepted is None:
+                reason=('RESERVE_REACHED' if over_reserve else
+                        'NOMINAL_ENERGY_BUDGET_REACHED')
+                break
+            period=lo
+            candidate,output,energy=accepted
+        if cal is not None and (not cal['soc_bounds'][0]<=candidate.soc<=cal['soc_bounds'][1] or
+            not cal['temperature_bounds_c'][0]<=candidate.temp<=cal['temperature_bounds_c'][1]):
             reason='BATTERY_CALIBRATION_DOMAIN_EXCEEDED';break
         if output.delivered_w <.98*demand_w:
             reason='BATTERY_POWER_OR_VOLTAGE_LIMIT';break
-        step_wh=output.delivered_w*dt/3600.
-        if used+step_wh>max_delivered_wh:
-            remaining=max(0.,max_delivered_wh-used)
-            seconds+=dt*remaining/max(1e-9,step_wh)
-            used=max_delivered_wh
-            reason='NOMINAL_ENERGY_BUDGET_REACHED';break
-        used+=step_wh;seconds+=dt
+        if candidate.temp>=BATTERY_RESEARCH_THERMAL_LIMIT_C:
+            reason='RESEARCH_THERMAL_LIMIT';break
+        pack=candidate
+        used+=energy;seconds+=period
+        if terminal_event:
+            reason=('RESERVE_REACHED' if pack.soc<=threshold+1.e-7 else
+                    'NOMINAL_ENERGY_BUDGET_REACHED')
+            break
+    else:
+        reason='DURATION_LIMIT'
     return dict(valid=(reason in ('RESERVE_REACHED','NOMINAL_ENERGY_BUDGET_REACHED')),
                 demand_feasible=(reason != 'BATTERY_POWER_OR_VOLTAGE_LIMIT'),
                 reason=reason,duration_s=seconds,projected_delivered_wh=used,
                 energy_budget_wh=max_delivered_wh,initial_soc=start_soc,
                 final_soc=pack.soc,final_temperature_c=pack.temp,
+                final_rc_voltage_v=pack.rc_v,final_terminal_voltage_v=pack.terminal_v,
+                final_pack_throughput_wh=pack.throughput_wh,
                 electrical_model_is_calibrated=bool(cal),
                 calibration_domain_checked=bool(cal),
                 constant_demand_assumption=True)
@@ -3806,7 +3955,8 @@ def scenario_setup(config):
             calibration=(calibration['battery'] if calibration is not None else None))
     prop=Propulsion(profile,params,battery)
     speed=config['speed_kmh']/3.6
-    trim=solve_trim(params,profile,atmosphere[0],speed,mass,prop.max_shaft)
+    trim=solve_trim(params,profile,atmosphere[0],speed,mass,prop.max_shaft,
+                    ambient_temperature_c=float(config['temp_c']))
     if calibration is not None and trim.converged:
         # Solve using the same empirically identified T(Pshaft, V) law used
         # by Propulsion, not the generic efficiency proxy.
@@ -5473,14 +5623,83 @@ def deterministic_mission_advice(result):
     return advice[:5]
 
 
+def previous_version_ai_suggestions(result):
+    """Restore the nine conditional heuristics from the pre-6DOF estimator.
+
+    Read ONLY the completed scenario and telemetry. These tips are deterministic
+    research screening prompts, not GPT output, flight commands or validated
+    operational recommendations. Thresholds are inherited heuristic choices.
+    """
+    config=result['scenario']['config']
+    profile=result['profile']
+    metrics=result['metrics']
+    final=result['final']
+    df=result['telemetry']
+    tips=[]
+
+    maximum_payload=float(profile.get('max_payload_g',0.))
+    payload=float(config.get('payload_g',0.))
+    if maximum_payload>0 and payload>=maximum_payload-1.e-6:
+        tips.append('Payload is at the selected profile maximum. Review mass, lift or thrust, and reserve margins.')
+
+    if float(config.get('wind_kmh',0.))>15.:
+        tips.append('High wind may reduce endurance and particularly upwind range. Compare simulated heading cases.')
+
+    if profile.get('power_system')=='Battery':
+        derated_wh=float(getattr(final,'battery_temp_adjusted_wh',
+            config.get('battery_wh',profile.get('battery_wh',float('inf')))))
+        if math.isfinite(derated_wh) and derated_wh<30.:
+            tips.append('Temperature-adjusted battery capacity is below 30 Wh. Review available energy and reserve; changing pack capacity also changes mass.')
+
+    if config.get('flight_mode') in ('Hover','Waypoint Mission','Loiter'):
+        tips.append('Maneuvering or station-keeping may increase mission energy demand relative to a comparable steady-flight case; retain reserve margin.')
+
+    if float(config.get('stealth_drag',1.))>1.2:
+        tips.append('The selected signature-management drag proxy materially increases modeled drag. Compare results with the proxy disabled; this is not measured observability performance.')
+
+    ambient=float(getattr(final,'ambient_temperature_c',config.get('temp_c',25.)))
+    battery_temperature=float(getattr(final,'battery_temp_c',
+        getattr(final,'battery_temperature_c',config.get('battery_temp',ambient))))
+    motor_temperature=float(getattr(final,'motor_temp_c',ambient))
+    if max(motor_temperature-ambient,battery_temperature-ambient)>15. or int(metrics.get('battery_thermal_limit_sample_count',0))>0:
+        tips.append('Thermal rise or a thermal limit is significant. Review modeled cooling, payload, shaft power, and electrical demand before relying on endurance.')
+
+    if float(config.get('altitude_m',0.))>100.:
+        tips.append('Higher altitude changes air density and can affect lift, propulsion, and control margin. Compare a lower-altitude case within the model domain.')
+
+    gust_max=0.
+    gust_fields=('gust_n_ms','gust_e_ms','gust_d_ms')
+    if all(field in df.columns for field in gust_fields) and not df.empty:
+        gust_samples=np.sqrt(sum(np.square(df[field].to_numpy(dtype=float)) for field in gust_fields))
+        if gust_samples.size and np.isfinite(gust_samples).any():
+            gust_max=float(np.nanmax(gust_samples))
+    if config.get('turbulence')=='Severe' or gust_max>=5.:
+        tips.append('Strong simulated gusts may reduce small-UAV performance margins. Compare peak airspeed, angle of attack, and envelope interventions.')
+
+    stalled=('stall_warning' in df.columns and bool(df['stall_warning'].fillna(False).any()))
+    if profile.get('type')=='fixed' and (stalled or not bool(metrics.get('trim_converged',True))):
+        tips.append('A stall warning or insufficient trim lift margin was detected. Reassess airspeed, payload, and aerodynamic applicability before interpreting range.')
+
+    if not tips:
+        tips.append('No historical heuristic thresholds were triggered. Check the mission energy reserve, model applicability, and detailed engineering diagnostics.')
+    return tips
+
+
 def render_gpt_advisor(result):
-    st.subheader('AI Mission Advisor | Post-Run Telemetry Interpretation')
+    st.subheader('AI Suggestions (Heuristics)')
+    st.caption('Restored previous-version, rule-based suggestions derived from the completed '
+        'simulation. No API key is required. Thresholds are illustrative, not certified '
+        'limits or autonomous control instructions.')
+    for tip in previous_version_ai_suggestions(result):
+        st.write('**Tip:** '+tip)
+    fallback=deterministic_mission_advice(result)
+    with st.expander('Additional deterministic engineering diagnostics',expanded=False):
+        for a in fallback:st.write('• '+a)
+
+    st.subheader('GPT Mission Advisor | Post-Run Telemetry Interpretation')
     st.caption('Optional user-triggered OpenAI API commentary (requires OPENAI_API_KEY and '
         'network access). It cannot modify flight control, swarm actions, propulsion, or '
         'the digital twins. Do not place API keys in app.py.')
-    fallback=deterministic_mission_advice(result)
-    with st.expander('Deterministic engineering advice (no API key)',expanded=True):
-        for a in fallback:st.write('• '+a)
     if st.button('Generate GPT engineering review',key='ask_mission_gpt'):
         payload=dict(aircraft=result['scenario']['aircraft'],
             mission_mode=result['scenario']['config'].get('flight_mode','Waypoint Mission'),
@@ -7056,7 +7275,7 @@ def literature_benchmark_table():
     voc=battery.open_circuit_voltage();r0=battery.resistance();old_rc=battery.rc_v
     snap=battery.step(65.,25.,.1)
     add('BAT-OHM-005','SRC-NREL-ECM',snap.terminal_v,
-        voc-snap.current_a*r0-old_rc,1e-8,'V',
+        battery.ocv-snap.current_a*r0-battery.rc_v,1e-8,'V',
         'Thevenin 1-RC terminal equation; coefficients remain generic unless supplied')
     q=q_integrate([1.,0.,0.,0.],.2,-.1,.15,.025)
     add('SIM-QUAT-006','SRC-NASA-CREDIBILITY',sum(float(x)**2 for x in q)**.5,
@@ -7133,7 +7352,7 @@ V023_ENGINEERING_REQUIREMENTS = [
     ('F23-AER-03','Production six-DOF forces use section drag and finite-wing induced drag','NASA-GRC-LIFT-DRAG','F23-AER-FORCE',1e-8,'forces_moments'),
     ('F23-AER-04','Analytic minimum-drag speed matches independent parabolic-polar result','NASA-GRC-LIFT-DRAG','F23-AER-VMD',1e-10,'fixed_wing_aerodynamic_summary'),
     ('F23-AER-05','Analytic minimum-power speed matches independent parabolic-polar result','NASA-GRC-LIFT-DRAG','F23-AER-VMP',1e-10,'fixed_wing_aerodynamic_summary'),
-    ('F23-BAT-03','Battery delivered electrical watts equal terminal volts times amperes','THEVENIN-RC-CIRCUIT','F23-BAT-ELEC',1e-7,'BatteryTwin.step'),
+    ('F23-BAT-03','Time-averaged delivered electrical watts equal mean terminal volts times amperes','THEVENIN-RC-CIRCUIT','F23-BAT-ELEC',1e-7,'BatteryTwin.step'),
     ('F23-PROP-01','UIUC CT/CP equations recover the published reference point','UIUC-PROPDB-V1','F23-PROP-CTCP',1e-10,'published_propeller_operating_point'),
     ('F23-PROP-02','Shaft-power inversion preserves measured-domain thrust/power consistency','UIUC-PROPDB-V1','F23-PROP-INVERSE',1e-5,'published_propeller_by_shaft_power'),
     ('F23-PROP-03','Uncharacterized power-off condition must have zero powered thrust','UIUC-PROPDB-V1','F23-PROP-OFF',0.,'Propulsion._fixed_thrust'),
@@ -7207,9 +7426,9 @@ def v023_integrated_benchmarks():
            'Unconstrained textbook minimum shaft power only for constant propulsive efficiency.')
     eb=BatteryTwin(200.,6,soc=.8,temperature=25.)
     output=eb.step(65.,25.,.1)
-    record('F23-BAT-ELEC',output.delivered_w,output.current_a*output.terminal_v,
+    record('F23-BAT-ELEC',output.delivered_w,eb.current*eb.mean_terminal_voltage_v,
            1e-7,'W','THEVENIN-RC-CIRCUIT',
-           'Production electrochemical terminal power vs delivered electrical watts.')
+           'Production time-integrated terminal energy divided by timestep; distinct from end-step instantaneous voltage.')
     rpm=3008.;J=.659
     V=J*rpm/60.*prop['diameter_m']
     a=published_propeller_operating_point(prop,rpm,V,1.225)
@@ -7353,7 +7572,10 @@ V024_SOURCE_IDS = {
 
 def literature_coupled_reference(airspeed_ms=9., density=1.225, mass_kg=.48,
                                  wing_area_m2=.55, wingspan_m=2.2,
-                                 base_drag_multiplier=1.):
+                                 base_drag_multiplier=1., *,
+                                 section_cl_factor=1.,section_cd_factor=1.,
+                                 propeller_ct_factor=1.,propeller_cp_factor=1.,
+                                 ambient_temperature_c=15.):
     """One self-consistent *hypothetical* aircraft + published COMPONENT data.
 
     This configuration must never be presented as a tested 0.48-kg aircraft.
@@ -7361,20 +7583,36 @@ def literature_coupled_reference(airspeed_ms=9., density=1.225, mass_kg=.48,
     coefficient evaluation rejects unsupported Re/J/RPM; no curve extension.
     """
     profile=dict(UAV_PROFILES[COUPLED_REFERENCE_AIRCRAFT])
-    profile.update(literature_section_polar=reference_airfoil_demo(),
-        literature_propeller=reference_propeller_demo(),
+    # Apply explicitly DECLARED coefficient sensitivity to detached copies of
+    # published tables. The original measured source record remains untouched.
+    factors=(section_cl_factor,section_cd_factor,propeller_ct_factor,propeller_cp_factor)
+    if not all(math.isfinite(float(x)) and .80<=float(x)<=1.20 for x in factors):
+        raise ValueError('LITERATURE_SENSITIVITY_FACTOR_OUT_OF_DECLARED_RANGE')
+    airfoil=reference_airfoil_demo()
+    propeller=reference_propeller_demo()
+    for run in airfoil['data_rows']:
+        for point in run:
+            point['cl']*=float(section_cl_factor)
+            point['cd']*=float(section_cd_factor)
+    for run in propeller['data_rows']:
+        for point in run:
+            point['ct']*=float(propeller_ct_factor)
+            point['cp']*=float(propeller_cp_factor)
+    profile.update(literature_section_polar=airfoil,
+        literature_propeller=propeller,
         wing_area_m2=float(wing_area_m2),wingspan_m=float(wingspan_m),
         literature_installation_cd0=.0015*float(base_drag_multiplier))
     p=build_dynamics_params(profile,float(mass_kg))
     max_shaft=25. # [W] conceptual motor operating ceiling, not a published motor test
     point=fixed_wing_performance_point(p,float(density),float(mass_kg),
         float(airspeed_ms),max_shaft_w=max_shaft,
-        literature_propeller=profile['literature_propeller'])
+        literature_propeller=profile['literature_propeller'],
+        ambient_temperature_c=ambient_temperature_c)
     if not point['valid']:
         return dict(status='NO_FEASIBLE_REFERENCE_POINT',reason=point['reason'],
                     airspeed_ms=float(airspeed_ms),reference='CONCEPTUAL_AIRCRAFT')
     v=float(airspeed_ms)
-    reynolds=wing_reynolds_number(density,v,p.chord,15.)
+    reynolds=wing_reynolds_number(density,v,p.chord,ambient_temperature_c)
     section=interpolate_published_airfoil(profile['literature_section_polar'],
                                          point['trim_alpha_deg'],reynolds)
     prop=published_propeller_by_shaft_power(profile['literature_propeller'],
@@ -7398,6 +7636,9 @@ def literature_coupled_reference(airspeed_ms=9., density=1.225, mass_kg=.48,
         required_terminal_w=point['required_shaft_power_w']/(.96*.90)+2.,
         excess_thrust_n=prop['thrust_n']-point['drag_n'],
         coefficient_basis='PUBLISHED_SECTION_CT_CP_AND_ASSUMED_WING_AND_ELECTRICS',
+        sensitivity_factors=dict(section_cl=section_cl_factor,section_cd=section_cd_factor,
+            propeller_ct=propeller_ct_factor,propeller_cp=propeller_cp_factor),
+        coefficients_perturbed_from_published_tables=any(abs(float(x)-1.)>1.e-12 for x in factors),
         source_ids=list(V024_SOURCE_IDS)[:3],
         independent_full_aircraft_validation=False)
 
@@ -7463,11 +7704,25 @@ def v024_uncertainty_to_endurance_range(draws=40,seed=24):
         span=2.2*float(rng.uniform(.985,1.015))
         speed=float(rng.uniform(8.5,9.5))
         installation_drag_multiplier=float(rng.uniform(.7,1.3))
+        # Reproduce bounded assumptions rather than inventing measurement
+        # uncertainty or silently editing the baseline published coefficients.
+        section_cl_factor=float(rng.uniform(.985,1.015))
+        section_cd_factor=float(rng.uniform(.97,1.03))
+        propeller_ct_factor=float(rng.uniform(.98,1.02))
+        propeller_cp_factor=float(rng.uniform(.98,1.02))
         result=literature_coupled_reference(speed,1.225,mass,area,span,
-            base_drag_multiplier=installation_drag_multiplier)
+            base_drag_multiplier=installation_drag_multiplier,
+            section_cl_factor=section_cl_factor,section_cd_factor=section_cd_factor,
+            propeller_ct_factor=propeller_ct_factor,propeller_cp_factor=propeller_cp_factor)
+
         row=dict(draw=i,mass_kg=mass,assumed_pack_specific_energy_whkg=220.,
                  assumed_battery_wh=assumed_capacity_wh,area_m2=area,span_m=span,
                  assumed_installation_drag_multiplier=installation_drag_multiplier,
+                 assumed_section_cl_factor=section_cl_factor,
+                 assumed_section_cd_factor=section_cd_factor,
+                 assumed_propeller_ct_factor=propeller_ct_factor,
+                 assumed_propeller_cp_factor=propeller_cp_factor,
+                 coefficient_bounds_provenance='DECLARED_NOT_PUBLISHED_ERROR_BARS',
                  true_airspeed_ms=speed,status=result['status'])
         if result['status']=='FEASIBLE_CONCEPT_WITHIN_COMPONENT_DOMAINS':
             motor_eta=float(rng.uniform(.87,.92))
@@ -7506,7 +7761,7 @@ def v024_uncertainty_to_endurance_range(draws=40,seed=24):
             if len(selected)>0 else []),
         air_distance_km_5_50_95=(np.percentile(selected.predicted_air_distance_km,[5,50,95]).tolist()
             if len(selected)>0 else []),
-        limitations='No wind, maneuvers, degradation prediction, aircraft design optimization or measured structural data; assuming installed parasite CD0=0.0015 baseline')
+        limitations='No wind, maneuvers, degradation prediction, aircraft design optimization or measured structural data; assumed coefficient factors are sensitivity ranges, NOT UIUC measurement uncertainty; installed parasite CD0=0.0015 baseline')
 
 
 
@@ -7701,11 +7956,204 @@ def v024_reference_timestep_convergence(duration_min=1):
         limitations='Declared characteristic scales and controller-rate differences limit formal Richardson interpretation; not true trajectory error.')
 
 
+
+
+# ============================================================================
+# v0.8.26 | Independent numerical, circuit and endurance evidence
+# ============================================================================
+
+def v026_reference_config(duration_min=1):
+    """Published-component conceptual aircraft; no manufacturer airframe claim."""
+    base=dict(aircraft=COUPLED_REFERENCE_AIRCRAFT,
+        reference_calibration=None,literature_section_polar=reference_airfoil_demo(),
+        literature_propeller_reference=reference_propeller_demo(),battery_wh=35.,
+        series_cells=3,battery_soc=100.,battery_soh=100.,battery_temp=25.,
+        max_c_rate=8.,resistance_scale=1.,cell_imbalance_mv=0.,degraded_cell=False,
+        battery_twin=True,fuel_fill=100.,specific_energy=220.,altitude_m=100.,temp_c=25.,
+        reserve_soc=10.,speed_kmh=32.4,payload_g=0.,flight_mode='Forward Flight',
+        heading_deg=0.,ground_track_objective_deg=None,loiter_radius_m=150.,
+        altitude_change_m=0.,maneuver_drag=1.,dispatch_reserve_pct=30.,
+        duration_min=int(duration_min),capture_radius=35.,
+        waypoints='400,0,100; 400,400,100',wind_kmh=0.,wind_from=0.,
+        operation_phase='In Flight',turbulence='None',turb_seed=42,
+        cloud_cover=0.,humidity=45.,background=.5,stealth_drag=1.,effective_size=1.,
+        envelope=True,max_bank=35.,overspeed=40.,sensor_seed=20,
+        gps_dropout=False,gps_start=10.,gps_duration=0.,imu_bias=0.,baro_bias=0.,
+        motor_fault=False,motor_start=60.,motor_health=1.,swarm_enabled=False,
+        swarm_size=1,swarm_rounds=1,swarm_coordination='None',swarm_spacing_m=100.,
+        threat_radius_km=0.,threat_n=0.,threat_e=0.,swarm_reserve=15.,swarm_seed=1,
+        hybrid_enabled=False,hybrid_fraction=0.,hybrid_duration_min=0.,hybrid_battery_wh=0.,
+        debug_mode=False,ice_overrides={})
+    return base
+
+
+def v026_fixed_command_convergence(duration_s=4.,steps=(.04,.02,.01,.005)):
+    """Identical fixed actuator command at every plant step and resolution.
+
+    No autopilot, sensor, or navigation update frequency changes. The finest
+    simulated solution is a numerical REFERENCE, not physical ground truth.
+    """
+    config=v026_reference_config()
+    trajectory=[];terminals=[]
+    for dt in steps:
+        profile,mass,_,fuel,p,battery,prop,trim=scenario_setup(config)
+        rho,temp,pressure=atmosphere_state(config['altitude_m'],config['temp_c'])
+        env=Environment(rho,temp,pressure,0.,0.,0.)
+        plant=DigitalTwinEngine(p,profile,prop,mass,config['altitude_m'],
+            config['speed_kmh']/3.6,trim,fuel)
+        cmd=Control(throttle=float(trim.throttle),elevator=float(trim.elevator),
+            altitude_m=config['altitude_m'],speed_ms=config['speed_kmh']/3.6)
+        n=int(round(duration_s/dt))
+        if abs(n*dt-duration_s)>1.e-8:raise ValueError('TIME_HORIZON_NOT_DIVISIBLE_BY_STEP')
+        for i in range(n):plant.step(cmd,env,dt)
+        state=plant.state
+        vals=np.array([state.north_m,state.east_m,state.altitude_m,
+                       state.airspeed_ms,state.pitch_deg,state.battery_soc],float)
+        if not np.isfinite(vals).all():raise ValueError('NONFINITE_FIXED_COMMAND_TRAJECTORY')
+        terminals.append(vals)
+        trajectory.append(dict(plant_dt_s=dt,simulation_s=duration_s,
+            controller_update_mode='NONE_FIXED_COMMAND',
+            north_m=vals[0],east_m=vals[1],altitude_m=vals[2],
+            airspeed_ms=vals[3],pitch_deg=vals[4],battery_soc=vals[5]))
+    scales=np.array([1.,1.,1.,1.,10.,.01])
+    base=terminals[-1]
+    for row,vals in zip(trajectory,terminals):
+        row['reference_scaled_l2']=float(np.linalg.norm((vals-base)/scales))
+        row['altitude_difference_m']=float(abs(vals[2]-base[2]))
+        row['airspeed_difference_ms']=float(abs(vals[3]-base[3]))
+        row['battery_soc_difference']=float(abs(vals[5]-base[5]))
+    d=[trajectory[i]['reference_scaled_l2'] for i in range(len(steps)-1)]
+    passing=bool(all(d[i]>d[i+1] for i in range(len(d)-1)) and
+                 d[-1]<.15 and trajectory[-2]['altitude_difference_m']<.10 and
+                 trajectory[-2]['airspeed_difference_ms']<.10)
+    return pd.DataFrame(trajectory),dict(
+        status='PASS_FIXED_COMMAND_REFINEMENT' if passing else 'FAIL_FIXED_COMMAND_REFINEMENT',
+        identical_command_at_each_step=True,controller_cadence_changed=False,
+        reference_method='FINEST_STEPSIZE_NUMERICAL_SOLUTION',
+        reference_is_physical_truth=False,
+        channel_scales=dict(north_m=1.,east_m=1.,altitude_m=1.,
+                            airspeed_ms=1.,pitch_deg=10.,battery_soc=.01),
+        limitations='Finite-resolution reference; no independent airframe dynamics measurements')
+
+
+def v026_analytic_battery_benchmarks():
+    """Independent closed-form RC, ideal-reservoir, and quaternion checks.
+
+    Calculations on the right-hand sides do not call BatteryTwin internals.
+    A constant OCV synthetic Thevenin calibration is an analytic fixture,
+    explicitly NOT an empirical battery characterization.
+    """
+    from types import SimpleNamespace
+    rows=[]
+    def add(id,observed,reference,tol,units,source):
+        delta=abs(float(observed)-float(reference))
+        rows.append(dict(benchmark_id=id,observed=float(observed),
+          independent_reference=float(reference),absolute_error=delta,
+          acceptance_tolerance=tol,units=units,
+          status='PASS' if delta<=tol else 'FAIL',source=source))
+    cal=dict(ocv_poly_v=[24.,0.,0.],r0_ohm=.05,r1_ohm=.2,tau_s=7.,
+        soc_bounds=[0.,1.],temperature_bounds_c=[-25.,85.])
+    for step in (.1,5.,10.,20.):
+        i=3.;rc0=.25;ocv=24.;r0=.05;r1=.2;tau=7.
+        a=math.exp(-step/tau)
+        rc_avg=i*r1+(rc0-i*r1)*(tau/step)*(1.-a)
+        demand=i*(ocv-i*r0-rc_avg)
+        pack=BatteryTwin(500.,6,soc=.85,calibration=cal,nominal_voltage_v=22.2)
+        pack.rc_v=rc0
+        snapshot=pack.step(demand,25.,step)
+        rc_end=i*r1+(rc0-i*r1)*a
+        source_energy=i*ocv*step
+        r0_loss=i*i*r0*step
+        polarization_input=i*rc_avg*step
+        add('RC-POWER-'+str(step),snapshot.delivered_w,demand,.003,'W',
+            'Independent constant-current closed-form 1-RC Thevenin')
+        add('RC-END-VOLT-'+str(step),snapshot.terminal_v,
+            ocv-i*r0-rc_end,.002,'V','Independent exponential RC branch')
+        add('RC-ENERGY-'+str(step),snapshot.delivered_w*step,
+            source_energy-r0_loss-polarization_input,.02,'J',
+            'Kirchhoff energy balance with analytic RC voltage integral')
+        add('RC-STATE-'+str(step),pack.rc_v,rc_end,.002,'V',
+            'Exact analytical RC transient solution')
+        add('RC-RESIDUAL-'+str(step),pack.electrical_first_law_residual_j,0.,1e-7,
+            'J','Explicit electrical energy accounting invariant')
+    cfg=v026_reference_config()
+    cfg.update(battery_twin=False,battery_wh=35.,battery_soh=100.,
+               series_cells=3,battery_temp=25.,temp_c=25.)
+    obs=SimpleNamespace(battery_soc=.85,battery_soh=1.,
+        battery_temperature_c=25.,battery_polarization_v=0.)
+    demand=8.8;reserve=.30
+    projection=project_battery_state_energy_budget(cfg,obs,demand,reserve,
+        max_duration_s=4*3600.)
+    exact=3600.*35.*(.85-reserve)/demand
+    add('IDEAL-ENDURANCE-TIME',projection['duration_s'],exact,.02,'s',
+        'Ideal constant-power storage integral E/P; no aircraft claim')
+    add('IDEAL-ENDURANCE-ENERGY',projection['projected_delivered_wh'],
+        35.*(.85-reserve),1.e-5,'Wh','Analytical reservoir energy budget')
+    for omega in (.2,-.4):
+        q=(1.,0.,0.,0.);dt=.01;t=5.
+        for _ in range(int(t/dt)):q=q_integrate(q,omega,0.,0.,dt)
+        expected=np.array([math.cos(.5*omega*t),math.sin(.5*omega*t),0.,0.])
+        add('QUAT-ANALYTIC-'+str(omega),
+            float(np.linalg.norm(np.asarray(q)-expected)),0.,.001,'unit quaternion norm',
+            'Analytic constant-body-rate quaternion exponential')
+    return pd.DataFrame(rows)
+
+
+def v026_uncertainty_evidence(draws=24,seed=2626):
+    """Decompose known modeling uncertainty without fictional confidence bounds."""
+    df,info=v024_uncertainty_to_endurance_range(draws=draws,seed=seed)
+    conv,conv_meta=v026_fixed_command_convergence()
+    catalog=[
+        dict(category='PUBLISHED_COMPONENT_DATA',source='UIUC SA7035 / APC Slow Flyer 10x7',
+          quantity='CL, CD, CT, CP',bound_type='UNQUANTIFIED_MEASUREMENT_UNCERTAINTY',
+          treatment='Interpolation inside published coverage; no invented 95% error bar',
+          statistics='NOT_ESTIMATED'),
+        dict(category='ASSUMED_AIRFRAME_PARAMETERS',source='Declared research assumptions',
+          quantity='airframe mass, area, span, installation drag and pack Wh',
+          bound_type='DESIGN_SENSITIVITY_RANGE',
+          treatment=f'{info["n_draws"]} deterministic random-seed sensitivity scenarios',
+          statistics='SCENARIO_PERCENTILES_NOT_CONFIDENCE_INTERVALS'),
+        dict(category='ASSUMED_COMPONENT_MULTIPLIERS',source='Declared, not UIUC published errors',
+          quantity='CL and CD multipliers, propeller CT and CP multipliers',
+          bound_type='ASSUMED_SENSITIVITY_RANGE',
+          treatment='Independent multiplicative factors, physical applicability checked',
+          statistics='NOT_AN_EMPIRICAL_ERROR_DISTRIBUTION'),
+        dict(category='NUMERICAL_DISCRETIZATION',source='Fixed-command 6-DOF refinement',
+          quantity='altitude, airspeed, position, attitude, SOC terminal differences',
+          bound_type='INTER_RESOLUTION_DISCREPANCY',
+          treatment='Finest resolution as numerical comparison only',
+          statistics='NOT_PHYSICAL_PREDICTION_ERROR'),
+        dict(category='UNMODELED_ENVIRONMENT_AND_HARDWARE',source='Research applicability statement',
+          quantity='gust forecast, motor efficiency map, thermal aging, installations',
+          bound_type='UNKNOWN_NOT_QUANTIFIED',
+          treatment='Declared model limitation; avoid probability assertions',
+          statistics='NO_CONFIDENCE_INTERVAL'),
+    ]
+    return pd.DataFrame(catalog),df,dict(**info,
+         numerical=conv_meta,
+         numerical_altitude_difference_m=conv.iloc[-2].altitude_difference_m,
+         categories=len(catalog),published_coefficient_uncertainty_quantified=False)
+
+
 def v024_integrated_workspace():
     with st.expander('v0.8.24 | Coupled literature aircraft / endurance / verification',expanded=False):
         st.info('SA7035 and APC SF 10x7 sources characterize components. The 0.48 kg '
             'concept airframe, motor/ESC, thermal and control parameters are research assumptions, '
             'NOT a measured or certified aircraft. Full manufacturer-specific applicability is not claimed.')
+        if st.button('Run v0.8.26 independent physics and numerical checks',
+                     key='v026_evidence_run'):
+            with st.spinner('Computing closed-form battery and fixed-command reference cases...'):
+                st.session_state['v026_evidence']=(
+                    v026_analytic_battery_benchmarks(),v026_fixed_command_convergence(),
+                    v026_uncertainty_evidence(draws=12))
+        if st.session_state.get('v026_evidence') is not None:
+            eq,(num,num_meta),(taxonomy,scenarios,uq_meta)=st.session_state['v026_evidence']
+            st.caption('v0.8.26 independent analytical circuit references and fixed-command timestep study')
+            st.dataframe(eq,hide_index=True,use_container_width=True)
+            st.json(num_meta)
+            st.dataframe(num,hide_index=True,use_container_width=True)
+            st.dataframe(taxonomy,hide_index=True,use_container_width=True)
+            st.json({k:v for k,v in uq_meta.items() if k!='numerical'})
         ref=literature_coupled_reference()
         st.json(ref)
         if st.button('Run v0.8.24 coupled source benchmarks',key='v024_integrated_run'):
@@ -7745,7 +8193,7 @@ def main():
     st.set_page_config(page_title='UAV Battery Efficiency Estimator',layout='wide',
                        page_icon='🛩️')
     theme_css()
-    st.title(f'UAV BATTERY EFFICIENCY ESTIMATOR  v{VERSION}')
+    st.title('UAV BATTERY EFFICIENCY ESTIMATOR')
     st.caption('Fixed-wing / rotor UAV | 6-DOF flight modes • Endurance & reserve • '
                'INS/EKF • 3D battery + aircraft twins • Swarm playback • Optional GPT reports')
     st.caption('Single-file aerospace research simulator | Built by Tareq Omrani')
