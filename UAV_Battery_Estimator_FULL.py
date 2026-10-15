@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.26 electrothermal and evidence fidelity
+# UAV Battery Efficiency Estimator | v0.8.31 onboard edge AI compute research twin
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -24,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.26"
+VERSION = "0.8.31"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -980,12 +980,13 @@ def profile_catalog_table():
 
 
 # ============================================================================
-# DEFENSE AIRCRAFT REFERENCE CATALOG (METADATA-ONLY / NO SIMULATION)
+# DEFENSE REFERENCE CATALOG AND ISOLATED EDUCATIONAL MATHEMATICS
 # ============================================================================
-# These are publicly documented military platforms. Entries below are
-# deliberately isolated from UAV_PROFILES, DEFAULT_SPEED_KMH, DynamicsParams,
-# LLM guidance, swarm actions, and 3D replay. Do not assign simulated
-# operational parameters (mass, payload, energy, endurance, speed, etc.).
+# These public-reference names are intentionally isolated from UAV_PROFILES,
+# operational vehicle dynamics, battery/range/payload predictions, mission
+# planning, swarm logic, and the autonomous flight controller. A separate,
+# shared IDEALIZED classroom simulation illustrates mathematical relationships
+# without estimating these real aircraft's characteristics.
 # Coverage is a documented selection, not a claim to list every Shahed model.
 
 _SHAHED_SOURCE = ('https://www.iranwatch.org/our-publications/'
@@ -1017,7 +1018,8 @@ DEFENSE_REFERENCE_CATALOG = [
          developer='Iranian Shahed program (public attribution)',
          broad_role=role, aliases=alias, source=_SHAHED_SOURCE,
          secondary_source='', simulation_enabled=False,
-         record_type='Public reference, no physics or mission simulation')
+         educational_math_enabled=True,
+         record_type='Public reference with shared abstract mathematical demonstration')
     for name, role, alias in _SHAHED_ROLES
 ] + [
     dict(aircraft='LUCAS (Low-cost Unmanned Combat Attack System)',
@@ -1025,14 +1027,151 @@ DEFENSE_REFERENCE_CATALOG = [
          developer='SpektreWorks (public reporting)',
          broad_role='One-way attack', aliases='LUCAS',
          source=_LUCAS_SOURCE, secondary_source=_LUCAS_SECONDARY,
-         simulation_enabled=False,
-         record_type='Public reference, no physics or mission simulation')
+         simulation_enabled=False, educational_math_enabled=True,
+         record_type='Public reference with shared abstract mathematical demonstration')
 ]
 
 
 def defense_reference_catalog_table():
     """Non-operational identification and provenance only."""
     return pd.DataFrame(DEFENSE_REFERENCE_CATALOG).copy()
+
+
+# ============================================================================
+# SHARED EDUCATIONAL MATHEMATICS FOR PUBLIC DEFENSE REFERENCE NAMES
+# ============================================================================
+# Non-operational and label-independent by design. Selecting a reference entry
+# changes the displayed historical/public metadata ONLY. It does not customize
+# any aerodynamic coefficients, geometry, inertia, propulsion, control, mass,
+# route, battery, range, endurance, targeting, or operational flight parameters.
+# This is distinct from the civilian UAV flight-physics simulation above.
+EDUCATIONAL_POLAR_ASSUMPTIONS = {
+    'aspect_ratio': 8.0, 'span_efficiency': 0.8, 'zero_lift_drag': 0.04,
+    'lift_curve_slope_rad': 2.0 * math.pi,
+    'basis': 'IDEALIZED_GENERIC_SMALL_ANGLE_THEORY_NOT_AIRCRAFT_DATA',
+}
+
+
+def public_reference_educational_math(reference_name: str, alpha_deg: float) -> dict:
+    """Shared nondimensional teaching equation, never a weapon performance model.
+
+    The selected name appears in the result provenance but has no influence on
+    any computed quantity. The generic small-angle approximation is explicitly
+    bounded to +/-8 degrees; it is NOT a stall, maneuver or performance model.
+    """
+    names = {entry['aircraft'] for entry in DEFENSE_REFERENCE_CATALOG}
+    if reference_name not in names:
+        raise ValueError('UNKNOWN_PUBLIC_REFERENCE_ENTRY')
+    alpha = float(alpha_deg)
+    if not math.isfinite(alpha) or abs(alpha) > 8.0:
+        raise ValueError('IDEALIZED_SMALL_ANGLE_DOMAIN_EXCEEDED')
+    a = EDUCATIONAL_POLAR_ASSUMPTIONS
+    cl = a['lift_curve_slope_rad'] * math.radians(alpha)
+    cdi = cl * cl / (math.pi * a['span_efficiency'] * a['aspect_ratio'])
+    cd = a['zero_lift_drag'] + cdi
+    return {
+        'selected_public_reference': reference_name,
+        'basis': a['basis'], 'alpha_deg': alpha,
+        'generic_cl': float(cl), 'generic_induced_cd': float(cdi),
+        'generic_total_cd': float(cd), 'mode': 'NON_OPERATIONAL_EDUCATIONAL_MATHEMATICS',
+        'aircraft_specific': False,
+    }
+
+
+def public_reference_orientation_math(roll_deg: float, pitch_deg: float,
+                                      yaw_deg: float) -> dict:
+    """Dimensionless attitude demonstration with no translational or mission model."""
+    r, p, y = (float(v) for v in (roll_deg, pitch_deg, yaw_deg))
+    if not all(math.isfinite(v) for v in (r, p, y)):
+        raise ValueError('EDUCATIONAL_ATTITUDE_INPUT_NONFINITE')
+    if not (-35.0 <= r <= 35.0 and -25.0 <= p <= 25.0 and -180.0 <= y <= 180.0):
+        raise ValueError('EDUCATIONAL_ATTITUDE_INPUT_OUT_OF_DOMAIN')
+    q = q_from_euler(math.radians(r), math.radians(p), math.radians(y))
+    matrix = body_to_ned(q)
+    if not np.all(np.isfinite(matrix)) or not np.allclose(
+            matrix.T @ matrix, np.eye(3), atol=1e-12):
+        raise ValueError('EDUCATIONAL_ATTITUDE_ROTATION_INVALID')
+    return {'quaternion_wxyz': [float(x) for x in q],
+            'body_axes_in_reference_frame': matrix.tolist(),
+            'mode': 'NON_OPERATIONAL_EDUCATIONAL_MATHEMATICS'}
+
+
+def public_reference_math_workspace(reference_name: str) -> None:
+    """Interactive classroom figures, isolated from the aircraft mission solver."""
+    if reference_name not in {e['aircraft'] for e in DEFENSE_REFERENCE_CATALOG}:
+        raise ValueError('UNKNOWN_PUBLIC_REFERENCE_ENTRY')
+    st.markdown('#### Interactive mathematical research simulation')
+    st.info('The selected aircraft is a PUBLIC REFERENCE LABEL, not a calibrated '
+            'physics profile. These nondimensional aerodynamic curves and quaternion '
+            'attitude axes are identical for every entry. They do not estimate the '
+            'real aircraft\'s range, energy, payload, speed, mission performance, '
+            'control authority, or trajectory.')
+    st.caption(f'Public reference selected: **{reference_name}**. '
+               'Mathematical model: generic classroom demonstration only.')
+    alpha = st.slider('Generic teaching angle of attack (degrees)',
+                      min_value=-8.0, max_value=8.0, value=2.0,
+                      step=0.5, key='defense_math_alpha')
+    samples = [public_reference_educational_math(reference_name, float(x))
+               for x in np.linspace(-8., 8., 65)]
+    current = public_reference_educational_math(reference_name, alpha)
+    aero = go.Figure()
+    aero.add_trace(go.Scatter(x=[v['alpha_deg'] for v in samples],
+                              y=[v['generic_cl'] for v in samples],
+                              name='Generic C_L (small-angle theory)', mode='lines'))
+    aero.add_trace(go.Scatter(x=[v['alpha_deg'] for v in samples],
+                              y=[v['generic_total_cd'] for v in samples],
+                              name='Generic C_D = C_D0 + C_Di', mode='lines'))
+    aero.add_vline(x=alpha, line_dash='dot', opacity=.65)
+    aero.update_layout(title='Idealized dimensionless coefficient demonstration',
+        xaxis_title='Teaching angle of attack (degrees)',
+        yaxis_title='Nondimensional coefficient', height=350,
+        margin=dict(l=8,r=8,t=42,b=8), legend=dict(orientation='h',y=-.35))
+    st.plotly_chart(aero, use_container_width=True, key='defense_math_coefficients')
+    st.caption('Equations: C_L = 2π α (α in radians), '
+               'C_Di = C_L²/(π e AR), C_D = C_D0 + C_Di. '
+               'Illustrative constants: AR=8, e=0.8, C_D0=0.04. '
+               'No airfoil, airframe, or published vehicle coefficient has been assigned.')
+    with st.expander('Quaternion attitude mathematics (3D)', expanded=True):
+        st.caption('An orientation-only rigid-body coordinate-frame illustration. '
+                   'There is no propulsion, position integration, autopilot, or mission trajectory.')
+        roll=st.slider('Illustrative roll (degrees)', -35., 35., 0., 1.,
+                       key='defense_math_roll')
+        pitch=st.slider('Illustrative pitch (degrees)', -25., 25., 0., 1.,
+                        key='defense_math_pitch')
+        yaw=st.slider('Illustrative yaw (degrees)', -180., 180., 0., 5.,
+                      key='defense_math_yaw')
+        attitude=public_reference_orientation_math(roll,pitch,yaw)
+        axes=np.array(attitude['body_axes_in_reference_frame'])
+        fig=go.Figure()
+        for i,(axis,label,color) in enumerate((
+                (0,'Body X','#ff6f77'),(1,'Body Y','#55eab6'),(2,'Body Z','#6cacff'))):
+            tip=axes[:,axis]
+            fig.add_trace(go.Scatter3d(x=[0,float(tip[0])],
+                y=[0,float(tip[1])],z=[0,float(tip[2])],
+                mode='lines+markers',name=label,
+                line=dict(color=color,width=9),marker=dict(size=3,color=color)))
+        fig.update_layout(height=400, margin=dict(l=0,r=0,b=0,t=0),
+            scene=dict(xaxis=dict(range=[-1.2,1.2],title='Reference X'),
+                       yaxis=dict(range=[-1.2,1.2],title='Reference Y'),
+                       zaxis=dict(range=[-1.2,1.2],title='Reference Z'),
+                       aspectmode='cube'))
+        st.plotly_chart(fig,use_container_width=True,key='defense_math_quaternion')
+        st.caption('Quaternion (w, x, y, z): '+', '.join(
+            f'{v:.4f}' for v in attitude['quaternion_wxyz']))
+    with st.expander('Evidence and model applicability', expanded=False):
+        st.write('**Selected reference:** '+reference_name)
+        st.write('**Math status:** Shared generic equations; no vehicle identification.')
+        st.write('**Domain:** |α| ≤ 8° in an illustrative linear attached-flow approximation.')
+        st.write('**Attitude:** Generic quaternion/Euler relationship, orientation only.')
+        st.write('**Aircraft-specific fidelity:** NOT ASSESSED.')
+        st.write('**Operational predictions:** NOT IMPLEMENTED for these references.')
+        st.markdown('[NASA Glenn induced drag reference]('
+            'https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/induced-drag-coefficient/)')
+    payload = dict(current)
+    payload['orientation'] = attitude
+    st.download_button('Export educational math state (JSON)',
+        data=json.dumps(payload,indent=2),file_name='public_reference_educational_math.json',
+        mime='application/json', key='defense_math_export')
 
 
 def battery_mass_kg(wh, specific_energy_whkg):
@@ -3806,6 +3945,211 @@ def parse_waypoints(text,default_alt):
     return points
 
 
+
+# ============================================================================
+# v0.8.31 | CIVILIAN ONBOARD EDGE AI COMPUTER RESEARCH TWIN
+# Hardware power/memory modes are publicly documented device specifications;
+# service times, assembly mass, thermal RC constants, camera tasks and processor
+# utilization are *illustrative modeling inputs*, NOT device measurements.
+# The compute module NEVER drives guidance, actuators, targeting or autonomy.
+# ============================================================================
+EDGE_AI_ALLOWED_AIRCRAFT = frozenset({
+    'Generic Quad', 'DJI Phantom', 'Skydio 2+', 'Freefly Alta 8',
+    'Custom Build', 'Quantum Systems Vector', 'Vector AI (Fixed-Wing)',
+    'Vector AI (Multicopter)', 'DJI Matrice 350 RTK',
+})
+# UIUC lightweight testbed is excluded: its zero declared payload allowance
+# cannot carry an additional compute module without changing the airframe.
+EDGE_AI_HARDWARE = {
+    'Generic low-power research SoC': dict(ram_gb=4., peak_w=5., idle_w=1.,
+        mass_kg=.08, r_th_k_w=7., c_th_j_k=35., throttle_c=75., shutdown_c=90.,
+        provenance='ASSUMED_GENERIC_RESEARCH_HARDWARE',
+        reference='Explicit research assumption, no manufacturer equivalence'),
+    'Jetson Orin Nano Super research envelope': dict(ram_gb=8., peak_w=25., idle_w=7.,
+        mass_kg=.25, r_th_k_w=3., c_th_j_k=80., throttle_c=80., shutdown_c=95.,
+        provenance='PUBLISHED_POWER_AND_RAM_ASSUMED_BOARD_MASS_THERMALS',
+        reference='https://docs.nvidia.com/jetson/orin-nano-devkit/user-guide/index.html'),
+    'Jetson Orin NX 16GB research envelope': dict(ram_gb=16., peak_w=40., idle_w=10.,
+        mass_kg=.25, r_th_k_w=2.5, c_th_j_k=100., throttle_c=80., shutdown_c=95.,
+        provenance='PUBLISHED_MODULE_POWER_RAM_ASSUMED_CARRIER_MASS_THERMALS',
+        reference='https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/PlatformPowerAndPerformance/JetsonOrinNanoSeriesJetsonOrinNxSeriesAndJetsonAgxOrinSeries.html'),
+}
+EDGE_AI_REQUIREMENTS = [
+    ('EDGE-001','Scope isolation from military-reference and autonomous-control paths','test_invalid_memory_and_mass_and_military_rejections','EDGE_AI_ALLOWED_AIRCRAFT'),
+    ('EDGE-002','Published power/RAM distinguished from assumed mass and thermal parameters','test_hardware_public_mode_bounds_and_assumption_label','EDGE_AI_HARDWARE'),
+    ('EDGE-003','Reject overcommitted memory and unrecognized hardware','test_invalid_memory_and_mass_and_military_rejections','edge_configuration'),
+    ('EDGE-004','Process sensor frames no earlier than their arrival times','test_event_scheduler_never_finishes_before_sensor_frame_arrival','EdgeComputeTwin.step'),
+    ('EDGE-005','Bound queue and report drops and inference deadlines','test_overload_causes_backlog_and_deadline_miss','EdgeComputeTwin.step'),
+    ('EDGE-006','Model declared thermal RC and processor throttling','test_thermal_throttle_responds_to_heat_and_cools_after_load','EdgeComputeTwin.step'),
+    ('EDGE-007','Integrate AI electrical demand into actual aircraft battery power','test_coupled_power_and_mass_telemetry_when_feasible','run_physics'),
+    ('EDGE-008','Account for installed board mass in aircraft loading','test_enabled_module_state_exports_integrated_energy_and_source','scenario_setup'),
+    ('EDGE-009','Model bounded synthetic camera outages','test_fault_injection_discards_input_frames','EdgeComputeTwin.step'),
+    ('EDGE-010','3D chip state must reflect replay temperature','test_3d_plotly_uses_temperatures_not_static_chip_color','edge_ai_board_plotly'),
+    ('EDGE-011','Do not label host ONNX inference latency as hardware performance','MANUAL_UI_OPEN','onnx_host_benchmark_workspace'),
+    ('EDGE-012','Expose time-stamped inference, electrical and thermal telemetry','test_enabled_module_state_exports_integrated_energy_and_source','EdgeComputeTwin.telemetry'),
+    ('EDGE-013','Preflight reports peak research-compute power headroom','test_peak_compute_headroom_is_review_not_claimed_feasible','scenario_preflight'),
+    ('EDGE-014','Detect AI module supply brownouts without claiming successful inference','test_power_accounting_brownout','EdgeComputeTwin.account_delivered'),
+]
+
+EDGE_DEFAULT = dict(enabled=False,hardware='Generic low-power research SoC',
+    fps=8.,service_ms=55.,deadline_ms=120.,model_memory_mb=512.,
+    frame_memory_mb=16.,max_queue=8, sensor_fault_start_s=1e9,
+    sensor_fault_duration_s=0.,seed=2026)
+
+
+def edge_configuration(config):
+    raw=config.get('edge_ai') or {}
+    if not isinstance(raw,dict):
+        raise ValueError('EDGE_AI_CONFIGURATION_MUST_BE_A_DICT')
+    cfg=dict(EDGE_DEFAULT)
+    cfg.update(raw)
+    if not cfg['enabled']:
+        return cfg, None
+    if config.get('aircraft') not in EDGE_AI_ALLOWED_AIRCRAFT:
+        raise ValueError('EDGE_AI_ONLY_ON_DECLARED_CIVILIAN_RESEARCH_PROFILES')
+    if config.get('swarm_enabled',False):
+        raise ValueError('EDGE_AI_NOT_COUPLED_TO_SWARM_RESEARCH')
+    hardware=EDGE_AI_HARDWARE.get(cfg['hardware'])
+    if hardware is None:
+        raise ValueError('EDGE_AI_UNKNOWN_HARDWARE')
+    bounds={'fps':(.1,30.),'service_ms':(1.,2000.),'deadline_ms':(1.,5000.),
+            'model_memory_mb':(1.,32768.),'frame_memory_mb':(.1,1024.),
+            'sensor_fault_start_s':(0.,1e10),'sensor_fault_duration_s':(0.,3600.)}
+    for field,(lo,hi) in bounds.items():
+        try: value=float(cfg[field])
+        except (TypeError,ValueError,OverflowError):
+            raise ValueError('EDGE_AI_INVALID_'+field.upper())
+        if not math.isfinite(value) or not lo<=value<=hi:
+            raise ValueError('EDGE_AI_INVALID_'+field.upper())
+        cfg[field]=value
+    if isinstance(cfg.get('max_queue'),bool) or not isinstance(cfg.get('max_queue'),(int,np.integer)) or not 1<=cfg['max_queue']<=128:
+        raise ValueError('EDGE_AI_INVALID_QUEUE_LIMIT')
+    if cfg['model_memory_mb']+cfg['frame_memory_mb']*(cfg['max_queue']+1) > 1024.*hardware['ram_gb']:
+        raise ValueError('EDGE_AI_MEMORY_OVERCOMMITTED')
+    return cfg,hardware
+
+
+class EdgeComputeTwin:
+    """Time-stepped bounded single-worker FIFO research workload model.
+
+    Latencies are user-declared hypothetical numbers, NOT benchmark results.
+    No inference results are used as flight-controller input. Event queue and
+    thermal dynamics are deterministic for an identical configuration and dt.
+    """
+    def __init__(self,cfg,hardware,ambient_c=25.):
+        self.cfg,self.hw=cfg,hardware
+        self.jobs=[]  # [arrival_seconds, remaining_service_seconds]
+        self.time=0.
+        self.next_frame=0.
+        self.temp=float(ambient_c)
+        self.frame_count=0;self.completed=0;self.dropped=0
+        self.missed=0;self.latency_sum_ms=0.
+        self.energy_wh=0.;self.delivered_energy_wh=0.
+        self.power_w=hardware['idle_w'];self.power_delivered_w=self.power_w
+        self.throttled=False;self.shutdown=False;self.brownout=False
+        self.peak_ram_mb=cfg['model_memory_mb']
+        self.last_latency_ms=0.
+        self.compute_utilization=0.
+    def step(self,dt,ambient_c=25.,power_available=True):
+        dt=float(dt); ambient_c=float(ambient_c)
+        if not math.isfinite(dt) or dt<=0 or not math.isfinite(ambient_c):
+            raise ValueError('EDGE_AI_INVALID_DT_OR_AMBIENT')
+        c=self.cfg;h=self.hw;end=self.time+dt
+        throttled=self.temp>=h['throttle_c']
+        shutdown=self.temp>=h['shutdown_c']
+        fault=lambda t:(c['sensor_fault_start_s']<=t<
+                        c['sensor_fault_start_s']+c['sensor_fault_duration_s'])
+        effective_speed=.4 if throttled else 1.
+        busy=0.;t=self.time
+        # Discrete events enforce causality: jobs cannot execute before arrival.
+        # This scheduler models a single non-preemptive FIFO inference worker.
+        while t<end-1e-11:
+            if self.next_frame<=t+1e-11:
+                arrival=self.next_frame
+                self.next_frame+=1./c['fps'];self.frame_count+=1
+                if fault(arrival) or shutdown or not power_available or len(self.jobs)>=c['max_queue']:
+                    self.dropped+=1
+                else:
+                    self.jobs.append([arrival,c['service_ms']/1000.])
+                continue
+            next_arrival=min(end,self.next_frame)
+            interval=next_arrival-t
+            if self.jobs and power_available and not shutdown:
+                required=self.jobs[0][1]/effective_speed
+                elapsed=min(interval,required)
+                self.jobs[0][1]-=elapsed*effective_speed
+                busy+=elapsed
+                t+=elapsed
+                if self.jobs[0][1]<1e-10:
+                    finished=self.jobs.pop(0)
+                    latency=max(0.,(t-finished[0])*1000.)
+                    self.last_latency_ms=latency
+                    self.latency_sum_ms+=latency
+                    self.completed+=1
+                    if latency>c['deadline_ms']:self.missed+=1
+                continue
+            t=next_arrival
+        fraction=min(1.,busy/dt)
+        self.compute_utilization=fraction
+        self.power_w=(h['idle_w']+(h['peak_w']-h['idle_w'])*fraction
+                      if not shutdown and power_available else 0.)
+        # Exact constant-power solution for a lumped thermal RC per step.
+        tau=h['r_th_k_w']*h['c_th_j_k']
+        equilibrium=ambient_c+h['r_th_k_w']*self.power_w
+        self.temp=equilibrium+(self.temp-equilibrium)*math.exp(-dt/tau)
+        self.throttled=bool(throttled or self.temp>=h['throttle_c'])
+        self.shutdown=bool(shutdown or self.temp>=h['shutdown_c'])
+        self.energy_wh+=self.power_w*dt/3600.
+        self.peak_ram_mb=max(self.peak_ram_mb,c['model_memory_mb']+
+                                  (len(self.jobs)+1)*c['frame_memory_mb'])
+        self.time=end
+        return self.power_w
+    def account_delivered(self,w,dt):
+        w=max(0.,min(self.power_w,float(w)))
+        self.power_delivered_w=w
+        self.delivered_energy_wh+=w*float(dt)/3600.
+        self.brownout=w+1e-5<.9*self.power_w
+    def telemetry(self):
+        return dict(edge_compute_utilization_pct=100.*self.compute_utilization,
+                    edge_power_w=self.power_w,
+                    edge_power_delivered_w=self.power_delivered_w,
+                    edge_temp_c=self.temp,
+                    edge_ram_mb=self.cfg['model_memory_mb']+
+                       len(self.jobs)*self.cfg['frame_memory_mb'],
+                    edge_queue=len(self.jobs),
+                    edge_frames=self.frame_count,
+                    edge_completed=self.completed,
+                    edge_dropped=self.dropped,
+                    edge_deadline_missed=self.missed,
+                    edge_last_latency_ms=self.last_latency_ms,
+                    edge_throttled=self.throttled,
+                    edge_shutdown=self.shutdown,
+                    edge_brownout=self.brownout,
+                    edge_energy_requested_wh=self.energy_wh,
+                    edge_energy_delivered_wh=self.delivered_energy_wh)
+
+
+def edge_preflight(config):
+    cfg,hw=edge_configuration(config)
+    if not cfg['enabled']:
+        return []
+    issues=[]
+    if cfg['service_ms']*cfg['fps']>=1000.:
+        issues.append(('REVIEW','EDGE_AI_QUEUE_OVERLOAD',
+            'Declared mean processing demand meets or exceeds single-worker capacity; drops or stale inference are expected.'))
+    if cfg['service_ms']>cfg['deadline_ms']:
+        issues.append(('REVIEW','EDGE_AI_DEADLINE_UNATTAINABLE',
+            'Declared inference service time exceeds its own deadline, even without queueing.'))
+    original_payload=float(config.get('payload_g',0.))
+    profile=UAV_PROFILES[config['aircraft']]
+    if original_payload+hw['mass_kg']*1000>float(profile['max_payload_g'])+1e-9:
+        issues.append(('BLOCK','EDGE_AI_PAYLOAD_MASS_EXCEEDS_LIMIT',
+            'Research board assembly plus existing payload exceeds the selected profile payload allowance.'))
+    if profile['power_system']!='Battery':
+        issues.append(('BLOCK','EDGE_AI_BATTERY_AIRCRAFT_ONLY',
+            'The coupled electrical model presently supports battery-powered civilian aircraft only.'))
+    return issues
+
 def scenario_setup(config):
     name=config['aircraft']
     if name in {entry['aircraft'] for entry in DEFENSE_REFERENCE_CATALOG}:
@@ -3863,7 +4207,9 @@ def scenario_setup(config):
     drag_factor=float(config['stealth_drag'])*float(config.get('maneuver_drag',1.))
     if profile['type']=='fixed':profile['cd0']*=drag_factor
     else:profile['parasitic_area_m2']*=drag_factor
+    edge_cfg,edge_hw=edge_configuration(config)
     payload=float(config['payload_g'])/1000.
+    if edge_hw is not None:payload+=float(edge_hw['mass_kg'])
     if not math.isfinite(payload) or payload<0.:
         raise ValueError('Payload must be a nonnegative finite mass')
     declared_payload=float(profile['max_payload_g'])/1000.
@@ -3954,6 +4300,8 @@ def scenario_setup(config):
                 if calibration is not None else battery_reference_for(name)['nominal_voltage_v']),
             calibration=(calibration['battery'] if calibration is not None else None))
     prop=Propulsion(profile,params,battery)
+    if edge_hw is not None:
+        prop.hotel+=float(edge_hw['idle_w'])  # average demand is simulated dynamically below
     speed=config['speed_kmh']/3.6
     trim=solve_trim(params,profile,atmosphere[0],speed,mass,prop.max_shaft,
                     ambient_temperature_c=float(config['temp_c']))
@@ -3994,6 +4342,12 @@ def scenario_setup(config):
 
 
 def run_physics(config):
+    # Use exactly the same screening logic as the UI and recovery proposal.
+    # Direct calls cannot bypass blocked initial conditions.
+    gate=scenario_preflight(config)
+    if gate['blocked']:
+        blocks=','.join(i['code'] for i in gate['issues'] if i['severity']=='BLOCK')
+        raise ValueError('PREFLIGHT_BLOCKED: '+blocks)
     # Explicit validity checks prevent apparently successful but out-of-domain
     # research scenarios. No implied aircraft structural/airworthiness envelope.
     altitude=float(config['altitude_m'])
@@ -4001,7 +4355,8 @@ def run_physics(config):
     change=float(config.get('altitude_change_m',0.))
     if not 0. <= altitude+change <= ATMOSPHERE_MAX_ALTITUDE_M:
         raise ValueError('Commanded altitude exceeds 0..11000 m model domain.')
-    waypoints=parse_waypoints(config['waypoints'],config['altitude_m'])
+    waypoints=(parse_waypoints(config['waypoints'],config['altitude_m'])
+               if _waypoints_are_active(config) else [])
     profile,mass,batt_mass,fuel,params,battery,prop,trim=scenario_setup(config)
     initial_odd=manufacturer_operating_envelope_assessment(
         config['aircraft'],config,aircraft_mass_kg=mass)
@@ -4040,6 +4395,10 @@ def run_physics(config):
     substeps=math.ceil(output_dt/.02)
     dt=output_dt/substeps
     total_steps=int(config['duration_min']*60/output_dt)
+    edge_cfg,edge_hw=edge_configuration(config)
+    edge_twin=(EdgeComputeTwin(edge_cfg,edge_hw,ambient_c=float(config['temp_c']))
+               if edge_hw is not None else None)
+    baseline_hotel_w=prop.hotel-(edge_hw['idle_w'] if edge_hw is not None else 0.)
     rows=[];status='DURATION_LIMIT';last_packet=None
     numerical_fault_message=None
     essential_power_loss_s=0.
@@ -4054,6 +4413,11 @@ def run_physics(config):
         s.active_waypoint=ix;s.wp_distance_m=dist
         s.flight_mode=config.get('flight_mode','Waypoint Mission')
         target_speed=0. if s.flight_mode=='Hover' else speed
+        if edge_twin is not None:
+            _,atmo_edge_temp,_=atmosphere_state(s.altitude_m,config['temp_c'])
+            # Scheduling is informational; no edge inference enters the controller.
+            prop.hotel=baseline_hotel_w+edge_twin.step(
+                output_dt,atmo_edge_temp,power_available=not edge_twin.brownout)
         raw=autopilot.command(s,heading,command_alt,target_speed,output_dt,
                               mode=s.flight_mode)
         protected,envelope_status=(envelope.apply(s,raw) if config['envelope'] else
@@ -4125,7 +4489,12 @@ def run_physics(config):
         if domain_exit:
             # Do not report out-of-envelope states as successful flight.
             break
+        if edge_twin is not None:
+            # Hotel priority supplies base avionics first; only remaining hotel
+            # delivery belongs to the AI board. Integrate actual delivered Wh.
+            edge_twin.account_delivered(max(0.,s.hotel_delivered_w-baseline_hotel_w),output_dt)
         row=asdict(s)
+        if edge_twin is not None:row.update(edge_twin.telemetry())
         row.update(asdict(last_packet))
         row.update(ekf.telemetry())
         ins_roll,ins_pitch,ins_yaw=euler_from_q(ins.q)
@@ -4321,6 +4690,20 @@ def run_physics(config):
             endurance['status']='No defensible projection: CALIBRATION_DOMAIN_EXCEEDED'
             endurance['invalid_reasons']=list(endurance.get('invalid_reasons',[]))+[
                 'CALIBRATION_DOMAIN_EXCEEDED']
+    if edge_twin is not None:
+        scenario['edge_ai']=dict(config=edge_cfg,hardware=edge_hw,
+            installed_mass_kg=float(edge_hw['mass_kg']),
+            model_source_reference=edge_hw['reference'],
+            classification='SIMULATED_WORKLOAD_NOT_EXECUTED_ONBOARD_INFERENCE',
+            inference_latency_source='USER_ASSUMED_SERVICE_TIME',
+            electrical_energy_delivery='ADDED_TO_EXISTING_HOTEL_LOAD',
+            autonomous_control='NOT_IMPLEMENTED')
+        metrics['edge_ai']=dict(frames=edge_twin.frame_count,
+            completed=edge_twin.completed,dropped=edge_twin.dropped,
+            deadlines_missed=edge_twin.missed,temperature_c=edge_twin.temp,
+            energy_wh=edge_twin.delivered_energy_wh,
+            queued_at_end=len(edge_twin.jobs),
+            physically_validated=False)
     return dict(telemetry=telemetry,final=final,metrics=metrics,
         trim=trim,params=params,profile=profile,observability=observability,
         waypoints=display_waypoints,swarm=swarm,scenario=scenario,
@@ -5986,7 +6369,9 @@ def bundle_zip(result):
             'Optional GPT advisor reviews telemetry only; no control path.\n'
             'PX4/ArduPilot connections and real hybrid assist are not implemented.\n'
             'Country-of-origin catalog sources are included; model power/drag values are proxies.\n'
-            'Shahed/LUCAS entries are reference-only and not available for simulation.\n')
+            'Shahed/LUCAS public entries have isolated educational equations/orientation only.\n'
+            'These entries remain excluded from operational UAV physics, energy, payload,\n'
+            'mission planning, and autonomy.\n')
     return memory.getvalue()
 
 
@@ -6002,7 +6387,232 @@ def theme_css():
     </style>''',unsafe_allow_html=True)
 
 
+
+
+# ============================================================================
+# v0.8.29 | EXPLAINABLE, NON-WEAPON-SPECIFIC SCENARIO RECOVERY
+# ============================================================================
+# Published coefficients and aircraft type limits must never be rewritten to
+# make a scenario appear feasible. Only explicit UI inputs are recoverable.
+# Any platform-specific weapons performance remains outside this workspace.
+_RECOVERY_FIXED_KEYS = {
+    'altitude_m': 'v029_initial_altitude',
+    'altitude_change_m': 'v029_altitude_change',
+    'duration_min': 'v029_duration',
+    'temp_c': 'v029_sea_level_temp',
+    'wind_kmh': 'v029_wind_speed',
+    'waypoints': 'v029_waypoints',
+    'motor_fault': 'v029_motor_fault',
+    'gps_dropout': 'v029_gps_dropout',
+}
+
+
+def _waypoints_are_active(config):
+    """Waypoint coordinates affect physics only in a waypoint or swarm study."""
+    return (str(config.get('flight_mode', 'Forward Flight')) == 'Waypoint Mission'
+            or bool(config.get('swarm_enabled', False)))
+
+
+def _battery_dispatch_issues(config):
+    """Return declared screening-limit breaches, not certified BMS findings.
+
+    Shared by interactive preflight and direct simulation entry points. Battery
+    capacity and thermal cutoffs are research assumptions for generic packs.
+    """
+    name=config.get('aircraft')
+    profile=UAV_PROFILES.get(name)
+    if not profile or profile.get('power_system') != 'Battery':
+        return []
+    try:
+        soc=float(config['battery_soc'])
+        reserve=float(config['reserve_soc'])
+        temp=float(config['battery_temp'])
+    except (KeyError,TypeError,ValueError,OverflowError):
+        return [('BATTERY_INITIAL_STATE_INVALID',
+                 'Initial SOC, reserve, and pack temperature must be finite.',
+                 'Enter finite pack conditions within the model limits.')]
+    if not all(math.isfinite(v) for v in (soc,reserve,temp)) or not (0 <= soc <= 100 and 0 <= reserve < 100):
+        return [('BATTERY_INITIAL_STATE_INVALID',
+                 'Battery initial state or reserve is outside the declared SOC domain.',
+                 'Select valid SOC and reserve parameters.')]
+    findings=[]
+    if soc <= reserve + 1e-8:
+        findings.append(('INITIAL_SOC_NOT_ABOVE_RESERVE',
+            f'Initial SOC ({soc:g}%) does not exceed the declared reserve ({reserve:g}%).',
+            'Increase initial SOC above the reserve or explicitly change the reserve policy.'))
+    if temp >= BATTERY_RESEARCH_THERMAL_LIMIT_C - 1e-8:
+        findings.append(('INITIAL_PACK_TEMPERATURE_AT_RESEARCH_LIMIT',
+            f'Initial pack temperature ({temp:g} °C) meets/exceeds the '
+            f'illustrative {BATTERY_RESEARCH_THERMAL_LIMIT_C:g} °C research thermal limit.',
+            'Choose a supported initial battery temperature; this is NOT a certified pack safety threshold.'))
+    return findings
+
+
+def scenario_recovery_plan(config, gate=None, *, restore_baseline=False):
+    """Propose transparent UI corrections; never certify a mission.
+
+    ``automatic`` only marks objective, non-mission-editing input repairs.
+    Route geometry, uncertainty, controller failures and aircraft coefficients
+    must never be silently changed. Suggestions remain user-approvable.
+    """
+    name=config.get('aircraft')
+    if name not in UAV_PROFILES or name in ('MQ-1 Predator','MQ-9 Reaper'):
+        return {'changes':[], 'automatic_changes':[], 'status':'NOT_AVAILABLE',
+                'reason':'Recovery is confined to non-weapon-specific research profiles.'}
+    profile=UAV_PROFILES[name]
+    gate=gate if gate is not None else scenario_preflight(config)
+    codes={item['code'] for item in gate.get('issues',[])}
+    change_map={}
+
+    def propose(field,new,reason,automatic=False):
+        old=config.get(field)
+        if old==new: return
+        if field in change_map:
+            change_map[field].update(new=new,reason=reason,automatic=automatic)
+        else:
+            change_map[field]=dict(field=field,old=old,new=new,
+                                   reason=reason,automatic=automatic)
+
+    default_speed=float(DEFAULT_SPEED_KMH[name])
+    if restore_baseline:
+        base={'payload_g':0,'speed_kmh':default_speed,'altitude_m':100.,
+              'altitude_change_m':0.,'duration_min':5,'flight_mode':'Forward Flight',
+              'temp_c':25.,'wind_kmh':0.,'waypoints':'150,0,100',
+              'motor_fault':False,'gps_dropout':False, 'battery_soc':100.,
+              'battery_temp':25.,'overspeed':float(math.ceil(max(32.,1.4*default_speed/3.6)))}
+        if profile['power_system']=='Battery':
+            base['battery_wh']=float(profile['battery_wh'])
+        for field,value in base.items():
+            propose(field,value,'Declared aircraft-based research baseline; not manufacturer certified.')
+    else:
+        if 'INITIAL_SOC_NOT_ABOVE_RESERVE' in codes:
+            propose('battery_soc', 100.,
+                    'Explicitly restore SOC above the selected reserve; reserve policy is preserved.')
+        if 'INITIAL_PACK_TEMPERATURE_AT_RESEARCH_LIMIT' in codes:
+            propose('battery_temp', 25.,
+                    'Explicitly restore a supported illustrative pack temperature; do not infer real cooling.')
+        if 'COMMANDED_SPEED_EXCEEDS_SELECTED_PROTECTION_LIMIT' in codes:
+            # Never increase a selected safety/protection limit just to pass.
+            ceiling=float(config.get('overspeed',0.))*3.6
+            new_speed=round(min(default_speed,max(7.2,ceiling*0.9)),1)
+            if ceiling>=7.2 and new_speed/3.6<=float(config['overspeed']):
+                propose('speed_kmh',new_speed,'Lower airspeed to respect selected overspeed protection.',True)
+        if 'COMMANDED_ALTITUDE_OUTSIDE_ATMOSPHERE' in codes:
+            propose('altitude_change_m',0.,'Remove an out-of-domain altitude command.',True)
+        if 'INVALID_SCENARIO_INPUT' in codes:
+            for field,default in [('temp_c',25.),('altitude_m',100.),
+                                  ('wind_kmh',0.),('duration_min',5),
+                                  ('speed_kmh',default_speed)]:
+                try:
+                    val=float(config[field]); ok=math.isfinite(val)
+                    if field=='temp_c':ok=ok and -100.<=val<=80.
+                    if field=='altitude_m':ok=ok and 5.<=val<=ATMOSPHERE_MAX_ALTITUDE_M
+                    if field=='wind_kmh':ok=ok and val>=0.
+                    if field in ('speed_kmh','duration_min'):ok=ok and val>0.
+                    if not ok:propose(field,default,'Restore an invalid/out-of-model input.',True)
+                except (ValueError,TypeError,OverflowError,KeyError):
+                    propose(field,default,'Restore an invalid/nonfinite input.',True)
+        if 'WAYPOINT_FORMAT_OR_DOMAIN' in codes and _waypoints_are_active(config):
+            alt=float(config.get('altitude_m',100.))
+            alt=alt if math.isfinite(alt) and 5<=alt<=ATMOSPHERE_MAX_ALTITUDE_M else 100.
+            propose('waypoints',f'150,0,{alt:g}',
+                    'Replace malformed/out-of-domain waypoint text with a short illustrative route.')
+        if 'ROUTE_TIME_EXCEEDS_COMMANDED_SPEED_BUDGET' in codes or 'LOW_ROUTE_TIME_MARGIN' in codes:
+            summary=gate.get('summary',{})
+            nominal=float(summary.get('nominal_travel_time_s',0.))
+            needed=int(max(1,math.ceil(nominal/.55/60.))) if nominal>0 else 5
+            if int(config.get('duration_min',5))<min(20,needed):
+                propose('duration_min',min(20,needed),
+                        'Increase duration for a nominal 45% turn/climb/controller planning margin.')
+            if needed>20:
+                # An extremely long route cannot be made feasible by the GUI's
+                # 20-minute cap. Do NOT covertly optimize/modify mission path.
+                propose('flight_mode','Forward Flight',
+                    'Selected waypoint route exceeds the available planning horizon; use a simple baseline flight before redefining the route.')
+        if 'WAYPOINT_EXCEEDS_PUBLISHED_CEILING' in codes:
+            propose('flight_mode','Forward Flight',
+                    'Disable an infeasible waypoint objective; manually revise its altitudes against the source limit.')
+        if {'NO_FEASIBLE_INITIAL_TRIM','INITIAL_PROPULSION_POWER_INFEASIBLE',
+            'INITIAL_BATTERY_POWER_INFEASIBLE','INITIAL_MODEL_CONFIGURATION_REJECTED'} & codes:
+            propose('payload_g',0,'Return payload to unloaded research baseline.')
+            propose('speed_kmh',default_speed,
+                    'Use the profile reference airspeed, subject to renewed trim checks.')
+            if profile['power_system']=='Battery':
+                propose('battery_soc',100.,'Use the baseline full state-of-charge.')
+                propose('battery_wh',float(profile['battery_wh']),
+                        'Return battery capacity to the profile research reference.')
+            propose('temp_c',25.,'Use standard illustrative ambient conditions.')
+            propose('wind_kmh',0.,'Use a calm-air baseline before introducing disturbances.')
+        # Review conditions: proposals require a click, and are never applied
+        # automatically because they describe uncertain mission behavior.
+        if 'WIND_GEOMETRY_MAY_PREVENT_PROGRESS' in codes:
+            propose('wind_kmh',0.,'Use a calm-air comparison case, not a forecast.')
+        if 'INJECTED_MOTOR_FAULT' in codes:
+            propose('motor_fault',False,'Disable intentional degradation for the baseline.')
+        if 'INJECTED_GNSS_DROPOUT' in codes:
+            propose('gps_dropout',False,'Disable intentional GNSS dropout for the baseline.')
+    # Screen proposed corrections through the EXACT same preflight gate.
+    # A change is NEVER advertised as safe if it creates a new BLOCK.
+    original_blocks={i['code'] for i in gate.get('issues',[])
+                     if i['severity']=='BLOCK'}
+    pending=dict(config)
+    accepted=[]
+    rejected=[]
+    for entry in change_map.values():
+        candidate=dict(pending)
+        candidate[entry['field']]=entry['new']
+        candidate_gate=scenario_preflight(candidate)
+        new_blocks={i['code'] for i in candidate_gate['issues']
+                    if i['severity']=='BLOCK'}
+        introduced=new_blocks-original_blocks
+        if introduced:
+            rejected.append(dict(**entry,rejection='Creates a new preflight block: '+', '.join(sorted(introduced))))
+            continue
+        # Avoid auto-applying subjective mission or energy-policy choices;
+        # only deterministic input repairs can receive automatic=True.
+        entry=dict(entry)
+        entry['screened_status']=candidate_gate['status']
+        entry['remaining_blocks']=sorted(new_blocks)
+        accepted.append(entry)
+        pending=candidate
+    return {'changes':accepted,
+            'automatic_changes':[x for x in accepted if x['automatic']],
+            'rejected_changes':rejected,
+            'predicted_preflight':scenario_preflight(pending),
+            'status':'PROPOSED' if accepted else 'NO_CHANGE',
+            'reason':'Recommendations are research defaults, not measured manufacturer settings.'}
+
+
+def _recovery_widget_key(field,aircraft):
+    return _RECOVERY_FIXED_KEYS.get(field,{
+        'speed_kmh':f'speed_{aircraft}', 'payload_g':f'payload_{aircraft}',
+        'battery_wh':f'battery_{aircraft}','battery_soc':f'soc_{aircraft}',
+        'battery_temp':f'btemp_{aircraft}', 'reserve_soc':f'reserve_{aircraft}',
+        'overspeed':f'overspeed_{aircraft}', 'flight_mode':f'mode_{aircraft}',
+    }.get(field))
+
+
+def _apply_recovery_changes(changes,aircraft):
+    """Run as button callback, or at sidebar start before widgets are built."""
+    applied=[]
+    for entry in changes:
+        key=_recovery_widget_key(entry['field'],aircraft)
+        if key is None:continue
+        st.session_state[key]=entry['new']
+        applied.append(entry)
+    if applied:
+        st.session_state['v029_last_recovery']=applied
+        st.session_state['v028_preflight_ack']=False
+
+
+def _consume_pending_recovery():
+    pending=st.session_state.pop('v029_pending_recovery',None)
+    if pending:
+        _apply_recovery_changes(pending['changes'],pending['aircraft'])
+
+
 def sidebar_inputs():
+    _consume_pending_recovery()
     with st.sidebar:
         st.header('01 | Aircraft & Energy')
         regions=['All regions','United States','Japan','Iran','Europe',
@@ -6145,13 +6755,13 @@ def sidebar_inputs():
         st.header('02 | Mission Guidance')
         speed=st.number_input('Commanded airspeed (km/h)',min_value=7.2,
             value=float(DEFAULT_SPEED_KMH[name]),step=1.,key=f'speed_{name}')
-        alt=st.number_input('Initial altitude (m)',min_value=5.,value=100.,step=10.)
-        duration=st.slider('Simulation duration (min)',1,20,5)
+        alt=st.number_input('Initial altitude (m)',min_value=5.,value=100.,step=10.,key='v029_initial_altitude')
+        duration=st.slider('Simulation duration (min)',1,20,5,key='v029_duration')
         dt=st.select_slider('Control / telemetry Δt (s)',[.02,.05,.1],value=.05)
         allowed_modes=(['Forward Flight','Loiter','Waypoint Mission'] if profile['type']=='fixed'
                        else ['Hover','Forward Flight','Loiter','Waypoint Mission'])
         flight_mode=st.selectbox('Flight mode',allowed_modes,
-            index=allowed_modes.index('Waypoint Mission'),key=f'mode_{name}')
+            index=allowed_modes.index('Forward Flight'),key=f'mode_{name}')
         heading=st.slider('Forward-flight heading (°)',0,359,0,
             disabled=flight_mode not in ('Forward Flight','Hover'))
         check_ground_track=st.checkbox('Assess separate ground-track objective (report only)',
@@ -6165,25 +6775,25 @@ def sidebar_inputs():
         loiter_radius=st.slider('Loiter radius (m)',50.,500.,150.,10.,
             disabled=flight_mode!='Loiter')
         altitude_change=st.number_input('Commanded altitude change (m)',-500.,1000.,0.,10.,
-            disabled=flight_mode not in ('Forward Flight','Loiter'))
+            disabled=flight_mode not in ('Forward Flight','Loiter'),key='v029_altitude_change')
         capture=st.slider('Waypoint capture radius (m)',10,120,35)
         waypoints=st.text_area('Waypoint list: north,east,altitude (m)',
-            '400,0,120; 700,300,140; 400,650,110; 0,350,100; 0,0,100',height=105)
+            '400,0,120; 700,300,140; 400,650,110; 0,350,100; 0,0,100',height=105,key='v029_waypoints')
 
         st.header('03 | Environment & Disturbances')
-        temp=st.number_input('Sea-level temperature (°C)',value=25.,step=1.)
-        wind=st.number_input('Wind speed (km/h)',min_value=0.,value=8.,step=1.)
+        temp=st.number_input('Sea-level temperature (°C)',value=25.,step=1.,key='v029_sea_level_temp')
+        wind=st.number_input('Wind speed (km/h)',min_value=0.,value=0.,step=1.,key='v029_wind_speed')
         wind_dir=st.slider('Wind FROM (degrees)',0,359,270)
         operation_phase=st.selectbox('Manufacturer wind-limit phase',
             ['In Flight','Takeoff/Landing'],index=0,
             help='Aircraft takeoff/landing wind ratings are NOT assumed to be general flight limits. This setting evaluates a declared phase but does not add takeoff dynamics.')
         turbulence=st.selectbox('Turbulence (correlated gust proxy)',
-                                ['None','Light','Moderate','Severe'],index=1)
+                                ['None','Light','Moderate','Severe'],index=0)
         turb_seed=st.number_input('Turbulence seed',0,100000,1234)
         clouds=st.slider('Cloud cover (%)',0,100,50)
         humidity=st.slider('Humidity / haze factor',0.,1.,.5,.05)
         background=st.slider('Background complexity',0.,1.,.5,.05)
-        stealth=st.checkbox('Apply signature-management drag proxy',True)
+        stealth=st.checkbox('Apply signature-management drag proxy',False)
         stealth_drag=st.slider('Added drag multiplier',1.,1.5,1.10,.05,disabled=not stealth)
         stealth_drag=stealth_drag if stealth else 1.
         maneuver_drag=st.slider('Maneuver / installation drag proxy',1.,1.4,1.,.05,
@@ -6199,12 +6809,12 @@ def sidebar_inputs():
 
         st.header('05 | Sensors / Injected Faults')
         sensor_seed=st.number_input('Sensor seed',0,100000,42)
-        gps_dropout=st.checkbox('GNSS dropout',True)
+        gps_dropout=st.checkbox('GNSS dropout',False,key='v029_gps_dropout')
         gps_start=st.number_input('Dropout start (s)',0.,value=90.,step=10.)
         gps_duration=st.number_input('Dropout length (s)',0.,value=45.,step=5.)
-        imu_bias=st.checkbox('IMU bias',True)
-        baro_bias=st.checkbox('Barometer bias',True)
-        motor_fault=st.checkbox('Motor degradation',False)
+        imu_bias=st.checkbox('IMU bias',False)
+        baro_bias=st.checkbox('Barometer bias',False)
+        motor_fault=st.checkbox('Motor degradation',False,key='v029_motor_fault')
         motor_start=st.number_input('Motor fault start (s)',0.,value=150.,step=10.,disabled=not motor_fault)
         motor_health=st.slider('Degraded motor health',.35,1.,.75,.05,disabled=not motor_fault)
 
@@ -6239,7 +6849,7 @@ def sidebar_inputs():
             hybrid_enabled=False;hybrid_fraction=.10;hybrid_duration=10;hybrid_wh=200.
 
         st.header('07 | Swarm (Low-order)')
-        swarm_enabled=st.checkbox('Enable secondary swarm model',True)
+        swarm_enabled=st.checkbox('Enable secondary swarm model',False)
         swarm_size=st.slider('Number of vehicles',1,12,4,disabled=not swarm_enabled)
         swarm_rounds=st.slider('Coordination rounds',1,8,4,disabled=not swarm_enabled)
         swarm_coord=st.checkbox('Role-aware coordination',True,disabled=not swarm_enabled)
@@ -6250,8 +6860,6 @@ def sidebar_inputs():
         swarm_reserve=st.slider('Swarm RTB reserve (%)',5.,40.,15.,1.,disabled=not swarm_enabled)
         swarm_seed=st.number_input('Swarm seed',0,100000,2026,disabled=not swarm_enabled)
 
-        run=st.button(f'Run v{VERSION} Simulation',type='primary',use_container_width=True)
-        reset=st.button('Clear Previous Run',use_container_width=True)
     config=dict(aircraft=name,payload_g=payload,payload_mounting=payload_mounting,
         speed_kmh=speed,altitude_m=alt,
         flight_mode=flight_mode,heading_deg=heading,
@@ -6274,7 +6882,301 @@ def sidebar_inputs():
         swarm_reserve=swarm_reserve,swarm_seed=swarm_seed,**battery_conf)
     config['literature_section_polar']=reference_section
     config['literature_propeller_reference']=reference_propeller
-    return config,run,reset
+    with st.sidebar:
+        st.header('07A | Onboard Edge AI Compute Twin')
+        supported=(name in EDGE_AI_ALLOWED_AIRCRAFT and
+                   profile['power_system']=='Battery' and not swarm_enabled)
+        enabled=st.checkbox('Simulate onboard AI companion computer',False,
+            key='v031_edge_enabled',disabled=not supported)
+        if not supported:
+            st.caption('Coupled compute is limited to declared civilian battery-powered research profiles; it is unavailable for attack-system references, swarm mode, and uncharacterized propulsion sources.')
+        hardware_name=st.selectbox('AI module reference',list(EDGE_AI_HARDWARE),
+            key='v031_hardware',disabled=not enabled)
+        h=EDGE_AI_HARDWARE[hardware_name]
+        st.caption(f"Reference RAM {h['ram_gb']:.0f} GB | mode power up to {h['peak_w']:.0f} W | "
+                   f"assumed installed mass {h['mass_kg']:.2f} kg")
+        fps=st.slider('Synthetic camera input (frames/s)',1,30,8,disabled=not enabled,
+            key='v031_fps')
+        service=st.slider('Assumed inference service time (ms)',5,500,55,5,
+            disabled=not enabled,key='v031_service')
+        deadline=st.slider('Inference completion deadline (ms)',20,1000,120,10,
+            disabled=not enabled,key='v031_deadline')
+        memory=st.slider('Declared model RAM (MB)',128,4096,512,128,
+            disabled=not enabled,key='v031_memory')
+        max_queue=st.slider('Maximum queued frames',1,32,8,disabled=not enabled,
+            key='v031_queue')
+        fault=st.checkbox('Inject synthetic camera interruption',False,
+            disabled=not enabled,key='v031_fault')
+        fault_start=st.slider('Interruption starts (s)',0,300,30,
+            disabled=not (enabled and fault),key='v031_fault_start')
+        fault_duration=st.slider('Interruption length (s)',1,120,20,
+            disabled=not (enabled and fault),key='v031_fault_duration')
+        st.caption('Latency, thermal constants and assembly mass are RESEARCH ASSUMPTIONS, not Jetson benchmarks. No AI outputs feed the autopilot.')
+    config['edge_ai']=dict(enabled=bool(enabled and supported),hardware=hardware_name,
+        fps=float(fps),service_ms=float(service),deadline_ms=float(deadline),
+        model_memory_mb=float(memory),frame_memory_mb=16.,max_queue=max_queue,
+        sensor_fault_start_s=float(fault_start) if fault else 1e9,
+        sensor_fault_duration_s=float(fault_duration) if fault else 0.)
+    gate=scenario_preflight(config)
+    with st.sidebar:
+        st.header('08 | Preflight Scenario Check')
+        if gate['blocked']:
+            st.error('BLOCKED: correct the configuration before simulation.')
+        elif gate['review_required']:
+            st.warning('REVIEW: this scenario contains planning or fault-injection risks.')
+        else:
+            st.success('READY: applicable initial physical/model-domain checks passed (mission completion not guaranteed).')
+        for issue_item in gate['issues']:
+            with st.expander(f"{issue_item['severity']}: {issue_item['code']}",
+                             expanded=issue_item['severity']=='BLOCK'):
+                st.write(issue_item['explanation'])
+                st.caption('Suggested action: '+issue_item['action'])
+        if 'route_distance_m' in gate['summary']:
+            st.caption(f"Waypoint legs: {gate['summary']['route_distance_m']:.0f} m | "
+                       f"Nominal straight-leg travel: {gate['summary']['nominal_travel_time_s']/60:.1f} min | "
+                       f"Configured: {gate['summary']['requested_duration_s']/60:.1f} min")
+        st.markdown('**09 | Reasonable-Parameter Recovery**')
+        st.caption('Suggested values come from this profile\'s declared research defaults; '
+                   'they are not flight-certified settings. Published physical data and '
+                   'protection limits are not modified to manufacture feasibility.')
+        if st.session_state.get('v029_last_recovery'):
+            st.info(f"Restored {len(st.session_state['v029_last_recovery'])} scenario input(s). "
+                    'See the change log below; preflight has been recalculated.')
+            with st.expander('Last restored parameters',expanded=False):
+                for entry in st.session_state['v029_last_recovery']:
+                    st.write(f"{entry['field']}: {entry['old']} → {entry['new']}")
+                    st.caption(entry['reason'])
+        recovery=scenario_recovery_plan(config,gate)
+        baseline=scenario_recovery_plan(config,gate,restore_baseline=True)
+        if recovery.get('rejected_changes'):
+            with st.expander('Corrections withheld after independent preflight recheck'):
+                for entry in recovery['rejected_changes']:
+                    st.write(f"{entry['field']}: {entry['old']} → {entry['new']}")
+                    st.caption(entry['rejection'])
+        auto=st.checkbox('Automatically restore objectively invalid inputs',
+            value=True,key='v029_auto_restore',
+            help='Only deterministic numeric/domain fixes are automatic. '
+                 'Routes, aircraft assumptions and uncertain controller risks never auto-change.')
+        if recovery['changes']:
+            with st.expander('Preview recommended corrections',expanded=gate['blocked']):
+                for entry in recovery['changes']:
+                    st.write(f"**{entry['field']}**: {entry['old']} → {entry['new']}")
+                    st.caption(entry['reason'])
+            st.button('Apply Suggested Corrections',use_container_width=True,
+                on_click=_apply_recovery_changes,args=(recovery['changes'],name),
+                key='v029_apply_suggestions')
+        with st.expander('Preview aircraft baseline',expanded=False):
+            for entry in baseline['changes']:
+                st.write(f"{entry['field']}: {entry['old']} → {entry['new']}")
+            st.caption('A baseline is a starting hypothesis, not proof that a mission will succeed.')
+        if baseline['predicted_preflight']['blocked']:
+            st.warning('Baseline still fails a preflight requirement. Review the remaining '
+                       'constraints before treating it as a feasible configuration.')
+        st.button('Restore Aircraft Research Baseline',use_container_width=True,
+            disabled=not baseline['changes'] or baseline['predicted_preflight']['blocked'],
+            on_click=_apply_recovery_changes,args=(baseline['changes'],name),
+            key='v029_reset_research_baseline',
+            help='Restores mission/environment/battery input defaults. Does not change published datasets.')
+        if (auto and recovery['automatic_changes']):
+            signature=hashlib.sha256(repr((name,config,gate['issues'])).encode('utf-8')).hexdigest()
+            if st.session_state.get('v029_auto_attempt_signature')!=signature:
+                st.session_state['v029_auto_attempt_signature']=signature
+                st.session_state['v029_pending_recovery']={
+                    'aircraft':name,'changes':recovery['automatic_changes']}
+                st.rerun()
+        # An acknowledgment is tied to the entire configuration, including
+        # battery/loadout and the selected published coefficient datasets.
+        review_signature=hashlib.sha256(repr((config,gate['issues'])).encode('utf-8')).hexdigest()
+        if st.session_state.get('v028_preflight_review_signature')!=review_signature:
+            st.session_state['v028_preflight_ack']=False
+            st.session_state['v028_preflight_review_signature']=review_signature
+        acknowledged=(st.checkbox('I understand the flagged exploratory-scenario limitations',
+            key='v028_preflight_ack') if gate['review_required'] and not gate['blocked']
+            else True)
+        run=st.button('Run Simulation',type='primary',use_container_width=True,
+            disabled=gate['blocked'] or not acknowledged)
+        reset=st.button('Clear Previous Run',use_container_width=True)
+    return config,run,reset,gate
+
+
+
+# ============================================================================
+# PRE-RUN RESEARCH SCENARIO FEASIBILITY GATE
+# ============================================================================
+def scenario_preflight(config):
+    """Screen user inputs before expensive 6-DOF simulation.
+
+    BLOCK means invalid inputs or demonstrably infeasible *initial* conditions.
+    REVIEW means an uncertain, controller-dependent or heuristic risk. A clean
+    preflight never certifies that the autopilot will complete the route.
+    No weapon-system profile is admitted to this civilian simulation gate.
+    """
+    issues=[]
+    summary={}
+    def issue(severity,code,explanation,action):
+        issues.append(dict(severity=severity,code=code,
+                           explanation=str(explanation),action=str(action)))
+    name=config.get('aircraft')
+    if name not in UAV_PROFILES:
+        issue('BLOCK','UNKNOWN_SIMULATION_AIRCRAFT',
+              'Selected platform is not an executable civilian research profile.',
+              'Choose a listed civilian/conceptual simulation profile.')
+        return dict(blocked=True,review_required=False,issues=issues,summary=summary,
+                    status='BLOCKED')
+    mode=str(config.get('flight_mode','Forward Flight'))
+    try:
+        speed=float(config['speed_kmh'])/3.6
+        wind=float(config.get('wind_kmh',0.))/3.6
+        duration=float(config['duration_min'])*60.
+        altitude=float(config['altitude_m'])
+        temp=float(config['temp_c'])
+        if not all(math.isfinite(x) for x in (speed,wind,duration,altitude,temp)):
+            raise ValueError('Nonfinite environmental or mission input')
+        if speed<=0 or wind<0 or duration<=0:
+            raise ValueError('Airspeed and duration must be positive, wind nonnegative')
+        atmosphere_state(altitude,temp)
+        if not 0. <= altitude+float(config.get('altitude_change_m',0.)) <= ATMOSPHERE_MAX_ALTITUDE_M:
+            issue('BLOCK','COMMANDED_ALTITUDE_OUTSIDE_ATMOSPHERE',
+                'The commanded altitude is outside the research atmosphere model.',
+                'Change initial altitude or commanded altitude change.')
+    except (ValueError,KeyError,TypeError,OverflowError) as exc:
+        issue('BLOCK','INVALID_SCENARIO_INPUT',str(exc),
+              'Use finite inputs inside the model atmosphere and UI bounds.')
+        return dict(blocked=True,review_required=False,issues=issues,summary=summary,
+                    status='BLOCKED')
+    # Only parse a route when it influences the selected mission/swarm model.
+    if _waypoints_are_active(config):
+        try:
+            points=parse_waypoints(config.get('waypoints',''),altitude)
+        except (ValueError,TypeError,OverflowError,AttributeError) as exc:
+            issue('BLOCK','WAYPOINT_FORMAT_OR_DOMAIN',str(exc),
+                  'Use north,east,altitude triples separated by semicolons.')
+            points=[]
+    else:
+        points=[]
+        summary['inactive_waypoint_text_ignored']=True
+    try:
+        for severity,code,message in edge_preflight(config):
+            issue(severity,code,message,'Choose a compatible civilian airframe, module or workload.')
+    except (ValueError,TypeError) as exc:
+        issue('BLOCK','EDGE_AI_CONFIGURATION_REJECTED',str(exc),
+              'Correct module power, RAM, input bounds or selected civilian research aircraft.')
+    for code,explanation,action in _battery_dispatch_issues(config):
+        issue('BLOCK',code,explanation,action)
+    if mode=='Waypoint Mission' and points:
+        previous=(0.,0.,altitude)
+        length=0.; greatest_climb=0.; segments=[]
+        for point in points:
+            leg=math.hypot(point[0]-previous[0],point[1]-previous[1])
+            length+=leg
+            greatest_climb=max(greatest_climb,max(0.,point[2]-previous[2]))
+            segments.append(leg)
+            previous=point
+        # Optimistic horizontal speed bound assumes a favorable wind direction
+        # for the entire route. This is a planning screening proxy, NOT a formal
+        # aircraft maximum-speed or controller-performance guarantee.
+        optimistic_speed=speed+wind
+        optimistic_time=length/max(optimistic_speed,1e-9)
+        nominal_time=length/max(speed,1e-9)
+        summary.update(route_distance_m=round(length,1),
+                       optimistic_travel_time_s=round(optimistic_time,1),
+                       nominal_travel_time_s=round(nominal_time,1),
+                       requested_duration_s=duration,waypoint_count=len(points))
+        if optimistic_time>duration:
+            issue('BLOCK','ROUTE_TIME_EXCEEDS_COMMANDED_SPEED_BUDGET',
+                  f'{length:.0f} m of waypoint legs requires at least {optimistic_time:.0f} s '
+                  f'even at the optimistic airspeed-plus-wind planning speed; only {duration:.0f} s allowed.',
+                  'Increase the simulation duration, reduce waypoint spacing, or revise the commanded speed within documented aircraft limits.')
+        elif nominal_time>0.65*duration:
+            issue('REVIEW','LOW_ROUTE_TIME_MARGIN',
+                  f'Nominal straight-leg transit uses {nominal_time/duration:.0%} of the run. '
+                  'Turns, climbs, waypoint capture, and stabilization also consume time.',
+                  'Use a shorter route, more duration, or acknowledge an exploratory controller test.')
+        if wind>=speed:
+            issue('REVIEW','WIND_GEOMETRY_MAY_PREVENT_PROGRESS',
+                  'Steady wind is at least the commanded airspeed; some upwind legs may not close.',
+                  'Reduce wind, increase feasible airspeed, or inspect leg directions.')
+        ceiling=AIRCRAFT_OPERATING_ENVELOPES.get(name,{}).get('max_altitude_m_msl')
+        if ceiling is not None and any(pt[2]>ceiling+1e-7 for pt in points):
+            issue('BLOCK','WAYPOINT_EXCEEDS_PUBLISHED_CEILING',
+                  f'At least one requested waypoint exceeds the documented {ceiling:.0f} m MSL ceiling.',
+                  'Lower the waypoint altitudes or use an appropriate research profile.')
+    if float(config.get('speed_kmh',0.))/3.6>float(config.get('overspeed',1e20)) and config.get('envelope',True):
+        issue('BLOCK','COMMANDED_SPEED_EXCEEDS_SELECTED_PROTECTION_LIMIT',
+              'Commanded airspeed exceeds the selected envelope overspeed limit.',
+              'Reduce airspeed or choose a consistent protection threshold.')
+    if config.get('motor_fault') and float(config.get('motor_start',1e20))<duration:
+        issue('REVIEW','INJECTED_MOTOR_FAULT',
+              'Motor degradation is scheduled during this run; an otherwise feasible mission may fail.',
+              'Disable fault injection for a baseline run or acknowledge the research fault experiment.')
+    if config.get('gps_dropout') and float(config.get('gps_start',1e20))<duration:
+        issue('REVIEW','INJECTED_GNSS_DROPOUT',
+              'GNSS dropout is enabled. Navigation diagnostics will be degraded by design.',
+              'Disable the fault for a baseline navigation study or acknowledge the experiment.')
+    # Reuse the exact simulator mass, atmosphere, electrical feasibility,
+    # published-envelope checks and pitch/propeller solver. Never invent a
+    # second simplified stall/power model for a GREEN status.
+    if not any(x['severity']=='BLOCK' for x in issues):
+        try:
+            profile,mass,pack_mass,fuel,params,battery,prop,trim=scenario_setup(config)
+            summary['mass_kg']=round(float(mass),3)
+            summary['trim_assessed']=True
+            summary['trim_converged']=bool(trim.converged)
+            summary['shaft_power_feasible']=bool(trim.power_feasible)
+            summary['electric_power_feasible']=bool(trim.electrical_feasible)
+            edge_cfg_check,edge_hw_check=edge_configuration(config)
+            if edge_hw_check is not None:
+                # Steady-trim electrical margin already includes edge idle load;
+                # compare extra demand from the assumed maximum board power.
+                extra=max(0.,edge_hw_check['peak_w']-edge_hw_check['idle_w'])
+                summary['edge_ai_peak_electrical_margin_w']=round(
+                    float(trim.electrical_margin_w)-extra,3)
+                if profile['power_system']=='Battery' and trim.electrical_margin_w<extra:
+                    issue('REVIEW','EDGE_AI_PEAK_POWER_HEADROOM_UNCERTAIN',
+                        'The assumed peak compute workload may exceed steady-flight '
+                        'electrical headroom. The module can brown out or the flight '
+                        'propulsion can lose power.',
+                        'Reduce camera workload, choose an appropriately characterized '
+                        'board, or explicitly review the exploratory brownout test.')
+            if battery is not None and float(config.get('duration_min',0.))>0:
+                # Screening only: steady trim energy is not a complete mission forecast.
+                available_nominal_wh=max(0.,float(config['battery_wh'])*
+                    float(config['battery_soh'])/100.*
+                    (float(config['battery_soc'])-float(config['reserve_soc']))/100.)
+                steady_wh=max(0.,float(trim.required_terminal_w))*float(duration)/3600.
+                summary['nominal_energy_above_reserve_wh']=round(available_nominal_wh,3)
+                summary['steady_trim_energy_screen_wh']=round(steady_wh,3)
+                if steady_wh > available_nominal_wh+1.e-6:
+                    issue('REVIEW','STEADY_ENERGY_SCREEN_EXCEEDS_RESERVE_BUDGET',
+                        f'Illustrative steady-trim energy ({steady_wh:.2f} Wh) exceeds the '
+                        f'nominal energy above reserve ({available_nominal_wh:.2f} Wh).',
+                        'Reduce mission duration/demand or choose a physically justified battery; '
+                        'this is a screening comparison, NOT a complete flight prediction.')
+            if not trim.converged:
+                issue('BLOCK','NO_FEASIBLE_INITIAL_TRIM',
+                      'The production trim solver cannot balance lift and pitch at the initial airspeed and loading.',
+                      'Select a physically feasible speed/altitude/loadout, or use an aircraft with a supported aerodynamic dataset.')
+            if not trim.power_feasible:
+                issue('BLOCK','INITIAL_PROPULSION_POWER_INFEASIBLE',
+                      'Required shaft power exceeds the model capacity or its measured operating domain.',
+                      'Use a physically feasible configuration within the available propulsion model.')
+            if not trim.electrical_feasible:
+                issue('BLOCK','INITIAL_BATTERY_POWER_INFEASIBLE',
+                      'Battery voltage/current capability cannot support the initial steady-flight power.',
+                      'Reduce demands or choose a compatible, documented power-system configuration.')
+            if profile['type']=='fixed' and float(config.get('altitude_change_m',0.)):
+                issue('REVIEW','UNVERIFIED_CLIMB_CONTROLLER_RESPONSE',
+                      'Steady-level trim cannot guarantee that the autopilot can track a requested climb.',
+                      'Review commanded altitude and performance telemetry after a baseline run.')
+        except (ValueError,RuntimeError,FloatingPointError,OverflowError,KeyError) as exc:
+            issue('BLOCK','INITIAL_MODEL_CONFIGURATION_REJECTED',str(exc),
+                  'Correct this input or select a profile with applicable published/model assumptions.')
+    blocked=any(x['severity']=='BLOCK' for x in issues)
+    review=any(x['severity']=='REVIEW' for x in issues)
+    return dict(blocked=blocked,review_required=review,issues=issues,
+                status='BLOCKED' if blocked else 'REVIEW_REQUIRED' if review else 'READY',
+                summary=summary,guarantees_route_completion=False,
+                qualification='Preflight checks initial feasibility and planning assumptions; does not certify closed-loop mission success.')
 
 
 def metrics_grid(entries,per_row=4):
@@ -6379,8 +7281,8 @@ def display_report(result):
         st.warning(f"Research hover displacement gate (5 m max excursion) failed: {metrics['hover_max_position_excursion_m']:.1f} m. This gate is illustrative, not aircraft-qualified.")
     objectives=metrics['mission_objective_assessment']
     if not objectives['passed']:
-        st.error('Mission-performance acceptance FAILED: '+', '.join(objectives['failures'])+
-                 '. Endurance/range projection suppressed. This does not prevent browsing raw simulated telemetry.')
+        st.warning('Mission objectives not met: '+', '.join(objectives['failures'])+
+                 '. The physics run may still be numerically valid. Endurance/range projection is suppressed by the current mission acceptance policy. Review altitude tracking, waypoint progress, duration, and control telemetry before interpreting performance.')
     if objectives['mode']=='Waypoint Mission':
         st.caption(f"Route: {objectives['route_waypoints_captured']}/{objectives['route_waypoint_count']} "
             f"waypoints captured; completion: {objectives['route_completion_pass']}; "
@@ -6581,6 +7483,7 @@ def display_report(result):
         index=st.slider('Flight / aircraft replay frame',0,len(df)-1,len(df)-1,
                         key='replay_frame')
     frame=df.iloc[index]
+    render_edge_ai_twin(result,index)
     c1,c2,c3,c4=st.columns(4)
     c1.metric('Roll',f'{frame.roll_deg:+.1f}°')
     c2.metric('Pitch',f'{frame.pitch_deg:+.1f}°')
@@ -8189,24 +9092,168 @@ def v024_integrated_workspace():
 
 
 
+
+
+def edge_ai_board_plotly(frame,hardware,exploded=True):
+    """Illustrative PCB assembly Mesh3d, never claimed as CAD or actual Jetson geometry."""
+    fig=go.Figure()
+    dz=.16 if exploded else 0.
+    def cuboid(cx,cy,cz,sx,sy,sz,color,label):
+        x=[cx-sx/2,cx+sx/2];y=[cy-sy/2,cy+sy/2];z=[cz-sz/2,cz+sz/2]
+        vertices=[(x[i],y[j],z[k]) for k in (0,1) for j in (0,1) for i in (0,1)]
+        faces=[(0,1,2),(1,3,2),(4,6,5),(5,6,7),(0,4,1),(1,4,5),
+               (2,3,6),(3,7,6),(0,2,4),(2,6,4),(1,5,3),(3,5,7)]
+        fig.add_trace(go.Mesh3d(x=[v[0] for v in vertices],
+           y=[v[1] for v in vertices],z=[v[2] for v in vertices],
+           i=[f[0] for f in faces],j=[f[1] for f in faces],k=[f[2] for f in faces],
+           color=color,opacity=.88,flatshading=True,name=label,
+           hovertemplate=label+'<extra></extra>',showscale=False))
+    temp=float(frame['edge_temp_c'])
+    chip_color=('#f97316' if temp>=hardware['throttle_c']
+                else '#22ff88' if temp<60. else '#eab308')
+    cuboid(0,0,0,2.8,1.9,.12,'#11442f','Carrier board (illustrative)')
+    cuboid(0,0,.13+dz,1.,1.,.20,chip_color,'AI processor / GPU')
+    cuboid(-.95,.35,.16+dz,.45,.7,.18,'#83d8b6','RAM')
+    cuboid(-.95,-.55,.16+dz,.45,.35,.16,'#47c9b2','Power management')
+    cuboid(.99,0,.16+dz,.40,.75,.16,'#c3d9d0','Sensor input interface')
+    for x in [-.4,-.15,.1,.35]:
+        cuboid(x,0,.36+dz*2,.11,1.2,.3,'#9ca3af','Heatsink fins')
+    fig.update_layout(scene=dict(xaxis_visible=False,yaxis_visible=False,
+        zaxis_visible=False,aspectmode='data',camera=dict(eye=dict(x=1.7,y=1.7,z=1.3))),
+        margin=dict(l=0,r=0,t=20,b=0),height=420,
+        paper_bgcolor='#07100c',font_color='#d8ffe9',
+        showlegend=False,title='Illustrative onboard AI hardware, not manufacturer CAD')
+    return fig
+
+
+def render_edge_ai_twin(result,frame_index):
+    data=result['telemetry']
+    if 'edge_power_w' not in data:
+        return
+    cfg=result['scenario']['config']['edge_ai']
+    hardware=EDGE_AI_HARDWARE[cfg['hardware']]
+    frame=data.iloc[min(frame_index,len(data)-1)]
+    st.subheader('Onboard Edge AI Compute Twin | Plotly 3D')
+    st.caption(f"Added installed-module mass: {hardware['mass_kg']:.2f} kg (research assembly assumption). "
+       'The module is included in aircraft mass/payload and increases electrical consumption.')
+    st.caption('Time-aligned simulated hardware state. CPU service time, thermal RC, '
+       'carrier mass and memory use are assumed research parameters; no neural '
+       'network executes in this digital twin and no AI feeds flight controls.')
+    cols=st.columns(4)
+    cols[0].metric('Board power',f"{frame.edge_power_delivered_w:.1f} W")
+    cols[1].metric('Chip temperature',f"{frame.edge_temp_c:.1f} °C")
+    cols[2].metric('Inference queue',str(int(frame.edge_queue)))
+    cols[3].metric('Missed deadlines',str(int(frame.edge_deadline_missed)))
+    explode=st.checkbox('Exploded-view components',True,key='v031_edge_exploded')
+    st.plotly_chart(edge_ai_board_plotly(frame,hardware,explode),
+                    use_container_width=True,config={'displaylogo':False})
+    st.caption(f"Power throttled: {bool(frame.edge_throttled)} | "
+               f"brownout: {bool(frame.edge_brownout)} | "
+               f"camera drops: {int(frame.edge_dropped)} | "
+               f"delivered compute energy: {frame.edge_energy_delivered_wh:.4f} Wh")
+    with st.expander('Edge AI engineering sources, limits and INCOSE-style checks',expanded=False):
+        st.caption('Hardware specifications establish RAM and power mode references. '
+           'The workload latency, mass, thermal resistance and heat capacity are '
+           'research assumptions. No measured Jetson inference throughput is claimed.')
+        st.markdown('[Hardware reference]('+hardware['reference']+')')
+        st.dataframe(pd.DataFrame(EDGE_AI_REQUIREMENTS,columns=[
+            'Requirement ID','Requirement','Verification','Production function']),
+            use_container_width=True,hide_index=True)
+    tabs=st.tabs(['Compute throughput','Electrical and thermal','Export'])
+    with tabs[0]:
+        plot_series(data,{'edge_compute_utilization_pct':'Single-worker utilization'},
+                    'Simulated compute utilization','%')
+        plot_series(data,{'edge_queue':'Pending frames',
+                          'edge_completed':'Completed frames','edge_dropped':'Dropped frames'},
+                    'Synthetic inference scheduling','frames')
+    with tabs[1]:
+        plot_series(data,{'edge_power_w':'Requested AI load',
+                          'edge_power_delivered_w':'Electrical delivery'},
+                    'Onboard computer power','W')
+        plot_series(data,{'edge_temp_c':'Processor proxy temperature',
+                          'ambient_temperature_c':'Ambient'},'Compute thermal state','°C')
+    with tabs[2]:
+        st.download_button('Export edge-compute telemetry CSV',
+            data[[c for c in data.columns if c.startswith('edge_') or c=='time_s']]
+               .to_csv(index=False).encode('utf-8'),
+            'edge_ai_compute_twin_telemetry.csv',mime='text/csv')
+        st.download_button('Export research hardware and workload JSON',
+            json.dumps(result['scenario']['edge_ai'],indent=2).encode('utf-8'),
+            'edge_ai_research_configuration.json',mime='application/json')
+
+
+def onnx_host_benchmark_workspace():
+    with st.expander('Optional ONNX host inference benchmark (NOT Jetson timing)',expanded=False):
+        st.caption('Advanced research users only. Run ONLY trusted ONNX models. '
+           'Measures this server host, not the selected simulated edge hardware. '
+           'No model outputs are connected to the simulator or the flight controls.')
+        if not st.checkbox('Enable trusted local ONNX host benchmarking',False,
+                           key='v031_onnx_enabled'):
+            return
+        model=st.file_uploader('Trusted ONNX model, 5 MB maximum',type=['onnx'],
+                               key='v031_onnx_file')
+        if model is None:return
+        raw=model.getvalue()
+        if len(raw)>5_000_000:
+            st.error('Model too large for this demonstration.')
+            return
+        try:
+            import onnxruntime as ort
+            from time import perf_counter
+            opts=ort.SessionOptions()
+            opts.intra_op_num_threads=1
+            sess=ort.InferenceSession(raw,sess_options=opts,
+                                      providers=['CPUExecutionProvider'])
+            feeds={}
+            for inp in sess.get_inputs():
+                if inp.type not in ('tensor(float)','tensor(double)'):
+                    raise ValueError('Only float and double ONNX input tensors supported.')
+                dims=[int(d) if isinstance(d,int) and 0<d<=256 else 1
+                      for d in inp.shape]
+                n=int(np.prod(dims))
+                if n>250_000:raise ValueError('ONNX tensor too large.')
+                dtype=np.float64 if inp.type=='tensor(double)' else np.float32
+                feeds[inp.name]=np.zeros(dims,dtype=dtype)
+            t0=perf_counter()
+            for _ in range(3):sess.run(None,feeds)
+            latency=(perf_counter()-t0)*1000./3.
+            st.metric('Host CPU average inference',f'{latency:.2f} ms')
+            st.caption('Three host iterations on synthetic zero inputs; not Jetson '
+               'benchmarks, sustained throughput, or a model-accuracy assessment.')
+        except ImportError:
+            st.info('Install optional onnxruntime on this host to run this benchmark.')
+        except Exception as exc:
+            st.error(f'Host benchmark could not run: {exc}')
+
 def main():
     st.set_page_config(page_title='UAV Battery Efficiency Estimator',layout='wide',
                        page_icon='🛩️')
     theme_css()
     st.title('UAV BATTERY EFFICIENCY ESTIMATOR')
     st.caption('Fixed-wing / rotor UAV | 6-DOF flight modes • Endurance & reserve • '
-               'INS/EKF • 3D battery + aircraft twins • Swarm playback • Optional GPT reports')
+               'INS/EKF • 3D aircraft + battery + edge AI twins • Optional GPT reports')
     st.caption('Single-file aerospace research simulator | Built by Tareq Omrani')
-    config,run,reset=sidebar_inputs()
+    config,run,reset,preflight=sidebar_inputs()
+    if preflight['blocked']:
+        st.error('Preflight BLOCKED: the selected scenario has input or initial-physics '
+                 'contradictions. Correct the issues under **08 | Preflight Scenario Check** '
+                 'in the sidebar before running.')
+    elif preflight['review_required']:
+        st.warning('Preflight REVIEW REQUIRED: scenario planning or injected disturbances '
+                   'could invalidate the requested mission. Read the findings in the sidebar '
+                   'and acknowledge the exploratory assumptions before running.')
+    else:
+        st.caption('Preflight READY: initial input, operating-domain, trim, and power '
+                   'checks passed. Closed-loop mission success is not guaranteed.')
     literature_verification_workspace()
     v023_published_data_workspace(config)
     v024_integrated_workspace()
     reference_calibration_workspace(config)
     with st.expander(
         f'Global aircraft library ({len(UAV_PROFILES)} simulation profiles + '
-        f'{len(DEFENSE_REFERENCE_CATALOG)} reference-only entries)', expanded=False):
+        f'{len(DEFENSE_REFERENCE_CATALOG)} public-reference research entries)', expanded=False):
         sim_tab, reference_tab = st.tabs(['Research simulation profiles',
-                                          'Shahed family + LUCAS references'])
+                                          'Shahed + LUCAS mathematical research'])
         with sim_tab:
             st.caption('Manufacturer region is a country-of-origin filter. '
                        'Physics values are illustrative, not manufacturer validated.')
@@ -8216,10 +9263,11 @@ def main():
                 profile_catalog_table().to_csv(index=False).encode('utf-8'),
                 'global_uav_simulation_profiles_v0_8_7.csv',mime='text/csv')
         with reference_tab:
-            st.info('These military aircraft are included for public-reference '
-                    'identification and comparison only. They are NOT enabled '
-                    'for the flight dynamics, battery/fuel performance, payload, '
-                    'endurance, visual/IR, mission planning, or swarm simulation.')
+            st.info('These public-reference entries can now be selected for a '
+                    'shared, NON-OPERATIONAL mathematical teaching simulation. '
+                    'They remain excluded from aircraft-specific 6-DOF flight '
+                    'performance, energy, payload, endurance/range, route planning, '
+                    'autonomy, and swarm simulation.')
             regions = ['All countries', 'Iran', 'United States']
             selected_region = st.selectbox('Reference country', regions,
                                             key='defense_reference_country')
@@ -8231,9 +9279,17 @@ def main():
             st.caption('Sources: Iran Watch public drone-family inventory; '
                        'U.S. CENTCOM LUCAS release; Reuters supplementary reporting. '
                        'Designation aliases and classifications vary by source.')
-            st.download_button('Export reference-only aircraft CSV',
+            st.download_button('Export public-reference catalog CSV',
                 defense_reference_catalog_table().to_csv(index=False).encode('utf-8'),
-                'shahed_lucas_reference_catalog_v0_8_7.csv',mime='text/csv')
+                'shahed_lucas_public_research_catalog.csv',mime='text/csv')
+            choices=reference_data['aircraft'].tolist()
+            if choices:
+                selected_name=st.selectbox('Public reference for mathematical research',
+                                           choices,key='defense_math_selected_reference')
+                public_reference_math_workspace(selected_name)
+            else:
+                st.info('No public references match the selected country filter.')
+    onnx_host_benchmark_workspace()
     if reset:
         st.session_state.pop('completed_simulation',None)
         for key in ('replay_frame','swarm_playback_frame','uav_gpt_mission_review',
@@ -8246,7 +9302,7 @@ def main():
 04 Waypoint guidance → 05 PID control → 06 Envelope safety → 07 Actuator response
 08 Battery / ICE source → 09 Propulsion conversion → 10 Aero + environmental loads
 11 Quaternion six-DOF flight plant → 12 Sensor emulation → 13 INS / EKF
-14 Timestamped flight record → 15 3D battery / quaternion aircraft Mesh3d twins
+14 Timestamped flight record → 15 3D battery / aircraft / AI computer Mesh3d twins
 16 Flight replay, INS/EKF diagnostics, detailed UAV analytics and exports
 17 Optional GPT mission report and role-based swarm commentary (analysis only)
 
@@ -8255,6 +9311,9 @@ SIMULATED TRUTH STATE → AUTOPILOT (not EKF feedback)
 NOT IMPLEMENTED: GPT → command gate → MAVLink / PX4 / ArduPilot.
 The optional GPT advisor only interprets saved telemetry.''',language='text')
     if run:
+        if preflight['blocked'] or preflight['review_required'] and not st.session_state.get('v028_preflight_ack',False):
+            st.error('Preflight approval required before running the simulation.')
+            st.stop()
         try:
             with st.spinner('Executing coupled flight, propulsion, and sensor simulation...'):
                 result=run_physics(config)
@@ -8267,7 +9326,7 @@ The optional GPT advisor only interprets saved telemetry.''',language='text')
             if config.get('debug_mode'):st.exception(exc)
             st.stop()
     if 'completed_simulation' not in st.session_state:
-        st.info(f'Choose a platform and mission in the sidebar, then select **Run v{VERSION} Simulation**.')
+        st.info('Select a platform and mission in the sidebar, resolve preflight issues, then select **Run Simulation**.')
         st.warning('Research use only: generic models, not a certified flight or BMS implementation.')
         st.stop()
     result=st.session_state['completed_simulation']
