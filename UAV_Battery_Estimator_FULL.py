@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.32 edge AI access and discoverability correction
+# UAV Battery Efficiency Estimator | v0.8.32.2 physical feasibility and HUD integrity correction
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -24,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.32"
+VERSION = "0.8.32.2"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -5377,13 +5377,191 @@ def build_battery_pack_3d(cells,metric='Cell voltage (V)',selected_cell=None):
     return fig
 
 
-def render_battery_pack_view(df,config):
+def battery_monitoring_state(frame, reserve_soc_pct):
+    """Derive an instrument state from one *recorded* battery telemetry frame.
+
+    The state is used by the HUD only: no flight dynamics or battery values
+    are modified. Gauge percentage means chemical SOC, not safe remaining
+    endurance. All displayed measurements are research-simulator outputs.
+    """
+    reserve=float(reserve_soc_pct)
+    if not math.isfinite(reserve) or not 0. <= reserve <= 100.:
+        raise ValueError('BATTERY_HUD_INVALID_RESERVE')
+    channels={
+        'soc_fraction':'battery_soc',
+        'voltage_v':'battery_terminal_v',
+        'current_a':'battery_current_a',
+        'temperature_c':'battery_temperature_c',
+        'remaining_wh':'battery_remaining_wh',
+        'time_s':'time_s',
+    }
+    data={name:float(frame[field]) for name,field in channels.items()}
+    if any(not math.isfinite(value) for value in data.values()):
+        raise ValueError('BATTERY_HUD_NONFINITE_TELEMETRY')
+    if not -1e-7 <= data['soc_fraction'] <= 1.+1e-7:
+        raise ValueError('BATTERY_HUD_SOC_OUTSIDE_DOMAIN')
+    # The educational battery plant is discharge-only. Negative pack voltage,
+    # remaining energy or discharge current are outside its model domain and
+    # must never be rendered as a healthy gauge. Zero voltage is a critical
+    # power-loss condition rather than a nonfinite / negative measurement.
+    if data['voltage_v'] < 0. or data['remaining_wh'] < 0. or data['current_a'] < 0.:
+        raise ValueError('BATTERY_HUD_INVALID_ELECTRICAL_STATE')
+    if data['time_s'] < 0.:
+        raise ValueError('BATTERY_HUD_INVALID_TIME')
+    soc_pct=100.*min(1.,max(0.,data['soc_fraction']))
+    status=str(frame['battery_status']).strip().upper()
+    power_limited=bool(frame['battery_limited'])
+    alerts=[]
+    # All recognized BatteryTwin status flags are handled individually.
+    # Unknown flags fail closed, not green. These are advisory instrument
+    # levels for simulated telemetry, NOT actual BMS warnings or trip limits.
+    known={'NORMAL','IDEAL_RESERVOIR','POWER_LIMITED','CHARGE_LIMITED',
+           'LOW_VOLTAGE','THERMAL_LIMIT','RESERVE','DEGRADED_CELL'}
+    flags={token.strip() for token in status.split('+')}
+    if not flags or any(token not in known for token in flags) or (
+            len(flags)>1 and flags & {'NORMAL','IDEAL_RESERVOIR'}):
+        alerts.append(('critical','Unrecognized or inconsistent battery status; verify telemetry'))
+    if data['voltage_v'] <= 0.:
+        alerts.append(('critical','No usable terminal voltage reported'))
+    if data['remaining_wh'] <= 0.:
+        alerts.append(('critical','No modeled remaining pack energy'))
+    if 'LOW_VOLTAGE' in flags:
+        alerts.append(('critical','Battery model reports low cell voltage'))
+    if 'THERMAL_LIMIT' in flags:
+        alerts.append(('critical','Battery model reports research thermal-limit condition'))
+    if 'RESERVE' in flags:
+        alerts.append(('critical','Battery model reports selected SOC reserve reached'))
+    if 'POWER_LIMITED' in flags and not power_limited:
+        alerts.append(('warning','Power-limit status disagrees with limiting channel'))
+    if 'POWER_LIMITED' in flags:
+        alerts.append(('warning','Battery model reports terminal power limiting'))
+    if 'CHARGE_LIMITED' in flags:
+        alerts.append(('warning','Charge/available-capacity limitation in research battery model'))
+    if soc_pct <= reserve+1e-7:
+        alerts.append(('critical','At or below selected SOC reserve'))
+    elif soc_pct-reserve <= 5.:
+        alerts.append(('warning','Within 5 SOC percentage points of reserve (display advisory)'))
+    if data['temperature_c'] >= BATTERY_RESEARCH_THERMAL_LIMIT_C:
+        alerts.append(('critical','At/above illustrative battery research thermal limit'))
+    if power_limited:
+        alerts.append(('warning','Terminal electrical power is limited'))
+    if 'DEGRADED_CELL' in status:
+        alerts.append(('warning','Degraded-cell research fault active'))
+    level=('critical' if any(level=='critical' for level,_ in alerts)
+           else 'warning' if alerts else 'normal')
+    return dict(**data,soc_pct=soc_pct,reserve_pct=reserve,
+                margin_pp=soc_pct-reserve,pack_status=status,
+                power_limited=power_limited,alerts=alerts,level=level)
+
+
+def battery_soc_gauge_figure(state):
+    """Compact mobile-friendly indicator, driven by the shared replay frame."""
+    level=state['level']
+    bar={'normal':'#22ff88','warning':'#f1bc54','critical':'#ff6b6b'}[level]
+    reserve=state['reserve_pct']
+    steps=([dict(range=[0.,reserve],color='#48272b')] if reserve>0. else [])
+    fig=go.Figure(go.Indicator(
+        mode='gauge+number',value=state['soc_pct'],
+        number=dict(valueformat='.1f',suffix='%',font=dict(size=38,color='#d8ffe9')),
+        title=dict(text='BATTERY SOC | SIMULATED REPLAY',
+                   font=dict(size=15,color='#caffdf')),
+        gauge=dict(axis=dict(range=[0.,100.],tickvals=[0,25,50,75,100],
+                             tickcolor='#a8cbb8',tickfont=dict(color='#a8cbb8')),
+                   bgcolor='#112a20',borderwidth=1,bordercolor='#366852',
+                   bar=dict(color=bar,thickness=.77),steps=steps,
+                   threshold=dict(value=reserve,thickness=.9,
+                                  line=dict(color='#f7d477',width=4))),
+        domain=dict(x=[.05,.95],y=[.05,.95])))
+    fig.update_layout(height=255,margin=dict(t=35,b=8,l=16,r=16),
+        paper_bgcolor='#06140f',font=dict(color='#d8ffe9'))
+    return fig
+
+
+def battery_replay_step_index(df,current_index,seconds):
+    """Return a bounded frame index for a requested physical-time step."""
+    if len(df)==0:
+        raise ValueError('BATTERY_HUD_EMPTY_TELEMETRY')
+    current=int(current_index)
+    if current < 0 or current >= len(df) or not math.isfinite(float(seconds)):
+        raise ValueError('BATTERY_HUD_INVALID_REPLAY_STEP')
+    times=np.asarray(df['time_s'],dtype=float)
+    if not np.isfinite(times).all() or np.any(np.diff(times)<0.):
+        raise ValueError('BATTERY_HUD_INVALID_REPLAY_TIMEBASE')
+    target=times[current]+float(seconds)
+    if seconds>0.:
+        return int(min(len(df)-1,max(current+1,int(np.searchsorted(times,target,side='left')))))
+    if seconds<0.:
+        return int(max(0,min(current-1,int(np.searchsorted(times,target,side='right'))-1)))
+    return current
+
+
+def render_battery_monitoring_hud(df,config):
+    """Primary battery instrument; all other twins use this replay index."""
+    st.markdown('#### Battery Telemetry HUD | Synchronized Simulation Replay')
+    st.caption('Live **replay** of computed telemetry, not an aircraft BMS feed. '
+               'The shared frame selection also drives the 3D battery pack, aircraft and '
+               'onboard AI hardware twin. No new flight simulation is executed here.')
+    final_index=len(df)-1
+    if final_index<0:
+        st.warning('Battery monitoring requires recorded flight telemetry.')
+        return 0
+    stored=st.session_state.get('replay_frame',final_index)
+    if not isinstance(stored,int) or not 0 <= stored <= final_index:
+        st.session_state['replay_frame']=final_index
+    start,back=st.columns(2)
+    forward,end=st.columns(2)
+    if start.button('⏮ Start',key='battery_hud_start'):
+        st.session_state['replay_frame']=0
+    if back.button('◀ −5 s',key='battery_hud_back'):
+        st.session_state['replay_frame']=battery_replay_step_index(
+            df,st.session_state.get('replay_frame',final_index),-5.)
+    if forward.button('+5 s ▶',key='battery_hud_forward'):
+        st.session_state['replay_frame']=battery_replay_step_index(
+            df,st.session_state.get('replay_frame',final_index),5.)
+    if end.button('End ⏭',key='battery_hud_end'):
+        st.session_state['replay_frame']=final_index
+    index=st.slider('Shared flight / battery / AI replay frame',
+                    0,final_index,final_index,key='replay_frame')
+    try:
+        reading=battery_monitoring_state(df.iloc[index],config['reserve_soc'])
+    except (ValueError,KeyError,TypeError) as exc:
+        st.error(f'Battery HUD unavailable: {exc}. Review the recorded telemetry.')
+        return index
+    main,details=st.columns([3,2])
+    with main:
+        st.plotly_chart(battery_soc_gauge_figure(reading),
+            use_container_width=True,config={'displaylogo':False,'responsive':True})
+    with details:
+        st.metric('Reserve margin',f"{reading['margin_pp']:+.1f} pp",
+                  help='SOC percentage-point margin relative to the user-selected reserve, '
+                       'not a predicted flight duration.')
+        st.metric('Terminal voltage',f"{reading['voltage_v']:.2f} V")
+        st.metric('Pack current',f"{reading['current_a']:.2f} A")
+        st.metric('Pack temperature',f"{reading['temperature_c']:.1f} °C")
+    st.caption(f"t = {reading['time_s']:.2f} s | SOC reserve marker: {reading['reserve_pct']:.1f}% "
+               f"| Modeled remaining usable energy: {reading['remaining_wh']:.2f} Wh "
+               f"| Battery model status: {reading['pack_status']}")
+    for severity,message in reading['alerts']:
+        if severity=='critical':
+            st.error(message)
+        else:
+            st.warning(message)
+    st.caption('Battery SOC and voltage are simulated, not independent BMS measurements. '
+        'The gauge is not a certified fuel/energy quantity indicator. '
+        'The research thermal threshold and reserve advisory are not manufacturer safety limits.')
+    return index
+
+
+def render_battery_pack_view(df,config,index=None):
     """Streamlit controls are kept independent of the physics time stepping."""
     st.markdown('#### Interactive 3D Battery Pack')
     st.caption('Rotate, zoom and hover to inspect a cell. Choose a cell below to highlight it. '
         'Changing the replay time uses stored battery telemetry, without rerunning the physics simulation.')
-    index=st.slider('Flight and battery replay frame',0,len(df)-1,len(df)-1,
-                    key='replay_frame')
+    if index is None:
+        # Standalone legacy caller remains supported; production supplies the
+        # shared battery-HUD index to prevent duplicate replay widgets.
+        index=st.slider('Flight and battery replay frame',0,len(df)-1,len(df)-1,
+                        key='replay_frame')
     frame=df.iloc[index]
     left,right=st.columns(2)
     with left:
@@ -7060,6 +7238,71 @@ def sidebar_inputs():
 # ============================================================================
 # PRE-RUN RESEARCH SCENARIO FEASIBILITY GATE
 # ============================================================================
+def numerical_and_controller_input_issues(config):
+    """Validate the numerical and control API independently of UI widgets.
+
+    These checks are intentionally narrower than an aircraft flight envelope:
+    they constrain the *executable* model, not real-world airworthiness.
+    """
+    problems=[]
+    def finite(name, lower=None, upper=None, *, strict_positive=False):
+        try:
+            value=float(config[name])
+            valid=math.isfinite(value)
+            if lower is not None: valid=valid and value>=lower
+            if upper is not None: valid=valid and value<=upper
+            if strict_positive: valid=valid and value>0.
+        except (ValueError,TypeError,KeyError,OverflowError):
+            valid=False;value=float('nan')
+        if not valid:problems.append(name)
+        return value if valid else None
+    dt=finite('dt',0.005,0.2)
+    duration=finite('duration_min',strict_positive=True)
+    if duration is not None and duration>60.:
+        problems.append('duration_min_limit')
+    if dt is not None and duration is not None and duration*60./dt>200000.:
+        problems.append('integration_step_count')
+    bank=finite('max_bank',0.,90.,strict_positive=True)
+    overspeed=finite('overspeed',strict_positive=True)
+    finite('heading_deg',0.,360.)
+    finite('capture_radius',strict_positive=True)
+    finite('loiter_radius_m',strict_positive=True)
+    name=config.get('aircraft')
+    profile=UAV_PROFILES.get(name,{})
+    permitted={'Forward Flight','Loiter','Waypoint Mission'}
+    if profile.get('type')=='rotor':permitted.add('Hover')
+    if config.get('flight_mode') not in permitted:
+        problems.append('flight_mode')
+    return problems
+
+
+def minimum_gravitational_climb_screen(mass_kg,available_shaft_w,duration_s,
+                                      initial_altitude_m,mode,points,commanded_change_m):
+    """Optimistic bound from conservation of mechanical energy.
+
+    Adds *positive* vertical legs so successive climbs cannot cancel with
+    descents. Ignores drag/inefficiency and grants the ENTIRE duration for
+    ascent; exceeding the rated shaft power therefore proves infeasibility
+    within this model. Passing this bound never proves climb capability.
+    """
+    if mode=='Waypoint Mission':
+        levels=[float(initial_altitude_m)]+[float(point[2]) for point in points]
+        ascent=sum(max(0.,end-start) for start,end in zip(levels,levels[1:]))
+    elif mode in ('Forward Flight','Loiter'):
+        ascent=max(0.,float(commanded_change_m))
+    else:
+        ascent=0.
+    values=(float(mass_kg),float(available_shaft_w),float(duration_s),float(ascent))
+    if not all(math.isfinite(v) for v in values) or mass_kg<=0 or duration_s<=0 or available_shaft_w<0:
+        raise ValueError('INVALID_GRAVITATIONAL_CLIMB_SCREEN_INPUT')
+    energy_j=mass_kg*G*ascent
+    required_w=energy_j/duration_s
+    return dict(cumulative_ascent_m=ascent,ideal_climb_energy_j=energy_j,
+                ideal_climb_power_w=required_w,
+                shaft_power_ceiling_w=float(available_shaft_w),
+                impossible=bool(required_w>available_shaft_w+1e-9))
+
+
 def scenario_preflight(config):
     """Screen user inputs before expensive 6-DOF simulation.
 
@@ -7081,6 +7324,13 @@ def scenario_preflight(config):
         return dict(blocked=True,review_required=False,issues=issues,summary=summary,
                     status='BLOCKED')
     mode=str(config.get('flight_mode','Forward Flight'))
+    numerical_errors=numerical_and_controller_input_issues(config)
+    if numerical_errors:
+        issue('BLOCK','INVALID_SOLVER_OR_CONTROLLER_CONFIGURATION',
+              'Invalid numerical/controller settings: '+', '.join(numerical_errors),
+              'Use a positive finite Δt, supported flight mode, and finite controller limits inside the model domain.')
+        return dict(blocked=True,review_required=False,issues=issues,summary=summary,
+                    status='BLOCKED')
     try:
         speed=float(config['speed_kmh'])/3.6
         wind=float(config.get('wind_kmh',0.))/3.6
@@ -7177,6 +7427,37 @@ def scenario_preflight(config):
         try:
             profile,mass,pack_mass,fuel,params,battery,prop,trim=scenario_setup(config)
             summary['mass_kg']=round(float(mass),3)
+            # Mechanical-energy impossibility screen uses the EXACT assembled
+            # mass and propulsion ceiling from scenario_setup. A motor cannot
+            # deliver more increase in gravitational potential energy per
+            # second than its shaft input, even at unrealizable 100% efficiency.
+            # For battery cases cap shaft power by the initial electrical supply
+            # after the already-modeled non-propulsion demand. This remains an
+            # optimistic bound, not a fitted or guaranteed climb rate.
+            available_shaft=float(prop.max_shaft)
+            if battery is not None:
+                available_shaft=min(available_shaft,max(0.,
+                    (float(trim.available_terminal_w)-float(prop.hotel))*
+                    float(prop.esc_eff)*float(prop.motor_eff)))
+            climb=minimum_gravitational_climb_screen(
+                mass,available_shaft,duration,altitude,mode,points,
+                config.get('altitude_change_m',0.))
+            summary.update(ideal_climb_ascent_m=round(climb['cumulative_ascent_m'],3),
+                ideal_climb_energy_j=round(climb['ideal_climb_energy_j'],3),
+                ideal_climb_power_w=round(climb['ideal_climb_power_w'],3),
+                optimistic_available_climb_shaft_w=round(available_shaft,3))
+            if climb['impossible']:
+                issue('BLOCK','MISSION_CLIMB_EXCEEDS_PHYSICAL_POWER_BOUND',
+                    f"Requested ascent of {climb['cumulative_ascent_m']:.1f} m in "
+                    f"{duration:.0f} s requires at least {climb['ideal_climb_power_w']:.2f} W "
+                    f"of gravitational power, but at most {available_shaft:.2f} W "
+                    'of modeled shaft power is available. Aerodynamic losses only increase demand.',
+                    'Reduce the total required ascent, increase mission duration, or choose a documented feasible civilian research aircraft/power system.')
+            elif climb['cumulative_ascent_m']>0.:
+                issue('REVIEW','CLIMB_PERFORMANCE_NOT_VERIFIED',
+                    'The ideal mechanical-power lower bound passes, but aerodynamic drag, '
+                    'propeller efficiency, climb-rate limits and controller tracking are not proven.',
+                    'Review the commanded climb and resulting flight telemetry; lower-bound feasibility is not mission acceptance.')
             summary['trim_assessed']=True
             summary['trim_converged']=bool(trim.converged)
             summary['shaft_power_feasible']=bool(trim.power_feasible)
@@ -7474,7 +7755,8 @@ def display_report(result):
                         'battery_bench_residuals.csv','text/csv')
                 except (ValueError,TypeError,KeyError) as exc:
                     st.error(f'Bench comparison rejected: {exc}')
-        replay_index=render_battery_pack_view(df,config)
+        replay_index=render_battery_monitoring_hud(df,config)
+        replay_index=render_battery_pack_view(df,config,index=replay_index)
         tab_energy,tab_voltage,tab_thermal=st.tabs(['Capacity and Power','Voltage and Current','Temperature and Cell Margins'])
         with tab_energy:
             plot_series(df,{'battery_remaining_wh':'Remaining usable energy'},'Capacity depletion','Wh')
