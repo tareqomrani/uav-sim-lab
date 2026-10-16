@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.32.2 physical feasibility and HUD integrity correction
+# UAV Battery Efficiency Estimator | v0.8.32.3 waypoint replay clarity and t=0 initialization
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -24,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.32.2"
+VERSION = "0.8.32.3"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -5505,9 +5505,9 @@ def render_battery_monitoring_hud(df,config):
     if final_index<0:
         st.warning('Battery monitoring requires recorded flight telemetry.')
         return 0
-    stored=st.session_state.get('replay_frame',final_index)
+    stored=st.session_state.get('replay_frame',0)
     if not isinstance(stored,int) or not 0 <= stored <= final_index:
-        st.session_state['replay_frame']=final_index
+        st.session_state['replay_frame']=0
     start,back=st.columns(2)
     forward,end=st.columns(2)
     if start.button('⏮ Start',key='battery_hud_start'):
@@ -5521,7 +5521,7 @@ def render_battery_monitoring_hud(df,config):
     if end.button('End ⏭',key='battery_hud_end'):
         st.session_state['replay_frame']=final_index
     index=st.slider('Shared flight / battery / AI replay frame',
-                    0,final_index,final_index,key='replay_frame')
+                    0,final_index,0,key='replay_frame')
     try:
         reading=battery_monitoring_state(df.iloc[index],config['reserve_soc'])
     except (ValueError,KeyError,TypeError) as exc:
@@ -5881,13 +5881,99 @@ def aircraft_scene_axes(df, row, waypoints, span, scale, camera_mode):
     )
 
 
+def planned_leg_arrow_points(start, finish):
+    """Simple visual arrowhead in the route's native ENU geometry.
+
+    The planned route and its arrows are illustrative reference geometry, not
+    generated guidance commands, simulated trajectory, or heading estimates.
+    """
+    a=np.asarray(start,dtype=float);b=np.asarray(finish,dtype=float)
+    displacement=b-a
+    distance=float(np.linalg.norm(displacement))
+    if distance<=1e-9:
+        return None
+    along=displacement/distance
+    horizontal=np.array([-along[1],along[0],0.],dtype=float)
+    norm=float(np.linalg.norm(horizontal))
+    side=horizontal/norm if norm>1e-9 else np.array([1.,0.,0.])
+    arrow_length=min(24.,max(1.,.075*distance))
+    arrow_length=min(arrow_length,.35*distance)
+    tip=a+.68*displacement
+    back=tip-arrow_length*along
+    half_width=.48*arrow_length
+    return (back+half_width*side,tip,back-half_width*side)
+
+
+def mission_route_traces_3d(df, waypoints, initial_position_enu=None):
+    """Separate START / ordered waypoints / RETURN at unaltered coordinates.
+
+    The planned straight legs are for visual reference; the actual 6-DOF track
+    is drawn separately from truth telemetry. Coincident START and RETURN use
+    opposed screen-space text positions, not displaced georeferenced markers.
+    """
+    start=(np.asarray(initial_position_enu,dtype=float) if initial_position_enu is not None
+           else np.array([float(df.iloc[0].east_m),float(df.iloc[0].north_m),
+                          float(df.iloc[0].altitude_m)]))
+    # When supplied, the configured initial state (0,0,altitude) is authoritative.
+    # The first saved telemetry frame normally occurs after the first integration
+    # step and must not be mislabeled as the initial aircraft coordinates.
+    traces=[]
+    if waypoints:
+        vertices=[start]+[np.array([float(w[1]),float(w[0]),float(w[2])])
+                          for w in waypoints]
+        points=np.array(vertices)
+        traces.append(go.Scatter3d(x=points[:,0],y=points[:,1],z=points[:,2],
+            mode='lines',name='Planned legs (not flown path)',
+            line=dict(color='#a889dd',width=3,dash='dot'),hoverinfo='skip'))
+        if len(waypoints)>1:
+            intermediary=waypoints[:-1]
+            traces.append(go.Scatter3d(
+                x=[float(w[1]) for w in intermediary],
+                y=[float(w[0]) for w in intermediary],
+                z=[float(w[2]) for w in intermediary],
+                mode='markers+text',name='Waypoint order',
+                text=[f'WP-{i+1}' for i in range(len(intermediary))],
+                textposition='top center',marker=dict(color='#f6a3d5',size=5),
+                hovertemplate='Waypoint order<extra></extra>'))
+        final=vertices[-1]
+        close=np.linalg.norm(final-start)<1e-6
+        traces.append(go.Scatter3d(x=[final[0]],y=[final[1]],z=[final[2]],
+            mode='markers+text',name='Final waypoint / RETURN',
+            text=[f'WP-{len(waypoints)} / '+('RETURN' if close else 'FINISH')],
+            textposition='bottom right',
+            marker=dict(color='#f6a3d5',size=7,symbol='diamond-open'),
+            hovertemplate='Final commanded waypoint<extra></extra>'))
+        arrows=[]
+        for a,b in zip(vertices[:-1],vertices[1:]):
+            points=planned_leg_arrow_points(a,b)
+            if points is not None:
+                p0,p1,p2=points
+                arrows.extend([p0,p1,p2,[np.nan,np.nan,np.nan]])
+        if arrows:
+            arrows=np.asarray(arrows)
+            traces.append(go.Scatter3d(x=arrows[:,0],y=arrows[:,1],z=arrows[:,2],
+                mode='lines',name='Planned direction arrows',
+                line=dict(color='#e7c8ff',width=5),hoverinfo='skip'))
+    # Draw START last to make it visible even when WP-N overlaps exactly.
+    traces.append(go.Scatter3d(x=[start[0]],y=[start[1]],z=[start[2]],
+        mode='markers+text',name='START | initial position',text=['START'],
+        textposition='top left',marker=dict(color='#4dffb3',size=9,
+                                            symbol='diamond'),
+        hovertemplate='Recorded initial aircraft position<extra></extra>'))
+    return traces
+
+
 def aircraft_plotly_twin(df, waypoints, frame_index, profile,
                          aircraft_name='', camera_mode='Aircraft focus',
                          show_ekf=True,show_axes=True,show_thrust=True,
-                         animate=False,max_animation_frames=45):
+                         animate=False,max_animation_frames=45,
+                         initial_position_enu=None):
     """Plotly Mesh3d replay. Flight states come strictly from recorded 6-DOF telemetry."""
     frame_index=int(clamp(frame_index,0,len(df)-1))
-    row=df.iloc[frame_index]
+    # The Plotly animation is an independent preview: always open at its
+    # beginning, regardless of where the shared battery/HUD replay was left.
+    initial_index=0 if animate and len(df)>1 else frame_index
+    row=df.iloc[initial_index]
     parts,_,span=aircraft_3d_parts(profile,row,aircraft_name)
     path_extent=max(float(np.ptp(df.east_m)),float(np.ptp(df.north_m)),
                     float(np.ptp(df.altitude_m)),span)
@@ -5909,21 +5995,14 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
         mode='lines',name='Recorded truth (full run)',
         line=dict(color='#225e47',width=3),hoverinfo='skip'))
     trail_index=1
-    hist=replay_trail(frame_index)
+    hist=replay_trail(initial_index)
     fig.add_trace(go.Scatter3d(x=hist.east_m,y=hist.north_m,z=hist.altitude_m,
         mode='lines',name='Truth through replay',line=dict(color='#27ff9c',width=7)))
     if show_ekf:
         fig.add_trace(go.Scatter3d(x=hist.est_east_m,y=hist.est_north_m,
             z=hist.est_altitude_m,mode='lines',name='EKF estimate',
             line=dict(color='#59bfff',width=4,dash='dash')))
-    if waypoints:
-        fig.add_trace(go.Scatter3d(x=[w[1] for w in waypoints],
-            y=[w[0] for w in waypoints],z=[w[2] for w in waypoints],
-            mode='markers+text+lines',
-            text=[f'WP-{i+1}' for i in range(len(waypoints))],
-            textposition='top center',name='Mission waypoints',
-            marker=dict(color='#f6a3d5',size=4),
-            line=dict(color='#845d85',width=2,dash='dot')))
+    fig.add_traces(mission_route_traces_3d(df,waypoints,initial_position_enu))
     dynamic_offset=len(fig.data)
     dynamic,_=aircraft_dynamic_traces(profile,row,aircraft_name,scale,
                                       show_axes,show_thrust)
@@ -5981,7 +6060,7 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
                          dict(label='❚❚ Pause',method='animate',args=[[None],
                   dict(frame=dict(duration=0,redraw=False),transition=dict(duration=0),
                        mode='immediate')])])],
-            sliders=[dict(active=int(np.argmin(abs(sample-frame_index))),
+            sliders=[dict(active=0,
                 x=.25,y=.01,len=.73,pad=dict(t=2,b=0),steps=steps,
                 currentvalue=dict(prefix='Preview '))],
         )
@@ -6519,8 +6598,11 @@ def project_xyz(east,north,altitude,azimuth_deg=42.,elevation_deg=24.):
     return math.cos(az)*east-math.sin(az)*north,math.cos(el)*alt+math.sin(el)*depth
 
 
-def projected_replay(df,waypoints,frame_index):
+def projected_replay(df,waypoints,frame_index,initial_position_enu=None):
     hist=df.iloc[:frame_index+1];cur=df.iloc[frame_index]
+    origin=(np.asarray(initial_position_enu,dtype=float) if initial_position_enu is not None
+            else np.array([float(df.iloc[0].east_m),float(df.iloc[0].north_m),
+                           float(df.iloc[0].altitude_m)]))
     fig=go.Figure()
     ex,ey=project_xyz(hist.east_m,hist.north_m,hist.altitude_m)
     nx,ny=project_xyz(hist.est_east_m,hist.est_north_m,hist.est_altitude_m)
@@ -6528,11 +6610,38 @@ def projected_replay(df,waypoints,frame_index):
     fig.add_trace(go.Scatter(x=nx,y=ny,name='EKF estimate',mode='lines',
                              line=dict(color='#5bbcff',dash='dash',width=2)))
     if waypoints:
-        x,y=project_xyz([p[1] for p in waypoints],[p[0] for p in waypoints],
-                        [p[2] for p in waypoints])
-        fig.add_trace(go.Scatter(x=x,y=y,mode='markers+lines+text',
-             name='Waypoints',text=[f'WP-{i+1}' for i in range(len(waypoints))],
-             marker=dict(size=8,color='#f9a8db')))
+        x,y=project_xyz([origin[0]]+[p[1] for p in waypoints],
+                        [origin[1]]+[p[0] for p in waypoints],
+                        [origin[2]]+[p[2] for p in waypoints])
+        fig.add_trace(go.Scatter(x=x,y=y,mode='lines+markers+text',
+             name='Planned waypoints (not flown path)',
+             text=['']+[f'WP-{i+1}' for i in range(len(waypoints)-1)]+
+                        [f'WP-{len(waypoints)} / RETURN' if
+                         np.linalg.norm(np.array([waypoints[-1][1]-origin[0],
+                             waypoints[-1][0]-origin[1],
+                             waypoints[-1][2]-origin[2]]))<1e-6
+                         else f'WP-{len(waypoints)} / FINISH'],
+             textposition='bottom center',
+             marker=dict(size=7,color='#f9a8db'),
+             line=dict(color='#845d85',width=2,dash='dot')))
+        arrows=[]
+        vertices=[origin]+[
+            np.array([float(p[1]),float(p[0]),float(p[2])]) for p in waypoints]
+        for start_pt,end_pt in zip(vertices[:-1],vertices[1:]):
+            points=planned_leg_arrow_points(start_pt,end_pt)
+            if points is not None:
+                p0,p1,p2=points
+                ax,ay=project_xyz([p0[0],p1[0],p2[0]],[p0[1],p1[1],p2[1]],
+                                  [p0[2],p1[2],p2[2]])
+                arrows.extend([(ax[0],ay[0]),(ax[1],ay[1]),(ax[2],ay[2]),(np.nan,np.nan)])
+        if arrows:
+            fig.add_trace(go.Scatter(x=[p[0] for p in arrows],y=[p[1] for p in arrows],
+                mode='lines',name='Planned direction',line=dict(color='#e7c8ff',width=3),
+                hoverinfo='skip'))
+    sx,sy=project_xyz([origin[0]],[origin[1]],[origin[2]])
+    fig.add_trace(go.Scatter(x=sx,y=sy,mode='markers+text',name='START',
+        text=['START'],textposition='top left',
+        marker=dict(color='#4dffb3',size=12,symbol='diamond')))
     x,y=project_xyz([cur.east_m],[cur.north_m],[cur.altitude_m])
     fig.add_trace(go.Scatter(x=x,y=y,mode='markers+text',name='UAV',text=['UAV'],
                              marker=dict(color='#ff7474',size=13,symbol='diamond')))
@@ -6542,17 +6651,14 @@ def projected_replay(df,waypoints,frame_index):
     return fig
 
 
-def webgl_replay(df,waypoints,frame_index):
+def webgl_replay(df,waypoints,frame_index,initial_position_enu=None):
     hist=df.iloc[:frame_index+1];cur=df.iloc[frame_index]
     fig=go.Figure()
     fig.add_trace(go.Scatter3d(x=hist.east_m,y=hist.north_m,z=hist.altitude_m,
         mode='lines',name='Truth',line=dict(color='#20f59e',width=6)))
     fig.add_trace(go.Scatter3d(x=hist.est_east_m,y=hist.est_north_m,z=hist.est_altitude_m,
         mode='lines',name='EKF estimate',line=dict(color='#5bbcff',width=4,dash='dash')))
-    if waypoints:
-        fig.add_trace(go.Scatter3d(x=[p[1] for p in waypoints],y=[p[0] for p in waypoints],
-            z=[p[2] for p in waypoints],mode='lines+markers+text',
-            name='Waypoints',text=[f'WP-{i+1}' for i in range(len(waypoints))]))
+    fig.add_traces(mission_route_traces_3d(df,waypoints,initial_position_enu))
     fig.add_trace(go.Scatter3d(x=[cur.east_m],y=[cur.north_m],z=[cur.altitude_m],
         mode='markers+text',name='UAV',text=['UAV'],marker=dict(size=7,color='#ff7474')))
     fig.update_layout(height=580,margin=dict(l=0,r=0,t=0,b=0),
@@ -7814,14 +7920,20 @@ def display_report(result):
     render_gpt_advisor(result)
 
     st.subheader('Quaternion Aircraft Digital Twin | Plotly 3D')
+    if result['waypoints']:
+        st.caption('Mission route: START → WP-1 → ... → WP-N (FINISH/RETURN). '
+            'WP-N can share the START coordinates on a closed route. '
+            'Arrows are straight planned legs; green is the actual simulated flight track. '
+            'The first recorded sample is after the initial integration step, so its time may be slightly above 0 s.')
     # Saved replay index drives the battery visualization, aircraft and HUD.
     if profile['power_system']=='Battery':
         index=replay_index
-        st.caption('The battery-pack frame slider also controls the aircraft attitude, control surfaces and HUD.')
+        st.caption('The shared battery replay slider also controls aircraft attitude, control surfaces and the HUD. New flight replays start at t=0.')
     else:
-        index=st.slider('Flight / aircraft replay frame',0,len(df)-1,len(df)-1,
+        index=st.slider('Flight / aircraft replay frame',0,len(df)-1,0,
                         key='replay_frame')
     frame=df.iloc[index]
+    initial_position_enu=(0.,0.,float(result['scenario']['config']['altitude_m']))
     render_edge_ai_twin(result,index)
     c1,c2,c3,c4=st.columns(4)
     c1.metric('Roll',f'{frame.roll_deg:+.1f}°')
@@ -7859,22 +7971,24 @@ def display_report(result):
                    'Aircraft focus uses 1:1 geometry; mission overview enlarges the '
                    'aircraft for visibility. The scale factor appears in the chart title.')
         if animate:
-            st.info('Plotly animation samples up to 45 recorded frames and plays '
-                    'independently inside this chart. To synchronize the 3D battery pack, '
-                    'HUD and aircraft at a specific instant, use the shared Streamlit replay slider.')
+            st.info('Plotly preview begins at t=0 and animates independently of the shared '
+                    'battery, aircraft and AI replay. Other twins remain at the shared '
+                    'replay frame; disable Plotly animation to view that exact frame. '
+                    'The planned waypoint arrows are visual labels, not the flown trajectory.')
         try:
             replay=aircraft_plotly_twin(df,result['waypoints'],index,profile,
                 scenario['aircraft'],camera_mode,show_ekf,show_axes,
-                show_thrust,animate,max_animation_frames=45)
+                show_thrust,animate,max_animation_frames=45,
+                initial_position_enu=initial_position_enu)
             st.plotly_chart(replay,use_container_width=True,
                 config={'displaylogo':False,'responsive':True,'scrollZoom':True})
         except Exception as exc:
             st.warning(f'Plotly aircraft rendering failed: {exc}. '
                        'Showing the mobile-safe trajectory instead.')
-            st.plotly_chart(projected_replay(df,result['waypoints'],index),
+            st.plotly_chart(projected_replay(df,result['waypoints'],index,initial_position_enu),
                             use_container_width=True,config={'displaylogo':False})
     else:
-        st.plotly_chart(projected_replay(df,result['waypoints'],index),
+        st.plotly_chart(projected_replay(df,result['waypoints'],index,initial_position_enu),
                         use_container_width=True,config={'displaylogo':False})
         st.caption('Mobile-safe projected 3D displays the trajectory without a 3D aircraft mesh.')
     with st.expander('Cockpit HUD for selected frame',expanded=False):
