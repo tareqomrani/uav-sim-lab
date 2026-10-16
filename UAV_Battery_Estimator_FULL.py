@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.31 onboard edge AI compute research twin
+# UAV Battery Efficiency Estimator | v0.8.33 civilian avionics and inspection-data twin
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -24,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.31"
+VERSION = "0.8.33"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -3953,13 +3953,59 @@ def parse_waypoints(text,default_alt):
 # utilization are *illustrative modeling inputs*, NOT device measurements.
 # The compute module NEVER drives guidance, actuators, targeting or autonomy.
 # ============================================================================
+# Research coupling is enabled only for explicitly declared civilian/dual-use
+# battery research profiles with some payload headroom. Inclusion does NOT
+# validate an actual aircraft installation or manufacturer-approved payload.
+# Defense one-way attack aircraft and military-only named reference profiles
+# remain outside this computer/aircraft coupled simulation.
 EDGE_AI_ALLOWED_AIRCRAFT = frozenset({
     'Generic Quad', 'DJI Phantom', 'Skydio 2+', 'Freefly Alta 8',
     'Custom Build', 'Quantum Systems Vector', 'Vector AI (Fixed-Wing)',
     'Vector AI (Multicopter)', 'DJI Matrice 350 RTK',
+    'ACSL SOTEN', 'Sony Airpeak S1 (LBP-HS1)', 'DJI Matrice 4E',
+    'ideaForge Q6 V2', 'ideaForge NETRA V4 PRO',
 })
-# UIUC lightweight testbed is excluded: its zero declared payload allowance
-# cannot carry an additional compute module without changing the airframe.
+EDGE_AI_STARTER_AIRCRAFT = 'Generic Quad'
+# UIUC lightweight testbed and manufacturer profiles with 0 g payload allowance
+# are excluded: there is no declared margin to install the computer module.
+
+
+def edge_ai_eligibility(aircraft,swarm_enabled=False):
+    """Single, explicit compatibility decision for UI and production solver.
+
+    This does not declare actual installation suitability: modeled mass,
+    electrical headroom, trim, and aircraft-envelope preflight still apply.
+    """
+    profile=UAV_PROFILES.get(aircraft)
+    if profile is None or aircraft not in EDGE_AI_ALLOWED_AIRCRAFT:
+        return False,'EDGE_AI_ONLY_ON_DECLARED_CIVILIAN_RESEARCH_PROFILES',(
+            'This selection is outside the declared civilian compute-coupling library. '
+            'Select Generic Quad, Custom Build, or another supported battery research aircraft.')
+    if profile.get('power_system')!='Battery':
+        return False,'EDGE_AI_BATTERY_AIRCRAFT_ONLY',(
+            'The selected propulsion model does not have a characterized onboard '
+            'electrical supply for coupled AI power accounting.')
+    if swarm_enabled:
+        return False,'EDGE_AI_NOT_COUPLED_TO_SWARM_RESEARCH',(
+            'Turn off the secondary swarm study to enable a single-aircraft AI compute twin.')
+    minimum_mass_kg=min(h['mass_kg'] for h in EDGE_AI_HARDWARE.values())
+    if float(profile.get('max_payload_g',0.)) < 1000.*minimum_mass_kg:
+        return False,'EDGE_AI_PAYLOAD_CAPACITY_NOT_DECLARED',(
+            'The selected aircraft has less declared payload capacity than the '
+            'lightest simulated module. Do not assume an unapproved battery or payload upgrade.')
+    return True,'EDGE_AI_COUPLING_AVAILABLE',(
+        'Edge AI may be enabled. Module mass, electrical draw and compute workload '
+        'are checked again during preflight; hardware installation is not certified.')
+
+
+def select_edge_ai_starter_aircraft():
+    """Streamlit callback executes before aircraft and AI widgets are rebuilt."""
+    st.session_state['aircraft_region_filter']='All regions'
+    st.session_state['aircraft_profile_select']=EDGE_AI_STARTER_AIRCRAFT
+    st.session_state['v032_swarm_enabled']=False
+    st.session_state['v031_edge_enabled']=True
+    st.session_state['v028_preflight_ack']=False
+
 EDGE_AI_HARDWARE = {
     'Generic low-power research SoC': dict(ram_gb=4., peak_w=5., idle_w=1.,
         mass_kg=.08, r_th_k_w=7., c_th_j_k=35., throttle_c=75., shutdown_c=90.,
@@ -3989,12 +4035,23 @@ EDGE_AI_REQUIREMENTS = [
     ('EDGE-012','Expose time-stamped inference, electrical and thermal telemetry','test_enabled_module_state_exports_integrated_energy_and_source','EdgeComputeTwin.telemetry'),
     ('EDGE-013','Preflight reports peak research-compute power headroom','test_peak_compute_headroom_is_review_not_claimed_feasible','scenario_preflight'),
     ('EDGE-014','Detect AI module supply brownouts without claiming successful inference','test_power_accounting_brownout','EdgeComputeTwin.account_delivered'),
+    ('EDGE-015','Timestamp each civilian inspection observation and preserve frame arrival causality','test_inspection_event_timestamp_and_causal_processing','EdgeComputeTwin.step'),
+    ('EDGE-016','Compute analytic camera GSD, motion smear and tilt quality gates','test_inspection_quality_changes_with_speed_and_altitude','civilian_inspection_observation'),
+    ('EDGE-017','Count only on-time image-quality-qualified frames as usable observations','test_inspection_yield_only_counts_quality_and_deadline','EdgeComputeTwin.step'),
+    ('EDGE-018','Report honest synthetic ground-cell coverage and explicit non-validity caveats','test_coverage_cell_deduplication','EdgeComputeTwin.telemetry'),
+    ('EDGE-019','Use aircraft-relative avionics paths, not a cosmetic chip as the primary twin','test_avionics_plotly_has_camera_compute_flightcontroller_power','avionics_perception_plotly'),
+    ('EDGE-020','Provide explicitly paired same-input AI-on/off flight-energy comparison','test_pair_baseline_same_inputs_differ_only_ai_enabled','paired_civilian_baseline_config'),
+    ('EDGE-021','Maintain non-operational separation and observational-only compute','test_pair_baseline_rejects_military_and_unenabled','paired_civilian_baseline_config'),
+    ('EDGE-022','Label uncharacterized optics and inferred scene yield as unvalidated research proxies','test_inspection_assumptions_provenance','render_edge_ai_twin'),
 ]
 
 EDGE_DEFAULT = dict(enabled=False,hardware='Generic low-power research SoC',
     fps=8.,service_ms=55.,deadline_ms=120.,model_memory_mb=512.,
     frame_memory_mb=16.,max_queue=8, sensor_fault_start_s=1e9,
-    sensor_fault_duration_s=0.,seed=2026)
+    sensor_fault_duration_s=0.,seed=2026,
+    camera_fov_deg=65.,image_width_px=1920.,shutter_ms=2.,
+    max_smear_px=3.,max_tilt_deg=30.,max_gsd_cm_px=15.,
+    coverage_cell_m=10.)
 
 
 def edge_configuration(config):
@@ -4005,10 +4062,10 @@ def edge_configuration(config):
     cfg.update(raw)
     if not cfg['enabled']:
         return cfg, None
-    if config.get('aircraft') not in EDGE_AI_ALLOWED_AIRCRAFT:
-        raise ValueError('EDGE_AI_ONLY_ON_DECLARED_CIVILIAN_RESEARCH_PROFILES')
-    if config.get('swarm_enabled',False):
-        raise ValueError('EDGE_AI_NOT_COUPLED_TO_SWARM_RESEARCH')
+    eligible,code,_=edge_ai_eligibility(config.get('aircraft'),
+                                        config.get('swarm_enabled',False))
+    if not eligible:
+        raise ValueError(code)
     hardware=EDGE_AI_HARDWARE.get(cfg['hardware'])
     if hardware is None:
         raise ValueError('EDGE_AI_UNKNOWN_HARDWARE')
@@ -4024,9 +4081,60 @@ def edge_configuration(config):
         cfg[field]=value
     if isinstance(cfg.get('max_queue'),bool) or not isinstance(cfg.get('max_queue'),(int,np.integer)) or not 1<=cfg['max_queue']<=128:
         raise ValueError('EDGE_AI_INVALID_QUEUE_LIMIT')
+    # A nadir-looking civilian inspection camera over a synthetic flat datum.
+    # These are assumed optics, not manufacturer camera specifications.
+    inspection_bounds={
+        'camera_fov_deg':(15.,130.),'image_width_px':(320.,8192.),
+        'shutter_ms':(.02,50.),'max_smear_px':(.1,100.),
+        'max_tilt_deg':(1.,85.),'max_gsd_cm_px':(.1,500.),
+        'coverage_cell_m':(1.,1000.)}
+    for field,(lo,hi) in inspection_bounds.items():
+        try: value=float(cfg[field])
+        except (TypeError,ValueError,OverflowError):
+            raise ValueError('EDGE_AI_INVALID_INSPECTION_'+field.upper())
+        if not math.isfinite(value) or not lo<=value<=hi:
+            raise ValueError('EDGE_AI_INVALID_INSPECTION_'+field.upper())
+        cfg[field]=value
     if cfg['model_memory_mb']+cfg['frame_memory_mb']*(cfg['max_queue']+1) > 1024.*hardware['ram_gb']:
         raise ValueError('EDGE_AI_MEMORY_OVERCOMMITTED')
     return cfg,hardware
+
+
+
+def civilian_inspection_observation(state, cfg):
+    """Synthetic metadata for an idealized nadir civilian inspection camera.
+
+    No raster images, classified targets, neural-network detections or true
+    geolocation accuracy are produced. Ground is a flat z=0 research datum.
+    Aircraft truth is sampled at the beginning of each solver output interval
+    and zero-order-held for camera frame arrivals within that interval.
+    The smear approximation ignores attitude-rate smear, lens MTF, stabilization,
+    illumination and rolling-shutter distortion. It is a screening proxy.
+    """
+    def val(key):
+        x=state[key] if isinstance(state,dict) else getattr(state,key)
+        x=float(x)
+        if not math.isfinite(x):raise ValueError('INVALID_INSPECTION_STATE_'+key)
+        return x
+    height=val('altitude_m')  # Flat research ground datum at 0 MSL.
+    north=val('north_m');east=val('east_m')
+    speed=math.hypot(val('vn_ms'),val('ve_ms'))
+    roll=val('roll_deg');pitch=val('pitch_deg')
+    tilt=math.hypot(roll,pitch)  # Small-angle proxy, not an exact boresight transform.
+    footprint=2.*max(height,0.)*math.tan(math.radians(cfg['camera_fov_deg'])/2.)
+    gsd_m_px=footprint/cfg['image_width_px']
+    smear_px=(speed*cfg['shutter_ms']/1000.)/gsd_m_px if gsd_m_px>1e-12 else float('inf')
+    gsd_cm_px=100.*gsd_m_px
+    good=(height>0. and tilt<=cfg['max_tilt_deg'] and
+          smear_px<=cfg['max_smear_px'] and gsd_cm_px<=cfg['max_gsd_cm_px'])
+    cell_size=cfg['coverage_cell_m']
+    # Floor-quantized ground-track cells are a coarse sample-footprint index,
+    # NOT claim of area completeness or actual inspection-site coverage.
+    cell=(math.floor(north/cell_size),math.floor(east/cell_size))
+    return dict(timestamp_s=val('time_s'),quality_ok=bool(good),
+        smear_px=float(smear_px),gsd_cm_px=float(gsd_cm_px),
+        tilt_deg=float(tilt),footprint_width_m=float(footprint),
+        cell=cell,north_m=north,east_m=east)
 
 
 class EdgeComputeTwin:
@@ -4050,7 +4158,10 @@ class EdgeComputeTwin:
         self.peak_ram_mb=cfg['model_memory_mb']
         self.last_latency_ms=0.
         self.compute_utilization=0.
-    def step(self,dt,ambient_c=25.,power_available=True):
+        self.quality_rejected=0;self.on_time=0;self.inspection_usable=0
+        self.last_observation=None;self.coverage_cells=set()
+        self.completed_events=[]  # Bounded samples of event-level provenance.
+    def step(self,dt,ambient_c=25.,power_available=True,observation=None):
         dt=float(dt); ambient_c=float(ambient_c)
         if not math.isfinite(dt) or dt<=0 or not math.isfinite(ambient_c):
             raise ValueError('EDGE_AI_INVALID_DT_OR_AMBIENT')
@@ -4070,7 +4181,12 @@ class EdgeComputeTwin:
                 if fault(arrival) or shutdown or not power_available or len(self.jobs)>=c['max_queue']:
                     self.dropped+=1
                 else:
-                    self.jobs.append([arrival,c['service_ms']/1000.])
+                    # A copy of the ZOH geometry/quality metadata is attached
+                    # to the frame at arrival, not assigned at completion.
+                    frame_obs=(dict(observation) if observation is not None else None)
+                    self.jobs.append([arrival,c['service_ms']/1000.,frame_obs])
+                    if frame_obs is not None and not frame_obs['quality_ok']:
+                        self.quality_rejected+=1
                 continue
             next_arrival=min(end,self.next_frame)
             interval=next_arrival-t
@@ -4086,7 +4202,24 @@ class EdgeComputeTwin:
                     self.last_latency_ms=latency
                     self.latency_sum_ms+=latency
                     self.completed+=1
-                    if latency>c['deadline_ms']:self.missed+=1
+                    on_time=latency<=c['deadline_ms']
+                    if not on_time:self.missed+=1
+                    else:self.on_time+=1
+                    obs=finished[2]
+                    usable=bool(on_time and obs is not None and obs['quality_ok'])
+                    if usable:
+                        self.inspection_usable+=1
+                        self.coverage_cells.add(tuple(obs['cell']))
+                    if obs is not None:
+                        self.last_observation=obs
+                        if len(self.completed_events)<2000:
+                            self.completed_events.append(dict(
+                                arrival_s=float(finished[0]),completion_s=float(t),
+                                latency_ms=float(latency),on_time=bool(on_time),
+                                image_quality_ok=bool(obs['quality_ok']),
+                                usable=usable,gsd_cm_px=float(obs['gsd_cm_px']),
+                                smear_px=float(obs['smear_px']),
+                                ground_cell=tuple(obs['cell'])))
                 continue
             t=next_arrival
         fraction=min(1.,busy/dt)
@@ -4126,7 +4259,16 @@ class EdgeComputeTwin:
                     edge_shutdown=self.shutdown,
                     edge_brownout=self.brownout,
                     edge_energy_requested_wh=self.energy_wh,
-                    edge_energy_delivered_wh=self.delivered_energy_wh)
+                    edge_energy_delivered_wh=self.delivered_energy_wh,
+                    edge_on_time_inferences=self.on_time,
+                    edge_inspection_usable_frames=self.inspection_usable,
+                    edge_inspection_quality_rejected=self.quality_rejected,
+                    edge_inspection_yield_pct=(100.*self.inspection_usable/self.frame_count
+                        if self.frame_count else 0.),
+                    edge_inspection_unique_ground_cells=len(self.coverage_cells),
+                    edge_inspection_gsd_cm_px=(self.last_observation or {}).get('gsd_cm_px',float('nan')),
+                    edge_inspection_smear_px=(self.last_observation or {}).get('smear_px',float('nan')),
+                    edge_inspection_tilt_deg=(self.last_observation or {}).get('tilt_deg',float('nan')))
 
 
 def edge_preflight(config):
@@ -4417,7 +4559,8 @@ def run_physics(config):
             _,atmo_edge_temp,_=atmosphere_state(s.altitude_m,config['temp_c'])
             # Scheduling is informational; no edge inference enters the controller.
             prop.hotel=baseline_hotel_w+edge_twin.step(
-                output_dt,atmo_edge_temp,power_available=not edge_twin.brownout)
+                output_dt,atmo_edge_temp,power_available=not edge_twin.brownout,
+                observation=civilian_inspection_observation(s,edge_cfg))
         raw=autopilot.command(s,heading,command_alt,target_speed,output_dt,
                               mode=s.flight_mode)
         protected,envelope_status=(envelope.apply(s,raw) if config['envelope'] else
@@ -4703,6 +4846,14 @@ def run_physics(config):
             deadlines_missed=edge_twin.missed,temperature_c=edge_twin.temp,
             energy_wh=edge_twin.delivered_energy_wh,
             queued_at_end=len(edge_twin.jobs),
+            on_time_frames=edge_twin.on_time,
+            usable_inspection_frames=edge_twin.inspection_usable,
+            usable_inspection_yield_pct=(100.*edge_twin.inspection_usable/
+                edge_twin.frame_count if edge_twin.frame_count else 0.),
+            inspected_ground_cells=len(edge_twin.coverage_cells),
+            synthetic_scene='FLAT_DATUM_NADIR_CAMERA_ZOH_NO_NEURAL_INFERENCE',
+            event_samples=edge_twin.completed_events,
+            event_samples_truncated=(edge_twin.completed>len(edge_twin.completed_events)),
             physically_validated=False)
     return dict(telemetry=telemetry,final=final,metrics=metrics,
         trim=trim,params=params,profile=profile,observability=observability,
@@ -6622,7 +6773,8 @@ def sidebar_inputs():
         names=[n for n in UAV_PROFILES if region_filter=='All regions'
                or PROFILE_CATALOG[n]['region']==region_filter]
         if not names:st.error('No aircraft in this category.');st.stop()
-        default=names.index('RQ-20 Puma') if 'RQ-20 Puma' in names else 0
+        default=next((i for i,n in enumerate(names) if n==EDGE_AI_STARTER_AIRCRAFT),
+                     next((i for i,n in enumerate(names) if edge_ai_eligibility(n)[0]),0))
         name=st.selectbox('Aircraft profile',names,index=default,
             key='aircraft_profile_select')
         profile=UAV_PROFILES[name]
@@ -6849,7 +7001,7 @@ def sidebar_inputs():
             hybrid_enabled=False;hybrid_fraction=.10;hybrid_duration=10;hybrid_wh=200.
 
         st.header('07 | Swarm (Low-order)')
-        swarm_enabled=st.checkbox('Enable secondary swarm model',False)
+        swarm_enabled=st.checkbox('Enable secondary swarm model',False,key='v032_swarm_enabled')
         swarm_size=st.slider('Number of vehicles',1,12,4,disabled=not swarm_enabled)
         swarm_rounds=st.slider('Coordination rounds',1,8,4,disabled=not swarm_enabled)
         swarm_coord=st.checkbox('Role-aware coordination',True,disabled=not swarm_enabled)
@@ -6884,12 +7036,22 @@ def sidebar_inputs():
     config['literature_propeller_reference']=reference_propeller
     with st.sidebar:
         st.header('07A | Onboard Edge AI Compute Twin')
-        supported=(name in EDGE_AI_ALLOWED_AIRCRAFT and
-                   profile['power_system']=='Battery' and not swarm_enabled)
+        supported,eligibility_code,eligibility_explanation=(
+            edge_ai_eligibility(name,swarm_enabled))
+        if not supported:
+            st.warning('Edge AI not available for this aircraft/configuration. '
+                       +eligibility_explanation)
+            st.button('Switch to compatible research aircraft + enable Edge AI',
+                use_container_width=True,key='v032_edge_starter',
+                on_click=select_edge_ai_starter_aircraft,
+                help='Selects Generic Quad, turns off no protection limits, and '
+                     'enables a generic research companion computer.')
+        else:
+            st.caption('Edge AI eligible for coupled civilian research. '
+                       'Enable the checkbox to model onboard computing. '
+                       'Preflight still checks payload mass and available electrical power.')
         enabled=st.checkbox('Simulate onboard AI companion computer',False,
             key='v031_edge_enabled',disabled=not supported)
-        if not supported:
-            st.caption('Coupled compute is limited to declared civilian battery-powered research profiles; it is unavailable for attack-system references, swarm mode, and uncharacterized propulsion sources.')
         hardware_name=st.selectbox('AI module reference',list(EDGE_AI_HARDWARE),
             key='v031_hardware',disabled=not enabled)
         h=EDGE_AI_HARDWARE[hardware_name]
@@ -6911,12 +7073,30 @@ def sidebar_inputs():
             disabled=not (enabled and fault),key='v031_fault_start')
         fault_duration=st.slider('Interruption length (s)',1,120,20,
             disabled=not (enabled and fault),key='v031_fault_duration')
+        with st.expander('Civilian inspection camera / quality assumptions',expanded=False):
+            st.caption('Synthetic nadir camera over a flat ground datum; no model performs object recognition. ' 
+                       'FOV, shutter, resolution and quality acceptance are illustrative engineering inputs.')
+            camera_fov=st.slider('Horizontal camera FOV (degrees)',20,120,65,5,
+                disabled=not enabled,key='v033_fov')
+            image_width=st.selectbox('Synthetic image width (pixels)',[640,1280,1920,3840],
+                index=2,disabled=not enabled,key='v033_image_width')
+            shutter=st.slider('Synthetic exposure (milliseconds)',.1,20.,2.,.1,
+                disabled=not enabled,key='v033_shutter')
+            smear_limit=st.slider('Maximum motion smear (pixels)',.5,10.,3.,.5,
+                disabled=not enabled,key='v033_smear_limit')
+            tilt_limit=st.slider('Maximum camera tilt (degrees)',5,70,30,5,
+                disabled=not enabled,key='v033_tilt_limit')
+            gsd_limit=st.slider('Maximum ground sample distance (cm/pixel)',1.,100.,15.,1.,
+                disabled=not enabled,key='v033_gsd_limit')
         st.caption('Latency, thermal constants and assembly mass are RESEARCH ASSUMPTIONS, not Jetson benchmarks. No AI outputs feed the autopilot.')
     config['edge_ai']=dict(enabled=bool(enabled and supported),hardware=hardware_name,
         fps=float(fps),service_ms=float(service),deadline_ms=float(deadline),
         model_memory_mb=float(memory),frame_memory_mb=16.,max_queue=max_queue,
         sensor_fault_start_s=float(fault_start) if fault else 1e9,
-        sensor_fault_duration_s=float(fault_duration) if fault else 0.)
+        sensor_fault_duration_s=float(fault_duration) if fault else 0.,
+        camera_fov_deg=float(camera_fov),image_width_px=float(image_width),
+        shutter_ms=float(shutter),max_smear_px=float(smear_limit),
+        max_tilt_deg=float(tilt_limit),max_gsd_cm_px=float(gsd_limit))
     gate=scenario_preflight(config)
     with st.sidebar:
         st.header('08 | Preflight Scenario Check')
@@ -9126,60 +9306,215 @@ def edge_ai_board_plotly(frame,hardware,exploded=True):
     return fig
 
 
+def paired_civilian_baseline_config(config):
+    """Same scenario inputs, minus onboard companion compute and module mass.
+
+    Physics, controller, aircraft, weather, and random seeds are unchanged.
+    Only edge_ai.enabled differs; no AI inspection is executed in the baseline.
+    """
+    cfg,hardware=edge_configuration(config)
+    if hardware is None:
+        raise ValueError('PAIRED_BASELINE_REQUIRES_ENABLED_CIVILIAN_EDGE_AI')
+    baseline=copy.deepcopy(config)
+    baseline['edge_ai']=dict(cfg,enabled=False)
+    return baseline
+
+
+def paired_civilian_energy_metrics(on_result,off_result):
+    """Compare consistent sampled terminal energy; refuse unequal elapsed intervals."""
+    a=on_result['telemetry'];b=off_result['telemetry']
+    delta=float(on_result['scenario']['config']['dt'])
+    delta_b=float(off_result['scenario']['config']['dt'])
+    if not math.isclose(delta,delta_b,abs_tol=1e-10):
+        return dict(comparable=False,reason='Different output timesteps')
+    t1=float(a.time_s.iloc[-1]);t0=float(b.time_s.iloc[-1])
+    if not math.isclose(t1,t0,abs_tol=delta*1.1) or len(a)!=len(b):
+        return dict(comparable=False,reason='Flight terminated at different times; energy deltas not comparable',
+                    ai_duration_s=t1,baseline_duration_s=t0)
+    e1=float(a.power_draw_w.sum()*delta/3600.)
+    e0=float(b.power_draw_w.sum()*delta/3600.)
+    return dict(comparable=True,aircraft_energy_wh_ai_on=e1,
+        aircraft_energy_wh_baseline=e0,
+        delta_aircraft_energy_wh=e1-e0,
+        delta_mean_terminal_power_w=float(a.power_draw_w.mean()-b.power_draw_w.mean()),
+        ai_module_delivered_energy_wh=float(a.edge_energy_delivered_wh.iloc[-1]),
+        ai_final_soc_pct=float(a.battery_soc.iloc[-1]*100.),
+        baseline_final_soc_pct=float(b.battery_soc.iloc[-1]*100.),
+        ai_final_mass_kg=float(a.mass_kg.iloc[-1]),
+        baseline_final_mass_kg=float(b.mass_kg.iloc[-1]),
+        frames_with_valid_inspection=int(a.edge_inspection_usable_frames.iloc[-1]),
+        ai_status=on_result['metrics']['status'],
+        baseline_status=off_result['metrics']['status'])
+
+
+def avionics_perception_plotly(frame, profile):
+    """3D aircraft-relative functional overlay, not physical CAD or avionics layout."""
+    g=lambda key,default=0.:float(frame[key]) if key in frame else default
+    hot=bool(frame.get('edge_throttled',False));loss=bool(frame.get('edge_brownout',False))
+    fault=bool(frame.get('edge_shutdown',False)) or loss
+    compute_color='#ef4444' if fault else '#f59e0b' if hot else '#22ff88'
+    quality=g('edge_inspection_yield_pct')
+    scene_color='#22ff88' if quality>=90. else '#eab308' if quality>=50. else '#fb7185'
+    fig=go.Figure()
+    def stroke(points,name,color,width=6,dash='solid'):
+        fig.add_trace(go.Scatter3d(x=[p[0] for p in points],
+            y=[p[1] for p in points],z=[p[2] for p in points],
+            mode='lines',line=dict(color=color,width=width,dash=dash),
+            name=name,hovertemplate=name+'<extra></extra>'))
+    # Aircraft schematic is in an arbitrary unitless coordinate system.
+    # Body forward is +x. Components shown above are exploded for clarity.
+    rotor=profile['type']!='fixed'
+    if rotor:
+        for x,y in [(1.45,1.15),(1.45,-1.15),(-1.45,1.15),(-1.45,-1.15)]:
+            stroke([(0,0,0),(x,y,0)],'Illustrative rotor arm','#5e8276',8)
+            theta=np.linspace(0,2*math.pi,25)
+            fig.add_trace(go.Scatter3d(x=x+.3*np.cos(theta),y=y+.3*np.sin(theta),
+                z=np.zeros(len(theta)),mode='lines',line=dict(color='#6aab90',width=5),
+                name='Rotor footprint, schematic',hoverinfo='skip',showlegend=False))
+        stroke([(-.85,0,0),(.85,0,0)],'Generic multicopter frame','#7c9b8d',11)
+    else:
+        stroke([(-1.8,0,0),(1.8,0,0)],'Generic fuselage','#739c88',12)
+        stroke([(-.15,-2.,0),(-.15,2.,0)],'Generic wing','#739c88',13)
+        stroke([(-1.55,-.7,0),(-1.55,.7,0)],'Generic tailplane','#739c88',9)
+    modules={
+        'CAMERA':((.85,0,-.48),'#38bdf8','Synthetic inspection camera'),
+        'EDGE AI':((0,.5,.74),compute_color,'AI compute / workload'),
+        'FLIGHT CTRL':((-.25,-.55,.72),'#c4b5fd','Existing truth-fed autopilot'),
+        'BATTERY':((-.85,0,-.32),'#fde68a','Aircraft electrical source'),
+        'DATA LOG':((.65,1.55,1.0),scene_color,'Inspection-data quality / recorder'),
+    }
+    for title,(pos,color,description) in modules.items():
+        fig.add_trace(go.Scatter3d(x=[pos[0]],y=[pos[1]],z=[pos[2]],
+            mode='markers+text',marker=dict(size=9,color=color,symbol='diamond',
+                line=dict(width=1,color='white')),
+            text=[title],textposition='top center',textfont=dict(size=11,color='#d8ffe9'),
+            name=title,hovertemplate=description+'<extra></extra>'))
+    p=lambda n:modules[n][0]
+    stroke([p('CAMERA'),p('EDGE AI')], 'Timestamped synthetic camera frames','#38bdf8',7)
+    stroke([p('EDGE AI'),p('DATA LOG')], 'Advisory inspection data only',scene_color,7)
+    stroke([p('BATTERY'),p('EDGE AI')], 'Compute electrical power',compute_color,6)
+    stroke([p('BATTERY'),p('FLIGHT CTRL')], 'Essential avionics power','#fde68a',5)
+    # Explicitly NO control path from Edge AI to the flight controller.
+    fig.update_layout(title='Aircraft–Avionics–Perception | Functional 3D digital twin',
+        scene=dict(xaxis_visible=False,yaxis_visible=False,zaxis_visible=False,
+            aspectmode='data',camera=dict(eye=dict(x=1.65,y=1.55,z=1.35)),
+            bgcolor='#07100c'),paper_bgcolor='#07100c',plot_bgcolor='#07100c',
+        font_color='#d8ffe9',legend=dict(orientation='h',y=-.06,font=dict(size=10)),
+        margin=dict(l=0,r=0,t=50,b=0),height=490)
+    return fig
+
+
 def render_edge_ai_twin(result,frame_index):
     data=result['telemetry']
-    if 'edge_power_w' not in data:
-        return
+    if 'edge_power_w' not in data:return
     cfg=result['scenario']['config']['edge_ai']
     hardware=EDGE_AI_HARDWARE[cfg['hardware']]
     frame=data.iloc[min(frame_index,len(data)-1)]
-    st.subheader('Onboard Edge AI Compute Twin | Plotly 3D')
-    st.caption(f"Added installed-module mass: {hardware['mass_kg']:.2f} kg (research assembly assumption). "
-       'The module is included in aircraft mass/payload and increases electrical consumption.')
-    st.caption('Time-aligned simulated hardware state. CPU service time, thermal RC, '
-       'carrier mass and memory use are assumed research parameters; no neural '
-       'network executes in this digital twin and no AI feeds flight controls.')
+    st.subheader('Aircraft–Avionics and Civilian Inspection Twin | 3D')
+    st.caption('The avionics overlay is functional schematic geometry, not manufacturer CAD. '
+       'It shows a civilian synthetic inspection camera, companion AI processor, '
+       'separate truth-fed flight controller, aircraft battery and inspection recorder. '
+       'The Edge AI output does not drive the flight controller.')
     cols=st.columns(4)
-    cols[0].metric('Board power',f"{frame.edge_power_delivered_w:.1f} W")
-    cols[1].metric('Chip temperature',f"{frame.edge_temp_c:.1f} °C")
-    cols[2].metric('Inference queue',str(int(frame.edge_queue)))
-    cols[3].metric('Missed deadlines',str(int(frame.edge_deadline_missed)))
-    explode=st.checkbox('Exploded-view components',True,key='v031_edge_exploded')
-    st.plotly_chart(edge_ai_board_plotly(frame,hardware,explode),
-                    use_container_width=True,config={'displaylogo':False})
-    st.caption(f"Power throttled: {bool(frame.edge_throttled)} | "
-               f"brownout: {bool(frame.edge_brownout)} | "
-               f"camera drops: {int(frame.edge_dropped)} | "
-               f"delivered compute energy: {frame.edge_energy_delivered_wh:.4f} Wh")
-    with st.expander('Edge AI engineering sources, limits and INCOSE-style checks',expanded=False):
-        st.caption('Hardware specifications establish RAM and power mode references. '
-           'The workload latency, mass, thermal resistance and heat capacity are '
-           'research assumptions. No measured Jetson inference throughput is claimed.')
-        st.markdown('[Hardware reference]('+hardware['reference']+')')
+    cols[0].metric('Usable inspection yield',f"{frame.edge_inspection_yield_pct:.1f}%")
+    cols[1].metric('On-time valid frames',str(int(frame.edge_inspection_usable_frames)))
+    cols[2].metric('Illustrative ground cells',str(int(frame.edge_inspection_unique_ground_cells)))
+    cols[3].metric('Compute delivered',f"{frame.edge_energy_delivered_wh:.3f} Wh")
+    st.plotly_chart(avionics_perception_plotly(frame,result['profile']),
+        use_container_width=True,config={'displaylogo':False,'scrollZoom':True})
+    st.caption('Colored nodes and paths reflect replayed compute conditions, electrical '
+        'health and modeled inspection yield. Approximate ground cells are not validated '
+        'inspection coverage, map accuracy or detected defects.')
+    st.caption(f"t={frame.time_s:.2f} s | GSD proxy {frame.edge_inspection_gsd_cm_px:.2f} cm/pixel | "
+       f"smear proxy {frame.edge_inspection_smear_px:.2f} px | "
+       f"camera tilt proxy {frame.edge_inspection_tilt_deg:.1f}° | "
+       f"pending {int(frame.edge_queue)} | missed deadlines {int(frame.edge_deadline_missed)}")
+
+    with st.expander('Paired civilian flight study | AI on vs AI off',expanded=True):
+        st.caption('Runs the same aircraft, flight controller, environment, sensor seeds and '
+           'simulation duration with companion AI disabled. Mass and energy demand change '
+           'because the module is removed. The two coupled flight paths may diverge. '
+           'The AI-off baseline performs no onboard inference.')
+        paired_key=json.dumps(result['scenario']['config'],sort_keys=True,default=str)
+        if st.button('Run paired baseline without Edge AI',key='v033_run_baseline'):
+            try:
+                base_config=paired_civilian_baseline_config(result['scenario']['config'])
+                with st.spinner('Simulating baseline aircraft without AI module...'):
+                    base_result=run_physics(base_config)
+                comparison=paired_civilian_energy_metrics(result,base_result)
+                st.session_state['v033_paired_baseline']=(paired_key,comparison)
+            except (ValueError,RuntimeError,FloatingPointError,OverflowError) as exc:
+                st.error('Paired baseline could not complete: '+str(exc))
+        saved=st.session_state.get('v033_paired_baseline')
+        if saved and saved[0]==paired_key:
+            comp=saved[1]
+            if comp['comparable']:
+                a,b,c=st.columns(3)
+                a.metric('AI on | terminal energy',f"{comp['aircraft_energy_wh_ai_on']:.3f} Wh")
+                b.metric('AI off | terminal energy',f"{comp['aircraft_energy_wh_baseline']:.3f} Wh")
+                c.metric('Difference',f"{comp['delta_aircraft_energy_wh']:+.3f} Wh")
+                st.dataframe(pd.DataFrame([comp]),hide_index=True,use_container_width=True)
+                st.caption('The energy difference includes BOTH onboard computing power and '
+                           'aircraft-dynamics changes due to installed mass. It is not a '
+                           'measurement of computer power alone.')
+            else:
+                st.warning('Energy comparison withheld: '+comp['reason'])
+
+    tabs=st.tabs(['Mission data yield','Compute and electrical','Hardware diagnostics','Evidence / export'])
+    with tabs[0]:
+        plot_series(data,{'edge_inspection_yield_pct':'Usable inspection-data yield'},
+                    'Synthetic inspection yield','%')
+        plot_series(data,{'edge_inspection_usable_frames':'Usable inspection frames',
+                          'edge_completed':'Inferences completed',
+                          'edge_dropped':'Dropped inputs',
+                          'edge_deadline_missed':'Late inference results'},
+                    'Camera observations vs computational outcomes','frames')
+        plot_series(data,{'edge_inspection_gsd_cm_px':'Ground sampling proxy'},
+                    'Nadir camera ground-sampling proxy','cm/pixel')
+        plot_series(data,{'edge_inspection_smear_px':'Motion smear'},
+                    'Shutter-motion quality proxy','pixels')
+        st.caption('Yield = quality-qualified, on-time processed frames / all captured '
+            'synthetic frames. Scene quality uses a flat ground datum, basic geometric '
+            'footprint and translation-only smear. No image recognition model is executed, '
+            'and angular smear, lens optics, scene texture and lighting are not resolved.')
+    with tabs[1]:
+        plot_series(data,{'edge_compute_utilization_pct':'Compute load'},
+                    'Single-worker utilization','%')
+        plot_series(data,{'edge_queue':'Queued frames',
+                          'edge_deadline_missed':'Missed deadlines'},
+                    'Inference scheduling','frames')
+        plot_series(data,{'edge_power_w':'Requested compute power',
+                          'edge_power_delivered_w':'Delivered compute power'},
+                    'Coupled avionics electrical consumption','W')
+        plot_series(data,{'edge_temp_c':'Processor proxy temperature',
+                          'ambient_temperature_c':'Ambient'},
+                    'Lumped research thermal model','°C')
+    with tabs[2]:
+        st.caption('The original exploded-view component rendering is retained only '
+                   'as a diagnostic aid. No manufacturer CAD or physical PCB layout is claimed.')
+        exploded=st.checkbox('Exploded-view components',True,key='v033_edge_exploded')
+        st.plotly_chart(edge_ai_board_plotly(frame,hardware,exploded),
+                       use_container_width=True,config={'displaylogo':False})
+        st.caption(f"Power throttled {bool(frame.edge_throttled)} | "
+           f"brownout {bool(frame.edge_brownout)} | "
+           f"camera drops {int(frame.edge_dropped)} | "
+           f"module mass {hardware['mass_kg']:.2f} kg, assumed assembly basis")
+    with tabs[3]:
         st.dataframe(pd.DataFrame(EDGE_AI_REQUIREMENTS,columns=[
             'Requirement ID','Requirement','Verification','Production function']),
             use_container_width=True,hide_index=True)
-    tabs=st.tabs(['Compute throughput','Electrical and thermal','Export'])
-    with tabs[0]:
-        plot_series(data,{'edge_compute_utilization_pct':'Single-worker utilization'},
-                    'Simulated compute utilization','%')
-        plot_series(data,{'edge_queue':'Pending frames',
-                          'edge_completed':'Completed frames','edge_dropped':'Dropped frames'},
-                    'Synthetic inference scheduling','frames')
-    with tabs[1]:
-        plot_series(data,{'edge_power_w':'Requested AI load',
-                          'edge_power_delivered_w':'Electrical delivery'},
-                    'Onboard computer power','W')
-        plot_series(data,{'edge_temp_c':'Processor proxy temperature',
-                          'ambient_temperature_c':'Ambient'},'Compute thermal state','°C')
-    with tabs[2]:
-        st.download_button('Export edge-compute telemetry CSV',
+        st.markdown('[Hardware reference]('+hardware['reference']+')')
+        st.download_button('Export avionics and inspection telemetry CSV',
             data[[c for c in data.columns if c.startswith('edge_') or c=='time_s']]
                .to_csv(index=False).encode('utf-8'),
-            'edge_ai_compute_twin_telemetry.csv',mime='text/csv')
-        st.download_button('Export research hardware and workload JSON',
+            'civilian_inspection_edge_ai_telemetry.csv',mime='text/csv')
+        st.download_button('Export synthetic inference event sample CSV',
+            pd.DataFrame(result['metrics']['edge_ai']['event_samples'])
+                .to_csv(index=False).encode('utf-8'),
+            'civilian_inspection_event_samples.csv',mime='text/csv')
+        st.download_button('Export research hardware / model assumptions JSON',
             json.dumps(result['scenario']['edge_ai'],indent=2).encode('utf-8'),
-            'edge_ai_research_configuration.json',mime='application/json')
+            'edge_ai_research_assumptions.json',mime='application/json')
 
 
 def onnx_host_benchmark_workspace():
@@ -9231,7 +9566,7 @@ def main():
     theme_css()
     st.title('UAV BATTERY EFFICIENCY ESTIMATOR')
     st.caption('Fixed-wing / rotor UAV | 6-DOF flight modes • Endurance & reserve • '
-               'INS/EKF • 3D aircraft + battery + edge AI twins • Optional GPT reports')
+               'INS/EKF • 3D aircraft + battery + civilian perception twins • Optional GPT reports')
     st.caption('Single-file aerospace research simulator | Built by Tareq Omrani')
     config,run,reset,preflight=sidebar_inputs()
     if preflight['blocked']:
@@ -9293,7 +9628,7 @@ def main():
     if reset:
         st.session_state.pop('completed_simulation',None)
         for key in ('replay_frame','swarm_playback_frame','uav_gpt_mission_review',
-                    'uav_swarm_gpt_review'):
+                    'uav_swarm_gpt_review','v033_paired_baseline'):
             st.session_state.pop(key,None)
         st.success('Previous simulation cleared.')
         st.stop()
@@ -9302,7 +9637,7 @@ def main():
 04 Waypoint guidance → 05 PID control → 06 Envelope safety → 07 Actuator response
 08 Battery / ICE source → 09 Propulsion conversion → 10 Aero + environmental loads
 11 Quaternion six-DOF flight plant → 12 Sensor emulation → 13 INS / EKF
-14 Timestamped flight record → 15 3D battery / aircraft / AI computer Mesh3d twins
+14 Timestamped flight + synthetic inspection record → 15 3D battery / aircraft / avionics twins
 16 Flight replay, INS/EKF diagnostics, detailed UAV analytics and exports
 17 Optional GPT mission report and role-based swarm commentary (analysis only)
 
@@ -9319,7 +9654,7 @@ The optional GPT advisor only interprets saved telemetry.''',language='text')
                 result=run_physics(config)
             st.session_state['completed_simulation']=result
             for key in ('replay_frame','swarm_playback_frame','uav_gpt_mission_review',
-                        'uav_swarm_gpt_review'):
+                        'uav_swarm_gpt_review','v033_paired_baseline'):
                 st.session_state.pop(key,None)
         except (ValueError,RuntimeError,FloatingPointError,OverflowError) as exc:
             st.error(f'Simulation could not complete: {exc}')
