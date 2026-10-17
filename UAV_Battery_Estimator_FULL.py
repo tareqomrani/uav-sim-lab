@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.32.3 waypoint replay clarity and t=0 initialization
+# UAV Battery Efficiency Estimator | v0.8.32.4 sidebar recovery compatibility fix
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -24,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.32.3"
+VERSION = "0.8.32.4"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -6787,8 +6787,16 @@ def scenario_recovery_plan(config, gate=None, *, restore_baseline=False):
     """
     name=config.get('aircraft')
     if name not in UAV_PROFILES or name in ('MQ-1 Predator','MQ-9 Reaper'):
-        return {'changes':[], 'automatic_changes':[], 'status':'NOT_AVAILABLE',
-                'reason':'Recovery is confined to non-weapon-specific research profiles.'}
+        # Keep the same return schema for every profile.  The earlier short
+        # return omitted predicted_preflight and rejected_changes, crashing
+        # the Streamlit sidebar when these entries were selected.
+        unchanged_gate=(gate if gate is not None else
+                        dict(status='NOT_EVALUATED',blocked=True,
+                             review_required=False,issues=[],summary={}))
+        return {'changes':[], 'automatic_changes':[], 'rejected_changes':[],
+                'predicted_preflight':unchanged_gate,
+                'status':'NOT_AVAILABLE',
+                'reason':'Automatic research-baseline recovery is unavailable for this reference profile.'}
     profile=UAV_PROFILES[name]
     gate=gate if gate is not None else scenario_preflight(config)
     codes={item['code'] for item in gate.get('issues',[])}
@@ -7289,42 +7297,46 @@ def sidebar_inputs():
                     st.caption(entry['reason'])
         recovery=scenario_recovery_plan(config,gate)
         baseline=scenario_recovery_plan(config,gate,restore_baseline=True)
-        if recovery.get('rejected_changes'):
-            with st.expander('Corrections withheld after independent preflight recheck'):
-                for entry in recovery['rejected_changes']:
+        if recovery['status']=='NOT_AVAILABLE' or baseline['status']=='NOT_AVAILABLE':
+            st.info(recovery.get('reason') or baseline.get('reason') or
+                    'Automatic baseline recovery is not available for this reference profile.')
+        else:
+            if recovery.get('rejected_changes'):
+                with st.expander('Corrections withheld after independent preflight recheck'):
+                    for entry in recovery['rejected_changes']:
+                        st.write(f"{entry['field']}: {entry['old']} → {entry['new']}")
+                        st.caption(entry['rejection'])
+            auto=st.checkbox('Automatically restore objectively invalid inputs',
+                value=True,key='v029_auto_restore',
+                help='Only deterministic numeric/domain fixes are automatic. '
+                     'Routes, aircraft assumptions and uncertain controller risks never auto-change.')
+            if recovery['changes']:
+                with st.expander('Preview recommended corrections',expanded=gate['blocked']):
+                    for entry in recovery['changes']:
+                        st.write(f"**{entry['field']}**: {entry['old']} → {entry['new']}")
+                        st.caption(entry['reason'])
+                st.button('Apply Suggested Corrections',use_container_width=True,
+                    on_click=_apply_recovery_changes,args=(recovery['changes'],name),
+                    key='v029_apply_suggestions')
+            with st.expander('Preview aircraft baseline',expanded=False):
+                for entry in baseline['changes']:
                     st.write(f"{entry['field']}: {entry['old']} → {entry['new']}")
-                    st.caption(entry['rejection'])
-        auto=st.checkbox('Automatically restore objectively invalid inputs',
-            value=True,key='v029_auto_restore',
-            help='Only deterministic numeric/domain fixes are automatic. '
-                 'Routes, aircraft assumptions and uncertain controller risks never auto-change.')
-        if recovery['changes']:
-            with st.expander('Preview recommended corrections',expanded=gate['blocked']):
-                for entry in recovery['changes']:
-                    st.write(f"**{entry['field']}**: {entry['old']} → {entry['new']}")
-                    st.caption(entry['reason'])
-            st.button('Apply Suggested Corrections',use_container_width=True,
-                on_click=_apply_recovery_changes,args=(recovery['changes'],name),
-                key='v029_apply_suggestions')
-        with st.expander('Preview aircraft baseline',expanded=False):
-            for entry in baseline['changes']:
-                st.write(f"{entry['field']}: {entry['old']} → {entry['new']}")
-            st.caption('A baseline is a starting hypothesis, not proof that a mission will succeed.')
-        if baseline['predicted_preflight']['blocked']:
-            st.warning('Baseline still fails a preflight requirement. Review the remaining '
-                       'constraints before treating it as a feasible configuration.')
-        st.button('Restore Aircraft Research Baseline',use_container_width=True,
-            disabled=not baseline['changes'] or baseline['predicted_preflight']['blocked'],
-            on_click=_apply_recovery_changes,args=(baseline['changes'],name),
-            key='v029_reset_research_baseline',
-            help='Restores mission/environment/battery input defaults. Does not change published datasets.')
-        if (auto and recovery['automatic_changes']):
-            signature=hashlib.sha256(repr((name,config,gate['issues'])).encode('utf-8')).hexdigest()
-            if st.session_state.get('v029_auto_attempt_signature')!=signature:
-                st.session_state['v029_auto_attempt_signature']=signature
-                st.session_state['v029_pending_recovery']={
-                    'aircraft':name,'changes':recovery['automatic_changes']}
-                st.rerun()
+                st.caption('A baseline is a starting hypothesis, not proof that a mission will succeed.')
+            if baseline['predicted_preflight']['blocked']:
+                st.warning('Baseline still fails a preflight requirement. Review the remaining '
+                           'constraints before treating it as a feasible configuration.')
+            st.button('Restore Aircraft Research Baseline',use_container_width=True,
+                disabled=not baseline['changes'] or baseline['predicted_preflight']['blocked'],
+                on_click=_apply_recovery_changes,args=(baseline['changes'],name),
+                key='v029_reset_research_baseline',
+                help='Restores mission/environment/battery input defaults. Does not change published datasets.')
+            if (auto and recovery['automatic_changes']):
+                signature=hashlib.sha256(repr((name,config,gate['issues'])).encode('utf-8')).hexdigest()
+                if st.session_state.get('v029_auto_attempt_signature')!=signature:
+                    st.session_state['v029_auto_attempt_signature']=signature
+                    st.session_state['v029_pending_recovery']={
+                        'aircraft':name,'changes':recovery['automatic_changes']}
+                    st.rerun()
         # An acknowledgment is tied to the entire configuration, including
         # battery/loadout and the selected published coefficient datasets.
         review_signature=hashlib.sha256(repr((config,gate['issues'])).encode('utf-8')).hexdigest()
