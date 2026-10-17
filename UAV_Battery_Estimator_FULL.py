@@ -1,4 +1,4 @@
-# UAV Battery Efficiency Estimator | v0.8.32.4 sidebar recovery compatibility fix
+# UAV Battery Efficiency Estimator | v0.8.32.7 original-feature preservation
 # Standalone Streamlit application | Built by Tareq Omrani
 # requirements.txt: streamlit>=1.40,<2; numpy>=1.26,<3; pandas>=2,<4;
 # plotly>=5.20,<8; pyarrow<25; openai>=1.50,<3
@@ -14,6 +14,7 @@ import copy
 import json
 import math
 import os
+import time
 import zipfile
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,7 +25,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSION = "0.8.32.4"
+VERSION = "0.8.32.7"
 G = 9.80665
 R_AIR = 287.05
 P_SL = 101325.0
@@ -2482,7 +2483,9 @@ class PropulsionResult:
 class Propulsion:
     def __init__(self,profile,p,battery=None):
         self.profile=profile;self.p=p;self.battery=battery
-        self.esc_eff=.96;self.motor_eff=.90;self.figure_merit=float(profile.get('rotor_figure_merit',.72))
+        self.esc_eff=float(profile.get('custom_esc_eff',.96))
+        self.motor_eff=float(profile.get('custom_motor_eff',.90))
+        self.figure_merit=float(profile.get('rotor_figure_merit',.72))
         self.hotel=float(profile.get('hotel_W',15.))
         self.kind=profile['power_system']
         self.empirical_propeller=profile.get('cal_propeller')
@@ -2492,6 +2495,11 @@ class Propulsion:
             reference=float(profile.get('draw_watt',180.))
             self.max_electrical=max(1.8*reference,1.5*reference) if p.kind=='rotor' else max(2.8*reference,250.)
             self.max_shaft=self.max_electrical*self.esc_eff*self.motor_eff
+            if p.kind=='rotor' and profile.get('custom_max_shaft_w') is not None:
+                # Shaft nameplate limit; battery voltage/current is still independently
+                # enforced by BatteryTwin.step() and the preflight electrical screen.
+                self.max_shaft=float(profile['custom_max_shaft_w'])
+                self.max_electrical=self.max_shaft/(self.esc_eff*self.motor_eff)
             if self.literature_propeller:
                 rec=self.literature_propeller
                 # Cap from published CP reference using the maximum RPM test
@@ -4196,12 +4204,63 @@ def edge_preflight(config):
             'The coupled electrical model presently supports battery-powered civilian aircraft only.'))
     return issues
 
+# Original-feature preservation: user-defined civilian Custom Build rotor system.
+# These are declared research assumptions, never manufacturer motor curves.
+CUSTOM_MOTOR_REFERENCE_ASSEMBLY_KG = 0.48  # included in the 2.0 kg Custom Build baseline (assumption)
+CUSTOM_MOTOR_DEFAULTS = dict(rotor_count=4, rotor_diameter_m=0.26,
+    shaft_rating_per_motor_w=150., motor_efficiency=0.90,
+    esc_efficiency=0.96, figure_of_merit=0.72,
+    installed_mass_per_motor_kg=0.12)
+
+
+def custom_motor_settings(config):
+    """Validate optional civilian rotor hardware before it enters the flight plant."""
+    if not config.get('custom_motor_enabled', False):
+        return None
+    if config.get('aircraft') != 'Custom Build':
+        raise ValueError('Custom motor research overrides are available for Custom Build only')
+    raw=dict(CUSTOM_MOTOR_DEFAULTS)
+    overrides=config.get('custom_motor') or {}
+    if not isinstance(overrides,dict):
+        raise ValueError('INVALID_CUSTOM_MOTOR_PARAMETER: hardware settings must be a dictionary')
+    raw.update(overrides)
+    limits=dict(rotor_count=(2.,12.),rotor_diameter_m=(0.08,1.5),
+        shaft_rating_per_motor_w=(10.,5000.),motor_efficiency=(0.50,0.98),
+        esc_efficiency=(0.50,0.99),figure_of_merit=(0.40,0.85),
+        installed_mass_per_motor_kg=(0.02,2.0))
+    out={}
+    for key,(lower,upper) in limits.items():
+        try: value=float(raw[key])
+        except (TypeError,ValueError,OverflowError,KeyError):
+            raise ValueError('INVALID_CUSTOM_MOTOR_PARAMETER: '+key)
+        if not math.isfinite(value) or not lower<=value<=upper:
+            raise ValueError('CUSTOM_MOTOR_OUTSIDE_RESEARCH_DOMAIN: '+key)
+        out[key]=value
+    if int(out['rotor_count'])!=out['rotor_count']:
+        raise ValueError('CUSTOM_MOTOR_ROTOR_COUNT_NOT_INTEGER')
+    out['rotor_count']=int(out['rotor_count'])
+    out['disk_area_m2']=(out['rotor_count']*math.pi*
+        (out['rotor_diameter_m']/2.)**2)
+    out['max_shaft_w']=out['rotor_count']*out['shaft_rating_per_motor_w']
+    out['installed_assembly_kg']=out['rotor_count']*out['installed_mass_per_motor_kg']
+    out['mass_delta_kg']=out['installed_assembly_kg']-CUSTOM_MOTOR_REFERENCE_ASSEMBLY_KG
+    return out
+
+
 def scenario_setup(config):
     name=config['aircraft']
     if name in {entry['aircraft'] for entry in DEFENSE_REFERENCE_CATALOG}:
         raise ValueError('This reference-only military platform is not available '
                          'for physics, performance, mission, or swarm simulation.')
     profile=dict(UAV_PROFILES[name])
+    custom_motors=custom_motor_settings(config)
+    if custom_motors is not None:
+        profile.update(source_rotor_disk_area_m2=custom_motors['disk_area_m2'],
+            custom_max_shaft_w=custom_motors['max_shaft_w'],
+            custom_esc_eff=custom_motors['esc_efficiency'],
+            custom_motor_eff=custom_motors['motor_efficiency'],
+            rotor_figure_merit=custom_motors['figure_of_merit'],
+            custom_motor_research_assumptions=custom_motors)
     calibration=config.get('reference_calibration')
     section=config.get('literature_section_polar')
     prop_reference=config.get('literature_propeller_reference')
@@ -4314,6 +4373,15 @@ def scenario_setup(config):
         profile,PROFILE_CATALOG[name],payload,
         selected_wh=config.get('battery_wh') if profile['power_system']=='Battery' else None,
         specific_energy_whkg=config.get('specific_energy',220.),fuel_mass_kg=fuel)
+    if custom_motors is not None:
+        mass+=custom_motors['mass_delta_kg']
+        if mass<=0. or not math.isfinite(mass):
+            raise ValueError('CUSTOM_MOTOR_INSTALLED_MASS_INVALID')
+        mass_budget=dict(mass_budget,
+            custom_motor_reference_assembly_kg=CUSTOM_MOTOR_REFERENCE_ASSEMBLY_KG,
+            custom_motor_installed_assembly_kg=custom_motors['installed_assembly_kg'],
+            custom_motor_mass_adjustment_kg=custom_motors['mass_delta_kg'],
+            custom_motor_reference_basis='UNVERIFIED_DECLARED_ASSEMBLY_MASS')
     if calibration is not None:
         # Manifest mass is for the identical measured loading and pack.
         mass=float(calibration['airframe']['flight_mass_kg'])
@@ -5495,6 +5563,71 @@ def battery_replay_step_index(df,current_index,seconds):
     return current
 
 
+def battery_replay_clock(df):
+    """Advance saved telemetry in physical simulation time; never rerun physics.
+
+    Fragment refreshes the full app so all previously coupled twin renderers
+    see the same shared frame. This is replay, NOT live embedded telemetry.
+    """
+    state=st.session_state
+    if not state.get('battery_replay_auto_running',False) or len(df)<2:
+        return
+    index=int(state.get('replay_frame',0))
+    times=np.asarray(df['time_s'],dtype=float)
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times)<0):
+        state['battery_replay_auto_running']=False
+        return
+    start_wall=float(state.get('battery_replay_start_wall',time.monotonic()))
+    start_sim=float(state.get('battery_replay_start_sim',times[0]))
+    speed=float(state.get('battery_replay_speed',5.))
+    target=start_sim+max(0.,time.monotonic()-start_wall)*speed
+    advanced=int(np.searchsorted(times,target,side='right')-1)
+    advanced=max(index,min(len(df)-1,advanced))
+    if advanced!=index:
+        state['replay_frame']=advanced
+        if advanced==len(df)-1:
+            state['battery_replay_auto_running']=False
+        st.rerun()  # all 3 twins must follow the same frame
+    if target>=times[-1]:
+        state['battery_replay_auto_running']=False
+
+
+# st.fragment is part of Streamlit >= 1.40. Test-only modules can omit UI APIs.
+_fragment_decorator=getattr(st,'fragment',None)
+if callable(_fragment_decorator):
+    battery_replay_clock=_fragment_decorator(run_every='1s')(battery_replay_clock)
+
+
+def battery_replay_play(df,rate=5.):
+    if len(df)==0:return
+    state=st.session_state
+    index=int(state.get('replay_frame',0))
+    index=max(0,min(index,len(df)-1))
+    if index>=len(df)-1:
+        index=0
+        state['replay_frame']=0
+    state['battery_replay_start_wall']=time.monotonic()
+    state['battery_replay_start_sim']=float(df['time_s'].iloc[index])
+    state['battery_replay_speed']=float(rate)
+    state['battery_replay_auto_running']=True
+
+
+def battery_replay_pause():
+    st.session_state['battery_replay_auto_running']=False
+
+
+def battery_replay_auto_frame(times,start_index,elapsed_wall_seconds,rate):
+    """Pure mapping for independent repeatable playback tests."""
+    times=np.asarray(times,dtype=float)
+    if times.ndim!=1 or len(times)==0 or not np.all(np.isfinite(times)) or np.any(np.diff(times)<0):
+        raise ValueError('INVALID_REPLAY_TIME_SERIES')
+    if not math.isfinite(float(elapsed_wall_seconds)) or elapsed_wall_seconds<0. or rate<=0 or not math.isfinite(float(rate)):
+        raise ValueError('INVALID_REPLAY_RATE')
+    start=max(0,min(int(start_index),len(times)-1))
+    target=times[start]+elapsed_wall_seconds*rate
+    return int(min(len(times)-1,max(start,np.searchsorted(times,target,side='right')-1)))
+
+
 def render_battery_monitoring_hud(df,config):
     """Primary battery instrument; all other twins use this replay index."""
     st.markdown('#### Battery Telemetry HUD | Synchronized Simulation Replay')
@@ -5508,20 +5641,38 @@ def render_battery_monitoring_hud(df,config):
     stored=st.session_state.get('replay_frame',0)
     if not isinstance(stored,int) or not 0 <= stored <= final_index:
         st.session_state['replay_frame']=0
+    st.caption('Automatic playback advances *saved simulation frames*; it does not '
+        'run the plant in real time or stream BMS hardware measurements.')
+    rate=st.selectbox('Replay speed',('1×','5×','10×'),index=1,
+        key='battery_replay_rate')
+    rate_number={'1×':1.,'5×':5.,'10×':10.}[rate]
+    play,pause=st.columns(2)
+    if play.button('▶ Auto Play',key='battery_auto_play'):
+        battery_replay_play(df,rate_number)
+    if pause.button('⏸ Pause',key='battery_auto_pause'):
+        battery_replay_pause()
     start,back=st.columns(2)
     forward,end=st.columns(2)
     if start.button('⏮ Start',key='battery_hud_start'):
+        battery_replay_pause()
         st.session_state['replay_frame']=0
     if back.button('◀ −5 s',key='battery_hud_back'):
+        battery_replay_pause()
         st.session_state['replay_frame']=battery_replay_step_index(
             df,st.session_state.get('replay_frame',final_index),-5.)
     if forward.button('+5 s ▶',key='battery_hud_forward'):
+        battery_replay_pause()
         st.session_state['replay_frame']=battery_replay_step_index(
             df,st.session_state.get('replay_frame',final_index),5.)
     if end.button('End ⏭',key='battery_hud_end'):
+        battery_replay_pause()
         st.session_state['replay_frame']=final_index
+    battery_replay_clock(df)
     index=st.slider('Shared flight / battery / AI replay frame',
-                    0,final_index,0,key='replay_frame')
+                    0,final_index,0,key='replay_frame',
+                    on_change=battery_replay_pause)
+    st.caption(f"Replay t = {float(df.time_s.iloc[index]):.1f} s | "
+        f"{'PLAYING' if st.session_state.get('battery_replay_auto_running') else 'PAUSED'}")
     try:
         reading=battery_monitoring_state(df.iloc[index],config['reserve_soc'])
     except (ValueError,KeyError,TypeError) as exc:
@@ -5904,12 +6055,13 @@ def planned_leg_arrow_points(start, finish):
     return (back+half_width*side,tip,back-half_width*side)
 
 
-def mission_route_traces_3d(df, waypoints, initial_position_enu=None):
-    """Separate START / ordered waypoints / RETURN at unaltered coordinates.
+def mission_route_traces_3d(df, waypoints, initial_position_enu=None, show_start=True):
+    """Plot ordered planned waypoints with an optional flight-view START marker.
 
-    The planned straight legs are for visual reference; the actual 6-DOF track
-    is drawn separately from truth telemetry. Coincident START and RETURN use
-    opposed screen-space text positions, not displaced georeferenced markers.
+    The planned straight legs are visual references, separate from the actual
+    6-DOF flight history. Only the primary quaternion aircraft view shows the
+    unobtrusive START marker; alternate views omit it to prevent duplication.
+    Coincident START and RETURN coordinates are never displaced.
     """
     start=(np.asarray(initial_position_enu,dtype=float) if initial_position_enu is not None
            else np.array([float(df.iloc[0].east_m),float(df.iloc[0].north_m),
@@ -5954,12 +6106,14 @@ def mission_route_traces_3d(df, waypoints, initial_position_enu=None):
             traces.append(go.Scatter3d(x=arrows[:,0],y=arrows[:,1],z=arrows[:,2],
                 mode='lines',name='Planned direction arrows',
                 line=dict(color='#e7c8ff',width=5),hoverinfo='skip'))
-    # Draw START last to make it visible even when WP-N overlaps exactly.
-    traces.append(go.Scatter3d(x=[start[0]],y=[start[1]],z=[start[2]],
-        mode='markers+text',name='START | initial position',text=['START'],
-        textposition='top left',marker=dict(color='#4dffb3',size=9,
-                                            symbol='diamond'),
-        hovertemplate='Recorded initial aircraft position<extra></extra>'))
+    if show_start:
+        # Only the main quaternion aircraft view needs this small, subdued cue.
+        traces.append(go.Scatter3d(x=[start[0]],y=[start[1]],z=[start[2]],
+            mode='markers+text',name='START | initial position',text=['START'],
+            textposition='top left',marker=dict(color='#7de0ac',size=4,
+                                                symbol='diamond-open'),
+            opacity=0.8,
+            hovertemplate='Configured initial aircraft position<extra></extra>'))
     return traces
 
 
@@ -6002,7 +6156,7 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
         fig.add_trace(go.Scatter3d(x=hist.est_east_m,y=hist.est_north_m,
             z=hist.est_altitude_m,mode='lines',name='EKF estimate',
             line=dict(color='#59bfff',width=4,dash='dash')))
-    fig.add_traces(mission_route_traces_3d(df,waypoints,initial_position_enu))
+    fig.add_traces(mission_route_traces_3d(df,waypoints,initial_position_enu,show_start=True))
     dynamic_offset=len(fig.data)
     dynamic,_=aircraft_dynamic_traces(profile,row,aircraft_name,scale,
                                       show_axes,show_thrust)
@@ -6622,7 +6776,7 @@ def projected_replay(df,waypoints,frame_index,initial_position_enu=None):
                              waypoints[-1][2]-origin[2]]))<1e-6
                          else f'WP-{len(waypoints)} / FINISH'],
              textposition='bottom center',
-             marker=dict(size=7,color='#f9a8db'),
+             marker=dict(size=[0]+[7]*len(waypoints),color='#f9a8db'),
              line=dict(color='#845d85',width=2,dash='dot')))
         arrows=[]
         vertices=[origin]+[
@@ -6638,10 +6792,8 @@ def projected_replay(df,waypoints,frame_index,initial_position_enu=None):
             fig.add_trace(go.Scatter(x=[p[0] for p in arrows],y=[p[1] for p in arrows],
                 mode='lines',name='Planned direction',line=dict(color='#e7c8ff',width=3),
                 hoverinfo='skip'))
-    sx,sy=project_xyz([origin[0]],[origin[1]],[origin[2]])
-    fig.add_trace(go.Scatter(x=sx,y=sy,mode='markers+text',name='START',
-        text=['START'],textposition='top left',
-        marker=dict(color='#4dffb3',size=12,symbol='diamond')))
+    # The alternate mobile-safe view omits the START marker. Its planned
+    # path still begins at the true initial coordinates and retains WP labels.
     x,y=project_xyz([cur.east_m],[cur.north_m],[cur.altitude_m])
     fig.add_trace(go.Scatter(x=x,y=y,mode='markers+text',name='UAV',text=['UAV'],
                              marker=dict(color='#ff7474',size=13,symbol='diamond')))
@@ -6658,7 +6810,7 @@ def webgl_replay(df,waypoints,frame_index,initial_position_enu=None):
         mode='lines',name='Truth',line=dict(color='#20f59e',width=6)))
     fig.add_trace(go.Scatter3d(x=hist.est_east_m,y=hist.est_north_m,z=hist.est_altitude_m,
         mode='lines',name='EKF estimate',line=dict(color='#5bbcff',width=4,dash='dash')))
-    fig.add_traces(mission_route_traces_3d(df,waypoints,initial_position_enu))
+    fig.add_traces(mission_route_traces_3d(df,waypoints,initial_position_enu,show_start=False))
     fig.add_trace(go.Scatter3d(x=[cur.east_m],y=[cur.north_m],z=[cur.altitude_m],
         mode='markers+text',name='UAV',text=['UAV'],marker=dict(size=7,color='#ff7474')))
     fig.update_layout(height=580,margin=dict(l=0,r=0,t=0,b=0),
@@ -7030,6 +7182,36 @@ def sidebar_inputs():
                 help='Aircraft total payload limit 2.7 kg. A single gimbal damper has a separate 960 g load rating; structural compatibility of a total-load configuration is not verified.')
             if payload_mounting=='Single downward gimbal' and payload>960:
                 st.error('Single gimbal limit is 960 g; lower the selected load.')
+        custom_motor_enabled=False
+        custom_motor=dict(CUSTOM_MOTOR_DEFAULTS)
+        if name=='Custom Build':
+            with st.expander('Original feature | Custom motor and rotor setup',expanded=False):
+                st.caption('Optional hypothetical civilian propulsion setup. Off preserves '
+                    'the original v0.8.32.6 propulsion assumptions. Motor and ESC ratings '
+                    'constrain shaft/electrical power, rotor dimensions determine disk area, '
+                    'and assembly mass changes aircraft mass. This is NOT a measured '
+                    'thrust/RPM curve or a validated control-allocation model.')
+                custom_motor_enabled=st.checkbox('Enable configurable Custom Build propulsion',
+                    False,key='v0327_custom_motor_enabled')
+                motor_fields=[
+                    ('rotor_count','Number of motors/rotors',2,12,1),
+                    ('rotor_diameter_m','Rotor diameter (m)',0.08,1.5,0.01),
+                    ('shaft_rating_per_motor_w','Maximum shaft power per motor (W)',10.,5000.,10.),
+                    ('motor_efficiency','Motor efficiency assumption',.50,.98,.01),
+                    ('esc_efficiency','ESC efficiency assumption',.50,.99,.01),
+                    ('figure_of_merit','Rotor figure of merit assumption',.40,.85,.01),
+                    ('installed_mass_per_motor_kg','Installed motor/ESC/rotor mass per unit (kg)',.02,2.,.01)]
+                for field,label,low,high,step in motor_fields:
+                    default=CUSTOM_MOTOR_DEFAULTS[field]
+                    custom_motor[field]=st.number_input(label, min_value=low,
+                        max_value=high,value=default,step=step,
+                        disabled=not custom_motor_enabled,key='v0327_'+field)
+                if custom_motor_enabled:
+                    rotor_n=int(custom_motor['rotor_count'])
+                    disk=rotor_n*math.pi*(float(custom_motor['rotor_diameter_m'])/2.)**2
+                    st.caption(f"Combined rotor disk area: {disk:.3f} m² | "
+                        f"Nameplate shaft ceiling: {rotor_n*custom_motor['shaft_rating_per_motor_w']:.0f} W | "
+                        'Reference assembly already included: 0.48 kg (assumed).')
         reference_battery=battery_reference_for(name)
         battery_defaults=battery_model_defaults(name)
         if name==COUPLED_REFERENCE_AIRCRAFT:
@@ -7221,6 +7403,8 @@ def sidebar_inputs():
         swarm_reserve=swarm_reserve,swarm_seed=swarm_seed,**battery_conf)
     config['literature_section_polar']=reference_section
     config['literature_propeller_reference']=reference_propeller
+    config['custom_motor_enabled']=custom_motor_enabled
+    config['custom_motor']=custom_motor if custom_motor_enabled else None
     with st.sidebar:
         st.header('07A | Onboard Edge AI Compute Twin')
         supported,eligibility_code,eligibility_explanation=(
@@ -9690,6 +9874,107 @@ def onnx_host_benchmark_workspace():
         except Exception as exc:
             st.error(f'Host benchmark could not run: {exc}')
 
+ORIGINAL_SCENARIO_NAMES = (
+    'Excess payload capacity',
+    'Climb energy deduction',
+    'Descent and unsupported recharge',
+    'Hot and cold battery capacity',
+    'Undersized battery',
+    'High-altitude air density',
+    'Battery gauge and flight timer',
+)
+
+
+def original_feature_demonstration(label, config=None, recorded=None):
+    """Reproduce original acceptance ideas without changing live inputs.
+
+    Research demonstrators are independent assertions, not manufacturer or
+    safety certification. Return evidence and an explicit limitation.
+    """
+    if label not in ORIGINAL_SCENARIO_NAMES:
+        raise ValueError('UNKNOWN_ORIGINAL_FEATURE_SCENARIO')
+    if label=='Excess payload capacity':
+        p=dict(config or {})
+        aircraft=p.get('aircraft','Generic Quad')
+        if aircraft not in UAV_PROFILES: aircraft='Generic Quad'
+        p['aircraft']=aircraft
+        p['payload_g']=float(UAV_PROFILES[aircraft]['max_payload_g'])+100.
+        if config is not None:
+            outcome=scenario_preflight(p)
+            passed=outcome['blocked']
+            explanation='An intentionally over-limit payload was rejected by preflight.'
+        else:
+            passed=p['payload_g']>UAV_PROFILES[aircraft]['max_payload_g']
+            explanation='The payload exceeds the declared limit; pass a full scenario for a preflight test.'
+        return dict(passed=passed,observation=explanation,
+            evidence=dict(test_payload_g=p['payload_g'],declared_max_g=UAV_PROFILES[aircraft]['max_payload_g']))
+    if label=='Climb energy deduction':
+        mass=2.0;ascent=100.;energy=mass*G*ascent
+        return dict(passed=energy>0,observation='A climb requires positive gravitational energy; real shaft/battery demand also includes losses.',
+            evidence=dict(assumed_mass_kg=mass,ascent_m=ascent,ideal_gain_wh=round(energy/3600.,4)))
+    if label=='Descent and unsupported recharge':
+        # No regenerative powertrain exists in the modeled Custom Build.
+        return dict(passed=True,observation='Descent does not automatically recharge this battery: absent characterized regeneration, credited recharge = 0 Wh.',
+            evidence=dict(regenerative_charge_model='NOT_IMPLEMENTED',credited_recharge_wh=0.))
+    if label=='Hot and cold battery capacity':
+        a=BatteryTwin(150.,4,1.,1.,-10.,8.,1.,0.,False,.1,ideal=False)
+        b=BatteryTwin(150.,4,1.,1.,25.,8.,1.,0.,False,.1,ideal=False)
+        c=BatteryTwin(150.,4,1.,1.,50.,8.,1.,0.,False,.1,ideal=False)
+        cold,nominal,hot=(x.usable_wh() for x in (a,b,c))
+        return dict(passed=cold<nominal and hot<=nominal,
+            observation='Temperature changes the assumed accessible energy; these are not manufacturer capacity curves.',
+            evidence=dict(cold_wh=round(cold,2),nominal_wh=round(nominal,2),hot_wh=round(hot,2)))
+    if label=='Undersized battery':
+        p=dict(config or {})
+        aircraft=p.get('aircraft','Generic Quad')
+        if aircraft not in UAV_PROFILES or UAV_PROFILES[aircraft]['power_system']!='Battery':
+            return dict(passed=True,observation='Battery case applies to battery-powered profiles only; choose Generic Quad to run it.',evidence=dict(aircraft=aircraft))
+        nominal=float(p.get('battery_wh',UAV_PROFILES[aircraft]['battery_wh']))
+        p['battery_wh']=1.
+        if config is None:
+            return dict(passed=True,observation='Set pack capacity to 1 Wh and inspect the preflight electrical/energy findings.',evidence=dict(nominal_wh=nominal,test_wh=1.))
+        gate=scenario_preflight(p)
+        codes=[x['code'] for x in gate['issues']]
+        return dict(passed=bool(gate['blocked'] or gate['review_required']),
+            observation='A 1 Wh pack should produce a feasibility warning or block, not an unqualified READY.',
+            evidence=dict(nominal_wh=nominal,test_wh=1.,status=gate['status'],finding_codes=codes))
+    if label=='High-altitude air density':
+        sea=atmosphere_state(0.,15.)[0];high=atmosphere_state(5000.,15.)[0]
+        return dict(passed=high<sea,
+            observation='ISA-like atmosphere predicts lower density with increasing altitude; aircraft-specific performance is separate.',
+            evidence=dict(sea_level_kgm3=round(sea,4),at_5000_m_kgm3=round(high,4)))
+    # This demonstration validates the existing instrument logic, not live telemetry.
+    import pandas as _pd
+    synthetic=_pd.Series(dict(battery_soc=.75,battery_terminal_v=14.5,
+        battery_current_a=3.,battery_temperature_c=25.,battery_remaining_wh=95.,
+        time_s=42.,battery_status='NORMAL',battery_limited=False))
+    state=battery_monitoring_state(synthetic,10.)
+    return dict(passed=abs(state['soc_pct']-75.)<1e-9 and state['time_s']==42.,
+        observation='Gauge and timer follow the selected saved-telemetry frame; automatic replay is simulated, not a hardware BMS stream.',
+        evidence=dict(soc_pct=state['soc_pct'],simulation_time_s=state['time_s']))
+
+
+def render_original_feature_scenarios(config):
+    with st.expander('Original features | Seven verification demonstrations',expanded=False):
+        st.caption('Non-destructive tests of foundational concepts. They use copies of '
+            'scenario inputs or transparent analytical checks, never modify the current flight.')
+        selected=st.selectbox('Original test scenario',ORIGINAL_SCENARIO_NAMES,
+            key='original_demo_choice')
+        if st.button('Run original feature demonstration',key='original_demo_run'):
+            try:
+                evidence=original_feature_demonstration(selected,config)
+                st.session_state['original_demo_result']=(selected,evidence)
+            except (ValueError,TypeError,OverflowError) as exc:
+                st.error('Demonstration could not complete: '+str(exc))
+        outcome=st.session_state.get('original_demo_result')
+        if outcome:
+            n,result=outcome
+            if result['passed']:st.success(n+' | expected check passed')
+            else:st.warning(n+' | expected outcome not confirmed; review physics and assumptions')
+            st.write(result['observation'])
+            st.json(result['evidence'],expanded=False)
+
+
 def main():
     st.set_page_config(page_title='UAV Battery Efficiency Estimator',layout='wide',
                        page_icon='🛩️')
@@ -9754,11 +10039,13 @@ def main():
                 public_reference_math_workspace(selected_name)
             else:
                 st.info('No public references match the selected country filter.')
+    render_original_feature_scenarios(config)
     onnx_host_benchmark_workspace()
     if reset:
         st.session_state.pop('completed_simulation',None)
         for key in ('replay_frame','swarm_playback_frame','uav_gpt_mission_review',
-                    'uav_swarm_gpt_review'):
+                    'uav_swarm_gpt_review','battery_replay_auto_running',
+                    'battery_replay_start_wall','battery_replay_start_sim'):
             st.session_state.pop(key,None)
         st.success('Previous simulation cleared.')
         st.stop()
@@ -9784,7 +10071,8 @@ The optional GPT advisor only interprets saved telemetry.''',language='text')
                 result=run_physics(config)
             st.session_state['completed_simulation']=result
             for key in ('replay_frame','swarm_playback_frame','uav_gpt_mission_review',
-                        'uav_swarm_gpt_review'):
+                        'uav_swarm_gpt_review','battery_replay_auto_running',
+                        'battery_replay_start_wall','battery_replay_start_sim'):
                 st.session_state.pop(key,None)
         except (ValueError,RuntimeError,FloatingPointError,OverflowError) as exc:
             st.error(f'Simulation could not complete: {exc}')
@@ -9797,6 +10085,9 @@ The optional GPT advisor only interprets saved telemetry.''',language='text')
     result=st.session_state['completed_simulation']
     previous=result['scenario']['config']
     if config!=previous:
+        # Never keep automatic replay active for stale telemetry after changing
+        # the aircraft, custom motor, battery, or mission configuration.
+        st.session_state['battery_replay_auto_running']=False
         st.info('Sidebar settings have changed since this run. Select **Run** to update the results.')
     display_report(result)
     reference_validation_workspace(result)
