@@ -1,5 +1,8 @@
 streamlit>=1.40,<2
-pandas>=2,<4
 numpy>=1.26,<3
+pandas>=2,<4
 plotly>=5.20,<8
 pyarrow<25
+openai>=1.50,<3
+Pillow>=10,<13
+imageio-ffmpeg>=0.5,<1
