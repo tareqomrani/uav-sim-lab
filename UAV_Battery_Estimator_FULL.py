@@ -6259,6 +6259,190 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
 
 
 # ============================================================================
+# SHAREABLE 6-DOF MP4 | OFFLINE RENDER (NO BROWSER ANIMATION OR SCREEN CAPTURE)
+# ============================================================================
+# The Plotly WebGL Play button can become unresponsive under iOS screen capture.
+# This is an alternate output, NOT an export of Plotly's interactive scene.
+# It projects the same procedural 3D airframe using actual recorded quaternions,
+# position, and control-surface telemetry. It does not change flight physics.
+
+def render_6dof_mp4(df, profile, aircraft_name='', duration_seconds=12,
+                    fps=15, segment='Strongest banking segment',
+                    resolution=(960, 544)):
+    """Export a pre-rendered 3D aircraft MP4 from saved quaternion telemetry.
+
+    Encoding and rendering happen on the server. No browser-side Plotly Play,
+    screen recorder, fake 6-DOF states, or flight model rerun is involved.
+    Output frames are selected from recorded states (no invented interpolation).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    import imageio_ffmpeg
+    import tempfile
+
+    if not len(df):
+        raise ValueError('No recorded flight states are available.')
+    needed={'time_s','qw','qx','qy','qz','roll_deg','pitch_deg','yaw_deg',
+            'north_m','east_m','altitude_m','aileron_actual','elevator_actual',
+            'rudder_actual'}
+    missing=needed-set(df.columns)
+    if missing:
+        raise ValueError('Missing flight-state columns: '+', '.join(sorted(missing)))
+    w,h=(int(resolution[0]),int(resolution[1]))
+    if not (640<=w<=1920 and 360<=h<=1080):
+        raise ValueError('Unsupported video resolution.')
+    fps=int(fps); duration_seconds=int(duration_seconds)
+    if not (8<=duration_seconds<=25 and 10<=fps<=24):
+        raise ValueError('Select 8-25 seconds and 10-24 fps.')
+    times=df.time_s.to_numpy(dtype=float)
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times)<0):
+        raise ValueError('Flight time is not monotonically increasing.')
+    start,end=float(times[0]),float(times[-1])
+    if segment=='Strongest banking segment' and len(df)>1:
+        absroll=np.abs(df.roll_deg.to_numpy(dtype=float))
+        center=float(times[int(np.nanargmax(absroll))])
+        sim_window=min(max(12.,.18*(end-start)),max(end-start,1.))
+        t0=max(start,min(end-sim_window,center-.5*sim_window))
+        t1=min(end,t0+sim_window)
+    else:
+        t0,t1=start,end
+    count=duration_seconds*fps
+    selected=np.searchsorted(times,np.linspace(t0,t1,count),side='left')
+    selected=np.clip(selected,0,len(df)-1)
+
+    # Constant virtual camera orientation; moving aircraft-centered position.
+    # +x=East, +y=North, +z=Up, as in the existing Plotly scene.
+    eye=np.array([1.7,-2.15,1.3],dtype=float)
+    forward=-eye/np.linalg.norm(eye)
+    right=np.cross(forward,[0.,0.,1.]);right/=np.linalg.norm(right)
+    up=np.cross(right,forward);up/=np.linalg.norm(up)
+    span=float(profile.get('wingspan_m',DEFAULT_SIZE_M.get(aircraft_name,1.)))
+    span=max(.30,span if profile['type']=='fixed' else float(DEFAULT_SIZE_M.get(aircraft_name,.8)))
+    pixels_per_m=min(w*.56,h*.62)/(span*1.1)
+    focal_x,focal_y=w*.45,h*.56
+
+    def fnt(size,bold=False):
+        root='/usr/share/fonts/truetype/dejavu/'
+        path=root+('DejaVuSans-Bold.ttf' if bold else 'DejaVuSans.ttf')
+        try:return ImageFont.truetype(path,size)
+        except OSError:return ImageFont.load_default()
+
+    headline=fnt(25,True);subhead=fnt(15,True);small=fnt(13);large=fnt(17,True)
+    fmt=lambda n: f'{float(n):+.1f}°'
+    coords=df[['east_m','north_m','altitude_m']].to_numpy(dtype=float)
+    mini_lo=coords[:,:2].min(axis=0);mini_hi=coords[:,:2].max(axis=0)
+    ranges=np.maximum(mini_hi-mini_lo,1.)
+    # Static route thumbnail, always showing the ENTIRE flight separately
+    # from the moving aircraft-focused 3D view.
+    def mini_project(xyz):
+        q=(np.asarray(xyz,dtype=float)[:2]-mini_lo)/ranges
+        return (w-190+q[0]*148,h-63-(q[1]*69))
+
+    fd,path=tempfile.mkstemp(prefix='uav_replay_',suffix='.mp4')
+    os.close(fd)
+    writer=None
+    try:
+        writer=imageio_ffmpeg.write_frames(
+            path,(w,h),fps=fps,codec='libx264',pix_fmt_in='rgb24',
+            output_params=['-crf','23','-movflags','+faststart','-preset','veryfast'],
+            macro_block_size=16)
+        writer.send(None)
+        for n,k in enumerate(selected):
+            row=df.iloc[int(k)]
+            pos=coords[int(k)]
+            def project(world):
+                vec=np.asarray(world,dtype=float).reshape(-1,3)-pos
+                p=np.column_stack((focal_x+pixels_per_m*(vec@right),
+                                   focal_y-pixels_per_m*(vec@up)))
+                return p
+            canvas=Image.new('RGB',(w,h),'#061610')
+            d=ImageDraw.Draw(canvas)
+            # Quiet aerospace/HUD-style background and grid.
+            # Horizontal reference grid behind the aircraft, at a constant
+            # visual offset. This is NOT a modeled terrain surface.
+            grid_z=pos[2]-.42*span
+            grid_span=span*3.5
+            for u in np.linspace(-grid_span,grid_span,11):
+                a=np.array([pos[0]+u,pos[1]-grid_span,grid_z])
+                b=np.array([pos[0]+u,pos[1]+grid_span,grid_z])
+                c=np.array([pos[0]-grid_span,pos[1]+u,grid_z])
+                e=np.array([pos[0]+grid_span,pos[1]+u,grid_z])
+                for aa,bb in ((a,b),(c,e)):
+                    pts=project([aa,bb]);d.line([tuple(z) for z in pts],
+                            fill='#174437',width=1)
+            # Past recorded track, local to the moving aircraft; no prediction.
+            prev=np.arange(0,int(k)+1,max(1,(int(k)+1)//700))
+            if len(prev)>1:
+                hist=project(coords[prev])
+                for a,b in zip(hist[:-1],hist[1:]):
+                    if np.linalg.norm(b-a)<1500:
+                        d.line([tuple(a),tuple(b)],fill='#16ab73',width=3)
+            # Draw procedurally generated 3D aircraft from actual actuator states.
+            # Painter sorting uses camera depth, leaving the existing physics intact.
+            parts,segments,_=aircraft_3d_parts(profile,row,aircraft_name)
+            faces=[]
+            for part in parts:
+                xyz=transform_aircraft_points(part['v'],row,1.)
+                proj=project(xyz)
+                dep=(xyz-pos)@forward
+                base=tuple(int(part['color'][i:i+2],16) for i in (1,3,5))
+                for tri in part['f']:
+                    tri=np.asarray(tri,dtype=int)
+                    normal=np.cross(xyz[tri[1]]-xyz[tri[0]],
+                                    xyz[tri[2]]-xyz[tri[0]])
+                    brightness=.56+.34*abs(np.dot(normal/(
+                        np.linalg.norm(normal)+1e-9),forward))
+                    color=tuple(min(255,int(c*brightness)) for c in base)
+                    faces.append((float(np.mean(dep[tri])),
+                       [tuple(map(float,pp)) for pp in proj[tri]],color))
+            # Far surfaces first, near surfaces on top.
+            for _,points,color in sorted(faces,key=lambda el:el[0],reverse=True):
+                d.polygon(points,fill=color)
+            for seg in segments:
+                p=project(transform_aircraft_points(seg,row))
+                d.line([tuple(a) for a in p],fill='#d4faff',width=2)
+            # Render the HUD header LAST so projected grid never crosses its text.
+            d.rectangle((0,0,w,78),fill='#09271d')
+            d.line((22,82,w-22,82),fill='#2de5be',width=2)
+            d.text((25,15),'UAV BATTERY EFFICIENCY ESTIMATOR',
+                   font=headline,fill='#eafff1')
+            d.text((27,47),'QUATERNION 6-DOF | RECORDED SIMULATION',
+                   font=subhead,fill='#50e2ac')
+            # Fixed-size telemetry panel for legibility on mobile LinkedIn.
+            d.rounded_rectangle((24,h-128,w-225,h-22),radius=13,
+                                fill='#0a3022',outline='#2b9d6b',width=2)
+            d.text((40,h-116),f'FLIGHT  {row.time_s:.1f} s',font=large,fill='#d9ffee')
+            d.text((40,h-86),f'ROLL  {fmt(row.roll_deg)}',font=subhead,fill='#39f3a6')
+            d.text((232,h-86),f'PITCH  {fmt(row.pitch_deg)}',font=subhead,fill='#d9ffee')
+            d.text((449,h-86),f'YAW  {float(row.yaw_deg):.1f}°',font=subhead,fill='#d9ffee')
+            d.text((40,h-57),f'ALTITUDE  {float(row.altitude_m):.1f} m',
+                   font=small,fill='#b1d9c6')
+            d.text((315,h-57),aircraft_name[:36],font=small,fill='#b1d9c6')
+            d.rectangle((40,h-35,w-244,h-30),fill='#174534')
+            progress=n/max(1,count-1)
+            d.rectangle((40,h-35,40+int((w-284)*progress),h-30),fill='#2de5be')
+            # Route map: progress marker on a full-run plan view.
+            d.rounded_rectangle((w-208,h-183,w-24,h-22),radius=13,
+                                fill='#08271c',outline='#25664d',width=2)
+            d.text((w-193,h-175),'RECORDED TRACK',font=small,fill='#a5d7bd')
+            mini=coords[::max(1,len(coords)//350)]
+            if len(mini)>1:
+                d.line([mini_project(x) for x in mini],fill='#198757',width=2)
+            cx,cy=mini_project(pos)
+            d.ellipse((cx-5,cy-5,cx+5,cy+5),fill='#2de5be',outline='#e4ffef',width=1)
+            d.text((w-193,h-50),'ENU | RESEARCH ONLY',font=fnt(10),fill='#76bd9c')
+            writer.send(np.asarray(canvas,dtype=np.uint8).tobytes())
+        writer.close();writer=None
+        with open(path,'rb') as f:
+            return f.read()
+    finally:
+        if writer is not None:
+            try:writer.close()
+            except Exception:pass
+        try:os.unlink(path)
+        except OSError:pass
+
+
+# ============================================================================
 # INTEGRATED SELECTED-UAV ANALYTICS, ON-DEMAND GPT, AND SWARM PLAYBACK
 # ============================================================================
 def individual_uav_detail(result):
@@ -8235,6 +8419,48 @@ def display_report(result):
         st.plotly_chart(projected_replay(df,result['waypoints'],index,initial_position_enu),
                         use_container_width=True,config={'displaylogo':False})
         st.caption('Mobile-safe projected 3D displays the trajectory without a 3D aircraft mesh.')
+    # A touch-independent option for iPhone/LinkedIn: generate real MP4 frames on
+    # the Python server, rather than relying on WebGL animation during capture.
+    with st.expander('Shareable 6-DOF video (MP4, no screen recording required)',
+                     expanded=False):
+        st.caption('Generate a 3D aircraft video using the same recorded positions, '
+                   'quaternions, control-surface states, and procedural airframe. '
+                   'This is a server-rendered companion to the interactive Plotly '
+                   'view, not a screen recording or an exact Plotly scene export. '
+                   'The research-only simulation and flight physics are unchanged.')
+        mp4_cols=st.columns(2)
+        with mp4_cols[0]:
+            mp4_segment=st.selectbox('Flight segment',
+                ['Strongest banking segment','Full recorded mission'],
+                key='uav_mp4_segment')
+        with mp4_cols[1]:
+            mp4_seconds=st.select_slider('Video duration (seconds)',
+                options=[8,12,16,20],value=12,key='uav_mp4_seconds')
+        video_fingerprint=(scenario['aircraft'],len(df),
+             float(df.iloc[-1].time_s),float(df.iloc[-1].east_m),
+             float(df.iloc[-1].north_m),float(df.iloc[-1].roll_deg),
+             mp4_segment,mp4_seconds)
+        if st.button('Generate 3D replay MP4 for LinkedIn',
+                     key='uav_mp4_generate',type='secondary'):
+            try:
+                with st.spinner('Rendering video from recorded flight states...'):
+                    mp4=render_6dof_mp4(df,profile,scenario['aircraft'],
+                               duration_seconds=mp4_seconds,fps=15,
+                               segment=mp4_segment)
+                st.session_state['uav_mp4_bytes']=mp4
+                st.session_state['uav_mp4_fingerprint']=video_fingerprint
+            except (ImportError,ValueError,RuntimeError,OSError) as exc:
+                st.error(f'Could not create MP4: {exc}. Install Pillow and '
+                         'imageio-ffmpeg (see requirements.txt).')
+        if (st.session_state.get('uav_mp4_fingerprint')==video_fingerprint
+                and st.session_state.get('uav_mp4_bytes')):
+            st.video(st.session_state['uav_mp4_bytes'],format='video/mp4')
+            st.download_button('Download LinkedIn-ready 6-DOF MP4',
+                  data=st.session_state['uav_mp4_bytes'],
+                  file_name='uav_quaternion_6dof_replay.mp4',mime='video/mp4',
+                  key='uav_mp4_download')
+        st.caption('Generate the MP4 before posting. It plays independently of '
+                   'iOS recording, LinkedIn in-app browsing, and the Plotly Play button.')
     with st.expander('Cockpit HUD for selected frame',expanded=False):
         st.plotly_chart(hud_figure(frame),use_container_width=True,
                         config={'displaylogo':False})
