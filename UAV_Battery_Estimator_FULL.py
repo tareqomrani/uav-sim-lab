@@ -5616,6 +5616,17 @@ def battery_replay_pause():
     st.session_state['battery_replay_auto_running']=False
 
 
+def battery_replay_stop_for_new_simulation():
+    """Prevent a previous flight replay continuing during a new run attempt.
+
+    A rejected or failed new run must also leave the old replay stopped.
+    Preserve the old completed result until the new solver actually succeeds.
+    """
+    battery_replay_pause()
+    st.session_state.pop('battery_replay_start_wall',None)
+    st.session_state.pop('battery_replay_start_sim',None)
+
+
 def battery_replay_auto_frame(times,start_index,elapsed_wall_seconds,rate):
     """Pure mapping for independent repeatable playback tests."""
     times=np.asarray(times,dtype=float)
@@ -6121,7 +6132,7 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
                          aircraft_name='', camera_mode='Aircraft focus',
                          show_ekf=True,show_axes=True,show_thrust=True,
                          animate=False,max_animation_frames=45,
-                         initial_position_enu=None):
+                         recording_mode=False,initial_position_enu=None):
     """Plotly Mesh3d replay. Flight states come strictly from recorded 6-DOF telemetry."""
     frame_index=int(clamp(frame_index,0,len(df)-1))
     # The Plotly animation is an independent preview: always open at its
@@ -6135,7 +6146,7 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
     fig=go.Figure()
     # Plotly 3D on mobile cannot efficiently send tens of thousands of vertices.
     # Decimate rendering only; retain unmodified physics / exported telemetry.
-    render_stride=max(1,math.ceil(len(df)/1400))
+    render_stride=max(1,math.ceil(len(df)/(480 if recording_mode else 1400)))
     route=df.iloc[::render_stride]
     if route.index[-1]!=df.index[-1]:
         route=pd.concat([route,df.iloc[[-1]]])
@@ -6175,8 +6186,16 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
         controls='From actual simulated actuator telemetry',
         propeller_rotation='Illustrative only: no blade-level RPM state'))
     if animate and len(df)>1:
-        sample=np.unique(np.r_[np.linspace(0,len(df)-1,min(max_animation_frames,len(df)),dtype=int),
-                               frame_index])
+        base_frames=np.linspace(0,len(df)-1,
+                                min(max_animation_frames,len(df)),dtype=int)
+        if recording_mode:
+            # Preserve brief banking maneuvers by sampling the largest roll magnitudes.
+            # All states remain the ORIGINAL 6-DOF telemetry, never interpolated values.
+            peaks=(np.argsort(np.abs(df['roll_deg'].to_numpy(dtype=float)))[-3:]
+                   if 'roll_deg' in df else np.array([],dtype=int))
+            sample=np.unique(np.r_[0,base_frames,peaks,len(df)-1])
+        else:
+            sample=np.unique(np.r_[base_frames,frame_index])
         target_traces=list(range(dynamic_offset,dynamic_offset+len(dynamic)))
         frame_traces=[trail_index]+([2] if show_ekf else [])+target_traces
         frames=[]
@@ -6194,6 +6213,11 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
             # the scene stays stationary to show progress along the entire route.
             animated_scene=(aircraft_scene_axes(df,instant,waypoints,span,scale,
                                 camera_mode) if camera_mode=='Aircraft focus' else None)
+            if recording_mode and animated_scene is not None:
+                # During capture, update only moving view ranges. Preserve static
+                # camera, axis styling, grids, and background rather than retransmitting.
+                animated_scene={axis:{'range':animated_scene[axis]['range']}
+                                for axis in ('xaxis','yaxis','zaxis')}
             frames.append(go.Frame(name=f'f{k}',data=update,traces=frame_traces,
                 layout=go.Layout(title=dict(text=f'QUATERNION 6-DOF | '
                     f't={instant.time_s:.1f}s | Roll {instant.roll_deg:+.1f}°  '
@@ -6208,8 +6232,10 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
         fig.update_layout(
             updatemenus=[dict(type='buttons',direction='left',x=.01,y=.01,
                 xanchor='left',yanchor='bottom',showactive=False,
-                buttons=[dict(label='▶ Play',method='animate',args=[None,
-                  dict(frame=dict(duration=150,redraw=True),fromcurrent=True,
+                buttons=[dict(label=('▶ Replay from start' if recording_mode else '▶ Play'),
+                  method='animate',args=[None,
+                  dict(frame=dict(duration=(400 if recording_mode else 150),redraw=True),
+                       fromcurrent=not recording_mode,
                        transition=dict(duration=0),mode='immediate')]),
                          dict(label='❚❚ Pause',method='animate',args=[[None],
                   dict(frame=dict(duration=0,redraw=False),transition=dict(duration=0),
@@ -6218,6 +6244,17 @@ def aircraft_plotly_twin(df, waypoints, frame_index, profile,
                 x=.25,y=.01,len=.73,pad=dict(t=2,b=0),steps=steps,
                 currentvalue=dict(prefix='Preview '))],
         )
+        if recording_mode:
+            # Larger touch targets and a dedicated lower toolbar reduce missed taps.
+            # Mesh3d still needs redraw=True to animate vertex positions correctly.
+            fig.update_layout(height=750,margin=dict(l=0,r=0,t=76,b=125),
+                legend=dict(orientation='h',y=-.20,x=0.,font=dict(size=11)))
+            fig.layout.updatemenus[0].update(
+                x=.01,y=.03,bgcolor='#0a3122',bordercolor='#42dba7',
+                borderwidth=1,font=dict(size=15,color='#e1fff0'),
+                pad=dict(l=10,r=10,t=12,b=12))
+            fig.layout.sliders[0].update(x=.38,y=.03,len=.59,
+                                          pad=dict(t=3,b=0))
     return fig
 
 
@@ -8160,7 +8197,14 @@ def display_report(result):
                                     key='aircraft_show_thrust')
         with options[2]:
             animate=st.checkbox('Plotly Play / Pause animation',False,
-                                 key='aircraft_animation')
+                                  key='aircraft_animation')
+        recording_mode=(st.checkbox('iPhone screen-recording mode (lighter Plotly replay)',
+                     value=False,key='aircraft_ios_recording') if animate else False)
+        if recording_mode:
+            st.caption('Recording mode: reduced animation/trajectory samples, slower '
+                       'replay, enlarged Play/Pause controls, no extra EKF/thrust layers, '
+                       'and no Plotly modebar. The 6-DOF states and aircraft physics '
+                       'are unchanged. Tap Replay from start AFTER screen capture begins.')
         st.caption('Drag to orbit and pinch to zoom. Aircraft geometry follows the recorded '
                    'quaternion and position. Ailerons, elevator and rudder use actual simulated '
                    'actuator positions. Blade spin is illustrative, not a modeled RPM. '
@@ -8173,11 +8217,15 @@ def display_report(result):
                     'The planned waypoint arrows are visual labels, not the flown trajectory.')
         try:
             replay=aircraft_plotly_twin(df,result['waypoints'],index,profile,
-                scenario['aircraft'],camera_mode,show_ekf,show_axes,
-                show_thrust,animate,max_animation_frames=45,
+                scenario['aircraft'],camera_mode,(show_ekf and not recording_mode),
+                show_axes,(show_thrust and not recording_mode),animate,
+                max_animation_frames=(24 if recording_mode else 45),
+                recording_mode=recording_mode,
                 initial_position_enu=initial_position_enu)
             st.plotly_chart(replay,use_container_width=True,
-                config={'displaylogo':False,'responsive':True,'scrollZoom':True})
+                config={'displaylogo':False,'responsive':True,
+                        'scrollZoom':not recording_mode,
+                        'displayModeBar':not recording_mode})
         except Exception as exc:
             st.warning(f'Plotly aircraft rendering failed: {exc}. '
                        'Showing the mobile-safe trajectory instead.')
@@ -10063,6 +10111,9 @@ SIMULATED TRUTH STATE → AUTOPILOT (not EKF feedback)
 NOT IMPLEMENTED: GPT → command gate → MAVLink / PX4 / ArduPilot.
 The optional GPT advisor only interprets saved telemetry.''',language='text')
     if run:
+        # Stop previous-run playback before any feasibility check or solver call.
+        # This also applies if the proposed new run is rejected or fails.
+        battery_replay_stop_for_new_simulation()
         if preflight['blocked'] or preflight['review_required'] and not st.session_state.get('v028_preflight_ack',False):
             st.error('Preflight approval required before running the simulation.')
             st.stop()
